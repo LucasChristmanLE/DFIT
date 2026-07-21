@@ -4,10 +4,19 @@ Each ``render_*`` takes an Axes, the loaded ``TestData``, the ``PickState``, and
 ``DerivedResults`` and draws the plot plus whatever picks currently exist. The interactive layer
 (picks.py) updates the PickState and calls the matching render to refresh.
 
+Renderers no longer set view limits (``set_xlim``/``set_ylim``) on the Axes -- they leave the
+Axes autoscaled to the full data extent and instead return a ``ViewDefaults`` describing the
+view the caller should apply on first visit to a step. Callers (ui.py) own view state from
+there: they read the autoscaled extent, resolve it against ``ViewDefaults``, and apply the
+result to the Axes themselves.
+
 Matplotlib only -- no Tkinter -- so figures can be produced headlessly (Agg) for verification.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -15,6 +24,15 @@ from .model import DerivedResults, PickState
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
+
+
+@dataclass
+class ViewDefaults:
+    """The view a renderer suggests for first-visit display; ``None`` means autoscaled full
+    extent. Callers apply these to the Axes -- renderers never set limits themselves."""
+    xlim: Optional[tuple[float, float]] = None
+    ylim: Optional[tuple[float, float]] = None
+    y2lim: Optional[tuple[float, float]] = None
 
 
 def _decimate(x: np.ndarray, *ys: np.ndarray):
@@ -31,7 +49,7 @@ def _hours(t_s: np.ndarray, t0: float = 0.0) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------------------------------
-def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> None:
+def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers."""
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
@@ -59,30 +77,38 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
         ax.axvline(t_h[state.shutin_idx], color="tab:red", ls="-", lw=1.8,
                    label="shut-in", gid="shutin")
 
-    # Auto-zoom to the active injection region (the falloff tail can be weeks long).
+    # The default view zooms to the active injection region (the falloff tail can be weeks long);
+    # the full autoscaled extent stays available for the caller to zoom back out to.
+    xlim = None
     if state.start_idx is not None and state.shutin_idx is not None:
         span_h = max(t_h[state.shutin_idx] - t_h[state.start_idx], 0.25)
-        ax.set_xlim(t_h[state.start_idx] - 0.5 * span_h, t_h[state.shutin_idx] + 2.0 * span_h)
+        xlim = (t_h[state.start_idx] - 0.5 * span_h, t_h[state.shutin_idx] + 2.0 * span_h)
     elif res.rate_all is not None:
         act = np.where(res.rate_all > 0.1)[0]
         if act.size:
-            ax.set_xlim(max(0, t_h[act[0]] - 0.2), t_h[act[-1]] + 0.5)
+            xlim = (max(0, t_h[act[0]] - 0.2), t_h[act[-1]] + 0.5)
 
     title = "Overview"
     if res.te_s:
         title += f"   te={res.te_s/60:.2f} min   Vinj={res.vinj:.1f} bbl   qmax={res.qmax_bpm:.2f} bpm"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
+    return ViewDefaults(xlim=xlim)
 
 
-def render_isip(ax, td: TestData, state: PickState, res: DerivedResults, window_min: float = 30.0) -> None:
-    """Step 3: BHP vs time zoomed after shut-in; the literal-ISIP tangent + extension to shut-in."""
+def render_isip(ax, td: TestData, state: PickState, res: DerivedResults,
+                window_min: float = 30.0) -> ViewDefaults:
+    """Step 3: BHP vs time after shut-in; the literal-ISIP tangent + extension to shut-in.
+
+    Plots the full post-shut-in decimated series (the falloff tail can be very long) so a
+    zoom slider has a real full extent to work within; the default view zooms to ``window_min``.
+    """
     ax.clear()
     if res.bhp_all is None or res.t_shutin_s is None:
         ax.set_title("Literal ISIP -- set injection window first", fontsize=10)
-        return
+        return ViewDefaults()
     t_min = (td.t_s - res.t_shutin_s) / 60.0
-    m = (t_min >= -2.0) & (t_min <= window_min)
+    m = t_min >= -2.0
     xt, xp = _decimate(t_min[m], res.bhp_all[m])
     ax.plot(xt, xp, color="black", lw=0.9)
     ax.axvline(0.0, color="tab:red", lw=1.2, label="shut-in")
@@ -102,14 +128,15 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults, window_
     else:
         ax.set_title("Literal ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
+    return ViewDefaults(xlim=(-2.0, window_min))
 
 
-def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> None:
+def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 5: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("G-function -- need te and a falloff", fontsize=10)
-        return
+        return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
     ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
@@ -121,10 +148,11 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax2.plot(dg.G, dg.dPdG, color="tab:red", lw=1.0, label="dP/dG")
     ax2.set_ylabel("dP/dG", color="tab:red")
     ax2.tick_params(axis="y", labelcolor="tab:red")
+    y2lim = None
     finite = np.isfinite(dg.dPdG)
-    if finite.any():  # clip early water-hammer spike off-scale
+    if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.dPdG[finite], 95)
-        ax2.set_ylim(0, max(hi * 1.5, 1.0))
+        y2lim = (0, max(hi * 1.5, 1.0))
 
     if state.eff_isip_line is not None and res.effective_isip is not None:
         ln = state.eff_isip_line
@@ -142,14 +170,15 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         title += f"   Shmin(compl)={res.shmin_compliance:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
+    return ViewDefaults(y2lim=y2lim)
 
 
-def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> None:
+def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 6: G*dP/dG vs G with the through-origin line and the closure departure point."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Tangent method -- need a falloff", fontsize=10)
-        return
+        return ViewDefaults()
     dg = res.diagnostics
     ax.plot(dg.G, dg.GdPdG, color="tab:red", lw=1.0, marker=".", ms=3, label="G*dP/dG")
     ax.set_xlabel("G-time")
@@ -168,14 +197,16 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> N
         title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
+    # Layout/twinx handling for this step is reworked in a later task; no view opinion yet.
+    return ViewDefaults()
 
 
-def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> None:
+def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 7: log-log dp and t*dP/dt vs shut-in time; selected window + fitted slope."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Log-log -- need a falloff", fontsize=10)
-        return
+        return ViewDefaults()
     dg = res.diagnostics
     good = (dg.t > 0) & (dg.dp > 0)
     ax.loglog(dg.t[good], dg.dp[good], color="tab:blue", lw=1.0, marker=".", ms=3, label="dp")
@@ -198,14 +229,15 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> No
     else:
         ax.set_title("Log-log -- select the late-time window", fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
+    return ViewDefaults()
 
 
-def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults) -> None:
+def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 8: P vs t^-1/2 or t^-1 with the fitted line extended to the intercept."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Pore pressure -- need a falloff", fontsize=10)
-        return
+        return ViewDefaults()
     dg = res.diagnostics
     expo = -0.5 if state.pp_axis == "tm12" else -1.0
     x = dg.t ** expo
@@ -213,7 +245,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     ax.set_xlabel("t^(-1/2)" if state.pp_axis == "tm12" else "t^(-1)")
     ax.set_ylabel("BHP (psi)")
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(left=0)
+    xmax = float(np.nanmax(x)) if x.size else 1.0
 
     if state.pp_window is not None and res.pore_pressure is not None:
         lo, hi = state.pp_window
@@ -227,6 +259,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
         ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
+    return ViewDefaults(xlim=(0.0, xmax))
 
 
 RENDERERS = {

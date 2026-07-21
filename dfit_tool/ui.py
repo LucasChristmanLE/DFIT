@@ -2,19 +2,27 @@
 
 Hosts the matplotlib canvas and wires the per-step pickers from picks.py to a recompute+redraw
 loop. Holds no interpretation logic itself -- every number comes from model.compute_all.
+
+There is no matplotlib toolbar: its sticky zoom/pan mode silently swallowed pick clicks/drags,
+which is exactly the interaction this app depends on. View state (pan/zoom) is instead a
+first-class per-step concept -- see ``ViewState`` and ``_views`` below -- restored on every
+revisit to a step rather than only optionally preserved across one recompute.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import io_load, picks, plots
 from .model import PickState, compute_all
+from .plots import ViewDefaults
 
 STEPS = [
     ("overview", "Overview"),
@@ -29,6 +37,30 @@ POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
                          "PC-D mixed", "PC-E none", "PC-F none"]
 
 
+@dataclass
+class ViewState:
+    """The resolved (non-optional) view actually applied to a step's Axes: primary xlim/ylim,
+    and the twin axes' ylim if that step has one."""
+    xlim: tuple[float, float]
+    ylim: tuple[float, float]
+    y2lim: Optional[tuple[float, float]] = None
+
+
+def _resolve_view(stored: Optional[ViewState], defaults: ViewDefaults,
+                  full_x: tuple[float, float], full_y: tuple[float, float],
+                  full_y2: Optional[tuple[float, float]]) -> ViewState:
+    """First visit to a step (``stored`` is None): seed from the renderer's ``ViewDefaults``,
+    falling back to the full autoscaled extent for whichever axis the renderer left ``None``.
+    A revisit reuses the stored view unchanged, so user pan/zoom survives a recompute."""
+    if stored is not None:
+        return stored
+    return ViewState(
+        xlim=defaults.xlim if defaults.xlim is not None else full_x,
+        ylim=defaults.ylim if defaults.ylim is not None else full_y,
+        y2lim=defaults.y2lim if defaults.y2lim is not None else full_y2,
+    )
+
+
 class DfitApp:
     def __init__(self, root: tk.Tk, csv_path: str | None = None):
         self.root = root
@@ -40,6 +72,7 @@ class DfitApp:
         self.res = None
         self.step = "overview"
         self._controllers: list = []
+        self._views: dict[str, Optional[ViewState]] = {}
 
         self._build_top()
         self._build_body()
@@ -102,8 +135,6 @@ class DfitApp:
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=center)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
-        self.toolbar = NavigationToolbar2Tk(self.canvas, center)
-        self.toolbar.update()
 
         # right: pick panel
         panel = ttk.Frame(body, padding=8, width=320)
@@ -167,6 +198,7 @@ class DfitApp:
         except Exception as e:
             messagebox.showerror("Load failed", str(e))
             return
+        self._views = {}
         self.file_lbl.config(text=os.path.basename(path))
         cols = self.td.columns
         for cmb in (self.cmb_pressure, self.cmb_rate, self.cmb_volume):
@@ -207,37 +239,58 @@ class DfitApp:
         self.step = step
         self.refresh()
 
-    def refresh(self, preserve_view: bool = False):
+    def refresh(self):
         if self.td is None:
             return
-        prev = None
-        if preserve_view and self.ax is not None:
-            prev = (self.ax.get_xlim(), self.ax.get_ylim())
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         self.res = compute_all(self.state, self.td)
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
-        plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
-        if prev is not None:
-            self.ax.set_xlim(prev[0]); self.ax.set_ylim(prev[1])
-        self.fig.tight_layout()
+        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
+
+        full_x = self.ax.get_xlim()
+        full_y = self.ax.get_ylim()
+        twin = self._twin_axes()
+        full_y2 = twin.get_ylim() if twin is not None else None
+
+        view = _resolve_view(self._views.get(self.step), defaults, full_x, full_y, full_y2)
+        self._views[self.step] = view
+        self.ax.set_xlim(view.xlim)
+        self.ax.set_ylim(view.ylim)
+        if twin is not None and view.y2lim is not None:
+            twin.set_ylim(view.y2lim)
+
+        self._build_sliders(full_x, full_y, full_y2, view, twin)
+        # tight_layout would fight the manually placed slider axes reserved on the right margin.
+        self.fig.subplots_adjust(left=0.10, right=0.84, bottom=0.16, top=0.90)
         self._attach_controllers()
         self.canvas.draw_idle()
         self._update_panel()
+
+    def _twin_axes(self):
+        """The step's twin (secondary y) Axes if it has one, else None."""
+        for a in self.fig.axes:
+            if a is not self.ax:
+                return a
+        return None
+
+    def _build_sliders(self, full_x, full_y, full_y2, view, twin):
+        """Placeholder for the RangeSlider-based zoom controls added in a later task.
+
+        Reserves nothing beyond the ``subplots_adjust`` margins refresh() already applies; once
+        slider Axes exist here, ``_twin_axes`` will need to exclude them from ``self.fig.axes``.
+        """
+        pass
+
+    def _reset_view(self):
+        self._views[self.step] = None
+        self.refresh()
 
     def _attach_controllers(self):
         for c in self._controllers:
             c.disconnect()
         self._controllers = []
-
-        def guarded(fn):
-            def wrapped(*a):
-                if self.toolbar.mode:  # zoom/pan active -> don't place picks
-                    return
-                fn(*a)
-                self.refresh()
-            return wrapped
 
         step = self.step
         if step == "overview":
@@ -246,37 +299,43 @@ class DfitApp:
                     idx = picks._nearest(self.td.t_s / 3600.0, x_hours)
                     setattr(self.state, idx_attr, idx)
                     self.state.qmax_bpm = None  # re-derive from the new window
-                    self.refresh(preserve_view=True)
+                    self.refresh()
                 return on_release
             self._controllers.append(picks.DragLineController(
                 self.canvas, self.ax,
                 handlers={"start": _commit("start_idx"),
-                          "shutin": _commit("shutin_idx")},
-                guard=lambda: bool(self.toolbar.mode)))
+                          "shutin": _commit("shutin_idx")}))
             self.hint_lbl.config(
                 text="Drag the injection-start and shut-in lines to adjust the window.")
         elif step == "isip":
-            self._controllers.append(picks.ClickController(
-                self.canvas, self.ax,
-                guarded(lambda x, y, b: picks.handle_isip_click(self.state, self.td, self.res, x, b))))
+            def on_click(x, y, b):
+                picks.handle_isip_click(self.state, self.td, self.res, x, b)
+                self.refresh()
+            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
             self.hint_lbl.config(text="Click on the decline to place the ISIP tangent anchor.")
         elif step == "gfunction":
-            self._controllers.append(picks.ClickController(
-                self.canvas, self.ax,
-                guarded(lambda x, y, b: picks.handle_gfunction_click(self.state, self.res, x, b))))
+            def on_click(x, y, b):
+                picks.handle_gfunction_click(self.state, self.res, x, b)
+                self.refresh()
+            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
             self.hint_lbl.config(text="Left-click = effective-ISIP line, right-click = contact.")
         elif step == "tangent":
-            self._controllers.append(picks.ClickController(
-                self.canvas, self.ax,
-                guarded(lambda x, y, b: picks.handle_tangent_click(self.state, self.res, x, b))))
+            def on_click(x, y, b):
+                picks.handle_tangent_click(self.state, self.res, x, b)
+                self.refresh()
+            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
             self.hint_lbl.config(text="Click the departure from the through-origin line = closure.")
         elif step == "loglog":
-            self._controllers.append(picks.SpanController(
-                self.ax, guarded_span(self, picks.handle_loglog_span)))
+            def on_span(lo, hi):
+                picks.handle_loglog_span(self.state, lo, hi)
+                self.refresh()
+            self._controllers.append(picks.SpanController(self.ax, on_span))
             self.hint_lbl.config(text="Drag to select the late-time window; set postclosure scenario.")
         elif step == "porepressure":
-            self._controllers.append(picks.SpanController(
-                self.ax, guarded_span(self, picks.handle_pp_span)))
+            def on_span(lo, hi):
+                picks.handle_pp_span(self.state, lo, hi)
+                self.refresh()
+            self._controllers.append(picks.SpanController(self.ax, on_span))
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
 
     def _update_panel(self):
@@ -332,13 +391,6 @@ class DfitApp:
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         self.refresh()
-
-
-def guarded_span(app: "DfitApp", fn):
-    def wrapped(lo, hi):
-        fn(app.state, lo, hi)
-        app.refresh()
-    return wrapped
 
 
 def _to_float(s: str):
