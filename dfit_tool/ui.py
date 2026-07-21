@@ -11,6 +11,7 @@ revisit to a step rather than only optionally preserved across one recompute.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -20,9 +21,11 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import io_load, picks, plots
+from . import io_load, picks, plots, sliders
 from .model import PickState, compute_all
 from .plots import ViewDefaults
+
+_SLIDER_GID = "slider"
 
 STEPS = [
     ("overview", "Overview"),
@@ -73,6 +76,9 @@ class DfitApp:
         self.step = "overview"
         self._controllers: list = []
         self._views: dict[str, Optional[ViewState]] = {}
+        self._x_slider: Optional[sliders.PanRangeSlider] = None
+        self._y_slider: Optional[sliders.PanRangeSlider] = None
+        self._y2_slider: Optional[sliders.PanRangeSlider] = None
 
         self._build_top()
         self._build_body()
@@ -269,19 +275,89 @@ class DfitApp:
         self._update_panel()
 
     def _twin_axes(self):
-        """The step's twin (secondary y) Axes if it has one, else None."""
+        """The step's twin (secondary y) Axes if it has one, else None.
+
+        Excludes the slider Axes _build_sliders adds to the right margin -- those are tagged
+        with gid ``_SLIDER_GID`` precisely so this scan doesn't mistake one of them for the
+        step's twin.
+        """
         for a in self.fig.axes:
-            if a is not self.ax:
+            if a is not self.ax and a.get_gid() != _SLIDER_GID:
                 return a
         return None
 
     def _build_sliders(self, full_x, full_y, full_y2, view, twin):
-        """Placeholder for the RangeSlider-based zoom controls added in a later task.
+        """Per-axis RangeSlider zoom controls: one under the plot for x, one on the right edge
+        for y, and (only when a twin exists) one further right for y2.
 
-        Reserves nothing beyond the ``subplots_adjust`` margins refresh() already applies; once
-        slider Axes exist here, ``_twin_axes`` will need to exclude them from ``self.fig.axes``.
+        Called from refresh() after the Axes are (re)built and ``view`` applied, so slider
+        ranges/initial values always reflect the just-applied ViewState. The on_changed
+        callbacks only set limits on the target Axes, mutate ``view`` in place, and draw_idle --
+        never refresh() (fig.clf() would destroy the slider mid-drag).
         """
-        pass
+        self._x_slider = self._make_range_slider(
+            rect=[0.10, 0.04, 0.68, 0.03], orientation="horizontal",
+            full_range=full_x, cur_range=view.xlim, scale=self.ax.get_xscale(),
+            apply=lambda lo, hi: self.ax.set_xlim(lo, hi),
+            store=lambda lo, hi: setattr(view, "xlim", (lo, hi)),
+        )
+        self._y_slider = self._make_range_slider(
+            rect=[0.87, 0.16, 0.02, 0.74], orientation="vertical",
+            full_range=full_y, cur_range=view.ylim, scale=self.ax.get_yscale(),
+            apply=lambda lo, hi: self.ax.set_ylim(lo, hi),
+            store=lambda lo, hi: setattr(view, "ylim", (lo, hi)),
+        )
+        self._y2_slider = None
+        if twin is not None and full_y2 is not None:
+            self._y2_slider = self._make_range_slider(
+                rect=[0.93, 0.16, 0.02, 0.74], orientation="vertical",
+                full_range=full_y2, cur_range=view.y2lim if view.y2lim is not None else full_y2,
+                scale=twin.get_yscale(),
+                apply=lambda lo, hi: twin.set_ylim(lo, hi),
+                store=lambda lo, hi: setattr(view, "y2lim", (lo, hi)),
+            )
+
+    def _make_range_slider(self, rect, orientation, full_range, cur_range, scale, apply, store):
+        """Build one PanRangeSlider, or return None for a degenerate/non-finite extent (a flat
+        or single-sample axis has nothing to zoom).
+
+        ``scale`` is the target Axes' actual xscale/yscale ("log" or "linear") -- for a log axis
+        the slider itself operates in log10 space (clamped to a 1e-12 floor) with a valfmt that
+        displays the linear value, and the callback exponentiates before applying limits.
+        """
+        is_log = scale == "log"
+        lo_full, hi_full = full_range
+        lo_cur, hi_cur = cur_range
+        if is_log:
+            lo_full, hi_full = sliders.to_log_bounds(lo_full, hi_full)
+            lo_cur, hi_cur = sliders.to_log_bounds(lo_cur, hi_cur)
+        lo_full, hi_full = sorted((lo_full, hi_full))
+        lo_cur, hi_cur = sorted((lo_cur, hi_cur))
+        if not (math.isfinite(lo_full) and math.isfinite(hi_full) and lo_full < hi_full):
+            return None
+        # The stored view can drift outside the freshly autoscaled full extent (e.g. after the
+        # data changes) -- clamp valinit into range rather than letting RangeSlider reject it.
+        lo_cur = min(max(lo_cur, lo_full), hi_full)
+        hi_cur = min(max(hi_cur, lo_full), hi_full)
+        if lo_cur >= hi_cur:
+            lo_cur, hi_cur = lo_full, hi_full
+
+        ax = self.fig.add_axes(rect)
+        ax.set_gid(_SLIDER_GID)
+        valfmt = (lambda v: f"{10.0 ** v:.3g}") if is_log else None
+        slider = sliders.PanRangeSlider(ax, "", lo_full, hi_full, valinit=(lo_cur, hi_cur),
+                                        orientation=orientation, valfmt=valfmt)
+
+        def _on_changed(val):
+            lo, hi = val
+            if is_log:
+                lo, hi = sliders.from_log_bounds(lo, hi)
+            apply(lo, hi)
+            store(lo, hi)
+            self.canvas.draw_idle()
+
+        slider.on_changed(_on_changed)
+        return slider
 
     def _reset_view(self):
         self._views[self.step] = None
