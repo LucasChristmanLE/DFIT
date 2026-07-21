@@ -66,10 +66,12 @@ class PanRangeSlider(RangeSlider):
     def _in_pan_zone(self, event) -> bool:
         """True if the press falls strictly between the thumbs, beyond ``THUMB_TOL_PX`` of each.
         Also False when the thumbs are within ``2 * THUMB_TOL_PX`` of each other (degenerate/
-        collapsed window) -- there is no bar to grab, so stock nearest-thumb behavior applies."""
+        collapsed window) -- there is no bar to grab, so stock nearest-thumb behavior applies.
+
+        Only called after ``self.ax.contains(event)[0]`` is already True (see ``_update``), which
+        itself requires real ``event.x``/``.y`` pixel coordinates -- so ``_press_pixel`` can't
+        return None here."""
         p = self._press_pixel(event)
-        if p is None:
-            return False
         lo_px, hi_px = self._thumb_pixels()
         return (lo_px + self.THUMB_TOL_PX) < p < (hi_px - self.THUMB_TOL_PX)
 

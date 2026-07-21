@@ -308,7 +308,7 @@ class DfitApp:
             store=lambda lo, hi: setattr(view, "ylim", (lo, hi)),
         )
         self._y2_slider = None
-        if twin is not None and full_y2 is not None:
+        if twin is not None:  # refresh() only sets full_y2 when there is a twin to read it from
             self._y2_slider = self._make_range_slider(
                 rect=[0.93, 0.16, 0.02, 0.74], orientation="vertical",
                 full_range=full_y2, cur_range=view.y2lim if view.y2lim is not None else full_y2,
