@@ -313,6 +313,10 @@ class DfitApp:
         self.var_isbhp.set(bool(g["pressure_is_bhp"]))
         self.state = PickState()
         self._views = {k: None for k, _ in STEPS}
+        self.var_cscen.set("")
+        self.var_pcscen.set("")
+        self.var_ppaxis.set("tm12")
+        self.txt_notes.delete("1.0", "end")
         self._sync_state_from_widgets()
         self._goto("overview")
 
@@ -685,6 +689,7 @@ class DfitApp:
         if not path:
             return
         self.state = PickState.from_json(path)
+        self._views = {k: None for k, _ in STEPS}
         if not self.state.step_status:
             # An old save has real picks but no breadcrumb history -- infer it so the
             # breadcrumb doesn't present the whole workflow as unreached.
