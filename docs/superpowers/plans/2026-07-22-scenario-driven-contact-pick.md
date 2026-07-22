@@ -103,7 +103,7 @@ git commit -m "Add d2P/dG2 to falloff diagnostics"
   - `interpret.suggest_contact_inflection_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> Optional[int]`
   - Task 3 consumes both.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_scenario_contact.py`:
 
@@ -171,12 +171,12 @@ def test_inflection_rule_respects_g_min():
     assert interpret.suggest_contact_inflection_index(G, dPdG, g_min=1.0) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_scenario_contact.py -v -k "clear_rule or inflection_rule"`
 Expected: FAIL with `AttributeError: ... has no attribute 'suggest_contact_clear_index'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `dfit_tool/interpret.py`, after `suggest_min_dpdg_index`:
 
@@ -223,12 +223,12 @@ def suggest_contact_inflection_index(
     return None
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_scenario_contact.py -v`
 Expected: PASS (all)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/interpret.py tests/test_scenario_contact.py

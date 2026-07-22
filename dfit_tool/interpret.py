@@ -232,6 +232,48 @@ def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) 
     return int(np.nanargmin(np.where(mask, y, np.inf)))
 
 
+def suggest_contact_clear_index(
+    dPdG: np.ndarray, min_idx: int, rise_frac: float = 0.10
+) -> Optional[int]:
+    """C-A "clear" contact rule (URTeC-2019-123 3.1.2): the contact is the first sample right
+    of the min-dP/dG pick where dP/dG has risen ``rise_frac`` (10%) above the min value.
+    Returns None when the curve never rises that much -- the shape is not a clear contact."""
+    y = np.asarray(dPdG, dtype=float)
+    if min_idx < 0 or min_idx >= len(y) or not np.isfinite(y[min_idx]):
+        return None
+    threshold = y[min_idx] * (1.0 + rise_frac)
+    for i in range(min_idx + 1, len(y)):
+        if np.isfinite(y[i]) and y[i] >= threshold:
+            return int(i)
+    return None
+
+
+def suggest_contact_inflection_index(
+    G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0
+) -> Optional[int]:
+    """C-B "adequate" contact rule: the inflection of a monotonically declining dP/dG -- the
+    flattest point of the decline, i.e. the interior local maximum of d(dP/dG)/dG over
+    G >= ``g_min`` (masking the early water-hammer region, mirroring
+    ``suggest_min_dpdg_index``). Returns None when no interior local max exists (a shape with
+    no flattening, e.g. a pure exponential-style decline)."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    if len(y) < 3:
+        return None
+    d2 = np.gradient(y, G)
+    mask = G >= g_min
+    if not mask.any():
+        mask = np.ones_like(G, dtype=bool)
+    interior = np.zeros(len(d2), dtype=bool)
+    finite3 = np.isfinite(d2[:-2]) & np.isfinite(d2[1:-1]) & np.isfinite(d2[2:])
+    local_max = (d2[1:-1] > d2[:-2]) & (d2[1:-1] >= d2[2:])
+    interior[1:-1] = finite3 & local_max & mask[1:-1]
+    if interior.any():
+        candidates = np.where(interior)[0]
+        return int(candidates[np.argmax(d2[candidates])])
+    return None
+
+
 def suggest_closure_tangent(
     G: np.ndarray, GdPdG: np.ndarray, tol_frac: float = 0.10
 ) -> tuple[float, int]:
