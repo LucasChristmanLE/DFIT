@@ -59,7 +59,8 @@ dP/dG curve). Computed in `diagnostics()` alongside the existing curves.
 
 ### 2. `interpret.py` -- suggestion functions
 
-- `suggest_contact_clear_index(G, dPdG, min_idx, rise_frac=0.10) -> Optional[int]`:
+- `suggest_contact_clear_index(dPdG, min_idx, rise_frac=0.10) -> Optional[int]` (the walk is
+  index-based; G is not needed):
   threshold = `dPdG[min_idx] * (1 + rise_frac)`; walk right from `min_idx`; return the first
   index where `dPdG >= threshold` (finite values only). Return `None` if the curve never rises
   10% (the shape is not C-A).
