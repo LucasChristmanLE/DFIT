@@ -48,6 +48,29 @@ def _hours(t_s: np.ndarray, t0: float = 0.0) -> np.ndarray:
     return (np.asarray(t_s, dtype=float) - t0) / 3600.0
 
 
+def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: float, *,
+                               ref_x: float, half: float, color: str, gids: dict,
+                               tick_half_y: float, label: Optional[str] = None,
+                               lw: float = 1.6) -> None:
+    """Draw one gid-tagged tangent construction per plan.md step 3: a finite ``segment`` through
+    the anchor, a short vertical ``tick`` at the anchor, and a dashed ``extension`` running from
+    the segment's near end back to the reference vertical ``ref_x`` (the shut-in line for the
+    literal-ISIP construction, G=0 for the effective-ISIP construction) -- the ISIP marker sits
+    where the extension crosses ``ref_x``. ``gids`` maps "segment"/"tick"/"extension" to the exact
+    gid string each piece is drawn with, matched by ``picks.AnchorLineController``.
+    """
+    x0, x1 = anchor_x - half, anchor_x + half
+    xs = np.array([x0, x1])
+    ys = anchor_y + slope * (xs - anchor_x)
+    ax.plot(xs, ys, color=color, lw=lw, label=label, gid=gids["segment"])
+    ax.plot([anchor_x, anchor_x], [anchor_y - tick_half_y, anchor_y + tick_half_y],
+            color=color, lw=lw, gid=gids["tick"])
+    near_x = x0 if abs(x0 - ref_x) <= abs(x1 - ref_x) else x1
+    ext_x = np.array([ref_x, near_x])
+    ext_y = anchor_y + slope * (ext_x - anchor_x)
+    ax.plot(ext_x, ext_y, color=color, lw=max(lw - 0.3, 1.0), ls="--", gid=gids["extension"])
+
+
 # --------------------------------------------------------------------------------------------------
 def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers."""
@@ -118,10 +141,18 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults,
 
     tg = state.isip_tangent
     if tg is not None:
-        # tangent lives on a seconds abscissa; draw over the zoom window
-        x_s = np.array([res.t_shutin_s, tg.anchor_x + 8 * 60])
-        y = tg.anchor_y + tg.slope * (x_s - tg.anchor_x)
-        ax.plot((x_s - res.t_shutin_s) / 60.0, y, color="tab:purple", lw=1.4, label="ISIP tangent")
+        # tg lives on the seconds-since-file-start / psi-per-second convention td.t_s uses; this
+        # axes plots minutes-from-shut-in, so convert before drawing -- ui.py's controller wiring
+        # converts the same way (see _isip_pick_in_minutes/_isip_minutes_to_seconds).
+        anchor_x_min = (tg.anchor_x - res.t_shutin_s) / 60.0
+        slope_per_min = tg.slope * 60.0
+        y_span = float(np.nanmax(xp) - np.nanmin(xp)) if xp.size else max(abs(tg.anchor_y), 1.0)
+        _draw_tangent_construction(
+            ax, anchor_x_min, tg.anchor_y, slope_per_min, ref_x=0.0, half=3.0,
+            color="tab:purple",
+            gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
+                  "extension": "isip_tangent_extension"},
+            tick_half_y=0.04 * y_span, label="ISIP tangent")
         ax.plot(0.0, res.literal_isip, "o", color="tab:purple")
     if res.literal_isip is not None:
         ax.set_title(f"Literal ISIP = {res.literal_isip:.0f} psi", fontsize=10)
@@ -156,12 +187,19 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
 
     if state.eff_isip_line is not None and res.effective_isip is not None:
         ln = state.eff_isip_line
-        gg = np.array([0.0, ln.anchor_x])
-        yy = ln.anchor_y + ln.slope * (gg - ln.anchor_x)
-        ax.plot(gg, yy, color="tab:green", lw=1.3, ls="--", label="effective-ISIP line")
+        g_span = float(np.nanmax(dg.G) - np.nanmin(dg.G)) if len(dg.G) else 1.0
+        y_span = (float(np.nanmax(rs.p) - np.nanmin(rs.p)) if len(rs.p)
+                 else max(abs(ln.anchor_y), 1.0))
+        _draw_tangent_construction(
+            ax, ln.anchor_x, ln.anchor_y, ln.slope, ref_x=0.0, half=max(0.06 * g_span, 1e-6),
+            color="tab:green",
+            gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
+                  "extension": "eff_isip_extension"},
+            tick_half_y=0.04 * y_span, label="effective-ISIP line")
         ax.plot(0.0, res.effective_isip, "o", color="tab:green")
     if state.contact_G is not None and res.contact_pressure is not None:
-        ax.plot(state.contact_G, res.contact_pressure, "s", color="black", ms=7, label="contact")
+        ax.plot(state.contact_G, res.contact_pressure, "s", color="black", ms=7, label="contact",
+               gid="contact_point")
 
     title = "G-function"
     if res.effective_isip is not None:
@@ -174,31 +212,44 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 6: G*dP/dG vs G with the through-origin line and the closure departure point."""
+    """Step 6: BHP and G*dP/dG vs G-time -- mirrors ``render_gfunction``'s twinx layout (BHP on
+    the primary/left axis, G*dP/dG on the twin/right). The through-origin line and the closure
+    departure point are picked on the G*dP/dG curve, so they live on the twin axis."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Tangent method -- need a falloff", fontsize=10)
         return ViewDefaults()
     dg = res.diagnostics
-    ax.plot(dg.G, dg.GdPdG, color="tab:red", lw=1.0, marker=".", ms=3, label="G*dP/dG")
+    rs = res.resampled
+    ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
     ax.set_xlabel("G-time")
-    ax.set_ylabel("G*dP/dG")
+    ax.set_ylabel("BHP (psi)")
     ax.grid(True, alpha=0.3)
 
+    ax2 = ax.twinx()
+    ax2.plot(dg.G, dg.GdPdG, color="tab:red", lw=1.0, marker=".", ms=3, label="G*dP/dG")
+    ax2.set_ylabel("G*dP/dG", color="tab:red")
+    ax2.tick_params(axis="y", labelcolor="tab:red")
+    y2lim = None
+    finite = np.isfinite(dg.GdPdG)
+    if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
+        hi = np.percentile(dg.GdPdG[finite], 95)
+        y2lim = (0, max(hi * 1.5, 1.0))
+
     if state.closure_slope is not None:
-        gg = np.array([0.0, dg.G.max()])
-        ax.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
-                label="through-origin")
+        gg = np.array([0.0, float(dg.G.max())])
+        ax2.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
+                label="through-origin", gid="closure_line_segment")
     if state.closure_G is not None:
         yv = float(np.interp(state.closure_G, dg.G, dg.GdPdG))
-        ax.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure")
+        ax2.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
+                gid="closure_point")
     title = "Tangent method"
     if res.shmin_tangent is not None:
         title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
-    # Layout/twinx handling for this step is reworked in a later task; no view opinion yet.
-    return ViewDefaults()
+    return ViewDefaults(y2lim=y2lim)
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:

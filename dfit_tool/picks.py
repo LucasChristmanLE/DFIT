@@ -96,26 +96,6 @@ class _CaptureGate:
 # --------------------------------------------------------------------------------------------------
 # generic controllers
 # --------------------------------------------------------------------------------------------------
-class ClickController:
-    """Forwards left/right clicks inside a target Axes as (xdata, ydata, button)."""
-
-    def __init__(self, canvas, ax, on_click: Callable[[float, float, int], None]):
-        self.canvas = canvas
-        self.ax = ax
-        self.on_click = on_click
-        self._cid = canvas.mpl_connect("button_press_event", self._handle)
-
-    def _handle(self, event):
-        if event.inaxes is not self.ax or event.xdata is None:
-            return
-        if event.button not in (1, 3):  # left / right
-            return
-        self.on_click(event.xdata, event.ydata, event.button)
-
-    def disconnect(self):
-        self.canvas.mpl_disconnect(self._cid)
-
-
 class SpanController:
     """Horizontal drag-select on a target Axes; forwards (xmin, xmax)."""
 
@@ -540,51 +520,6 @@ def _tangent_from_index(x_arr: np.ndarray, y_arr: np.ndarray, idx: int,
 # --------------------------------------------------------------------------------------------------
 # step pick handlers  (mutate PickState in place)
 # --------------------------------------------------------------------------------------------------
-def handle_isip_click(state: PickState, td: TestData, res: DerivedResults,
-                      x_min: float, button: int) -> None:
-    """Deprecated: superseded by commit_* controllers; removed when ui.py is rewired (Task 4).
-
-    Set the literal-ISIP tangent: anchor at the nearest BHP sample, slope from a local fit."""
-    if res.t_shutin_s is None or res.bhp_all is None:
-        return
-    t_target = res.t_shutin_s + x_min * 60.0
-    idx = _nearest(td.t_s, t_target)
-    slope = _local_slope(td.t_s, res.bhp_all, idx, half=30)  # psi/s over ~1 min of 1 Hz data
-    state.isip_tangent = TangentPick(anchor_x=float(td.t_s[idx]),
-                                     anchor_y=float(res.bhp_all[idx]), slope=slope)
-
-
-def handle_gfunction_click(state: PickState, res: DerivedResults,
-                           x_G: float, button: int) -> None:
-    """Deprecated: superseded by commit_* controllers; removed when ui.py is rewired (Task 4).
-
-    Left-click sets the effective-ISIP line (anchor + local P-vs-G slope); right-click contact."""
-    if res.diagnostics is None:
-        return
-    G = res.diagnostics.G
-    p = res.resampled.p
-    j = _nearest(G, x_G)
-    if button == 1:
-        slope = _local_slope(G, p, j, half=4)
-        state.eff_isip_line = TangentPick(anchor_x=float(G[j]), anchor_y=float(p[j]), slope=slope)
-    else:
-        state.contact_G = float(G[j])
-
-
-def handle_tangent_click(state: PickState, res: DerivedResults, x_G: float, button: int) -> None:
-    """Deprecated: superseded by commit_* controllers; removed when ui.py is rewired (Task 4).
-
-    Set the tangent-method closure (departure) point; refresh the through-origin slope."""
-    if res.diagnostics is None:
-        return
-    dg = res.diagnostics
-    j = _nearest(dg.G, x_G)
-    state.closure_G = float(dg.G[j])
-    if state.closure_slope is None:
-        slope, _ = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
-        state.closure_slope = slope
-
-
 def handle_loglog_span(state: PickState, lo: float, hi: float) -> None:
     state.loglog_window = (float(lo), float(hi))
 

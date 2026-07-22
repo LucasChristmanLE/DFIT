@@ -22,7 +22,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import io_load, picks, plots, sliders
-from .model import PickState, compute_all
+from .model import PickState, TangentPick, compute_all
 from .plots import ViewDefaults
 
 _SLIDER_GID = "slider"
@@ -62,6 +62,27 @@ def _resolve_view(stored: Optional[ViewState], defaults: ViewDefaults,
         ylim=defaults.ylim if defaults.ylim is not None else full_y,
         y2lim=defaults.y2lim if defaults.y2lim is not None else full_y2,
     )
+
+
+def _isip_pick_in_minutes(pick: Optional[TangentPick],
+                          t_shutin_s: float) -> Optional[TangentPick]:
+    """Convert the stored literal-ISIP tangent -- ``anchor_x`` in seconds-since-file-start
+    (``td.t_s`` scale), ``slope`` in psi/s -- into the minutes-from-shut-in coordinates
+    ``plots.render_isip`` actually plots, for the ``AnchorLineController`` wired to that Axes.
+    Inverse: ``_isip_minutes_to_seconds``."""
+    if pick is None:
+        return None
+    return TangentPick(anchor_x=(pick.anchor_x - t_shutin_s) / 60.0, anchor_y=pick.anchor_y,
+                       slope=pick.slope * 60.0)
+
+
+def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
+                             t_shutin_s: float) -> tuple[float, float]:
+    """Inverse of ``_isip_pick_in_minutes`` for the ``(anchor_x, slope)`` an
+    ``AnchorLineController`` wired to the ISIP Axes reports on release -- back to the
+    seconds-since-file-start / psi-per-second convention ``picks.commit_isip_tangent`` and
+    ``state.isip_tangent`` use. ``anchor_y`` needs no conversion (BHP psi on both axes)."""
+    return anchor_x_min * 60.0 + t_shutin_s, slope_per_min / 60.0
 
 
 class DfitApp:
@@ -384,23 +405,85 @@ class DfitApp:
             self.hint_lbl.config(
                 text="Drag the injection-start and shut-in lines to adjust the window.")
         elif step == "isip":
-            def on_click(x, y, b):
-                picks.handle_isip_click(self.state, self.td, self.res, x, b)
-                self.refresh()
-            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
-            self.hint_lbl.config(text="Click on the decline to place the ISIP tangent anchor.")
+            res = self.res
+            if res.bhp_all is not None and res.t_shutin_s is not None:
+                t_min = (self.td.t_s - res.t_shutin_s) / 60.0
+                gate = picks._CaptureGate()
+
+                def get_pick():
+                    return _isip_pick_in_minutes(self.state.isip_tangent, res.t_shutin_s)
+
+                def commit(kind, anchor_x, anchor_y, slope):
+                    sec_x, sec_slope = _isip_minutes_to_seconds(anchor_x, slope, res.t_shutin_s)
+                    picks.commit_isip_tangent(self.state, self.td, res, kind, sec_x, anchor_y,
+                                              sec_slope)
+                    self.refresh()
+
+                def readout(kind, anchor_x, anchor_y, slope):
+                    isip = anchor_y - slope * anchor_x  # value at x=0 -- shut-in on this axes
+                    return f"ISIP ≈ {isip:.0f} psi"
+
+                self._controllers.append(picks.AnchorLineController(
+                    self.canvas, self.ax,
+                    gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
+                          "extension": "isip_tangent_extension"},
+                    get_pick=get_pick, commit_fn=commit, curve=(t_min, res.bhp_all),
+                    anchor_half=30, readout_fn=readout, gate=gate))
+            self.hint_lbl.config(
+                text="Drag the anchor along the curve, the body to pan, or an end to rotate "
+                     "the ISIP tangent.")
         elif step == "gfunction":
-            def on_click(x, y, b):
-                picks.handle_gfunction_click(self.state, self.res, x, b)
-                self.refresh()
-            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
-            self.hint_lbl.config(text="Left-click = effective-ISIP line, right-click = contact.")
+            res = self.res
+            if res.diagnostics is not None and res.resampled is not None:
+                G, p = res.diagnostics.G, res.resampled.p
+                gate = picks._CaptureGate()
+
+                def commit_line(kind, anchor_x, anchor_y, slope):
+                    picks.commit_eff_isip_line(self.state, res, kind, anchor_x, anchor_y, slope)
+                    self.refresh()
+
+                def commit_point(x):
+                    picks.commit_contact_point(self.state, x)
+                    self.refresh()
+
+                self._controllers.append(picks.AnchorLineController(
+                    self.canvas, self.ax,
+                    gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
+                          "extension": "eff_isip_extension"},
+                    get_pick=lambda: self.state.eff_isip_line, commit_fn=commit_line,
+                    curve=(G, p), gate=gate))
+                self._controllers.append(picks.DraggablePointController(
+                    self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
+                    gate=gate))
+            self.hint_lbl.config(text="Drag the effective-ISIP line or the contact marker.")
         elif step == "tangent":
-            def on_click(x, y, b):
-                picks.handle_tangent_click(self.state, self.res, x, b)
-                self.refresh()
-            self._controllers.append(picks.ClickController(self.canvas, self.ax, on_click))
-            self.hint_lbl.config(text="Click the departure from the through-origin line = closure.")
+            res = self.res
+            ax2 = self._twin_axes()
+            if res.diagnostics is not None and ax2 is not None:
+                dg = res.diagnostics
+                gate = picks._CaptureGate()
+
+                def get_closure_pick():
+                    if self.state.closure_slope is None:
+                        return None
+                    return TangentPick(anchor_x=0.0, anchor_y=0.0, slope=self.state.closure_slope)
+
+                def commit_line(kind, anchor_x, anchor_y, slope):
+                    picks.commit_closure_line(self.state, res, kind, anchor_x, anchor_y, slope)
+                    self.refresh()
+
+                def commit_point(x):
+                    picks.commit_closure_point(self.state, x)
+                    self.refresh()
+
+                self._controllers.append(picks.AnchorLineController(
+                    self.canvas, ax2, gids={"segment": "closure_line_segment"},
+                    get_pick=get_closure_pick, commit_fn=commit_line, curve=None,
+                    allow_anchor=False, allow_body=False, gate=gate))
+                self._controllers.append(picks.DraggablePointController(
+                    self.canvas, ax2, "closure_point", dg.G, dg.GdPdG, commit_fn=commit_point,
+                    gate=gate))
+            self.hint_lbl.config(text="Rotate the through-origin line; drag the closure marker.")
         elif step == "loglog":
             def on_span(lo, hi):
                 picks.handle_loglog_span(self.state, lo, hi)
