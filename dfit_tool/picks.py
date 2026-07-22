@@ -679,12 +679,14 @@ def commit_closure_line(state: PickState, res: DerivedResults,
 
 def commit_min_dpdg_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the min-dP/dG pick (G-function step, dP/dG twin axis).
-    The effective-ISIP tangent is derived from this in model.compute_all, not stored here."""
+    A diagnostic pick only -- it does not feed the effective-ISIP tangent (that's contact_G,
+    see commit_contact_point / model.compute_all)."""
     state.min_dpdg_G = float(x)
 
 
 def commit_contact_point(state: PickState, x: float) -> None:
-    """DraggablePointController commit for the compliance-method contact pick (G-function step)."""
+    """DraggablePointController commit for the compliance-method contact pick (G-function step).
+    The effective-ISIP tangent is derived from this in model.compute_all, not stored here."""
     state.contact_G = float(x)
 
 
@@ -731,9 +733,9 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
 
 
 def seed_gfunction(state: PickState, res: DerivedResults) -> None:
-    """The min-dP/dG point (feeds the derived effective-ISIP tangent -- see
-    model.compute_all/DerivedResults.eff_isip_line), plus the compliance contact pick at the
-    dP/dG hump."""
+    """The min-dP/dG point (a diagnostic pick), plus the compliance contact pick at the dP/dG
+    hump -- the contact pick feeds the derived effective-ISIP tangent, see
+    model.compute_all/DerivedResults.eff_isip_line."""
     if state.min_dpdg_G is not None and state.contact_G is not None:
         return
     dg = res.diagnostics

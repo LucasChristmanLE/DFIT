@@ -54,8 +54,8 @@ class PickState:
     # --- step 3: literal ISIP tangent (BHP vs time-seconds axis) ---
     isip_tangent: Optional[TangentPick] = None
 
-    # --- step 5: min-dP/dG point (P vs G axis; feeds the derived effective-ISIP tangent, see
-    # DerivedResults.eff_isip_line) + compliance contact ---
+    # --- step 5: min-dP/dG point (P vs G axis; a diagnostic pick) + compliance contact (feeds
+    # the derived effective-ISIP tangent, see DerivedResults.eff_isip_line) ---
     min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
     closure_scenario: str = ""  # C-A..C-D
@@ -181,7 +181,7 @@ class DerivedResults:
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
     diagnostics: Optional[resample.Diagnostics] = field(default=None, repr=False)
 
-    # The effective-ISIP tangent (P vs G): derived from state.min_dpdg_G, not a stored pick --
+    # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line: Optional[TangentPick] = field(default=None, repr=False)
 
@@ -243,12 +243,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             if len(rs.p) < 20:
                 res.warnings.append(f"Only {len(rs.p)} resampled points; consider a smaller step")
 
-    # Effective ISIP: tangent to P-vs-G at the min-dP/dG point, extrapolated to G=0. Derived here
-    # (not a stored pick) -- the anchor is the diagnostics sample nearest state.min_dpdg_G, the
-    # slope a local fit (half=4) around it, same math the old draggable "anchor" commit used.
-    if state.min_dpdg_G is not None and res.diagnostics is not None and res.resampled is not None:
+    # Effective ISIP: tangent to P-vs-G at the contact point, extrapolated to G=0. Derived here
+    # (not a stored pick) -- the anchor is the diagnostics sample nearest state.contact_G, the
+    # slope a local fit (half=4) around it, same math the old draggable "anchor" commit used. The
+    # min-dP/dG point (state.min_dpdg_G) stays a separate diagnostic pick -- it no longer feeds
+    # this line.
+    if state.contact_G is not None and res.diagnostics is not None and res.resampled is not None:
         dg = res.diagnostics
-        idx = int(np.nanargmin(np.abs(dg.G - state.min_dpdg_G)))
+        idx = int(np.nanargmin(np.abs(dg.G - state.contact_G)))
         anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx,
                                                                   half=4)
         res.eff_isip_line = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)

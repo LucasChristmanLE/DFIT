@@ -616,8 +616,8 @@ class DfitApp:
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
             self.hint_lbl.config(
-                text="Drag the min-dP/dG marker (the effective-ISIP tangent follows it) or "
-                     "the contact marker.")
+                text="Drag the contact marker (the effective-ISIP tangent follows it) or "
+                     "the min-dP/dG marker.")
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()

@@ -8,7 +8,8 @@ Four changes:
 2. G-function: cap the default dP/dG (twin-axis) y-max at 500.
 3. G-function: add the missing tool that finds/marks the relative minimum of dP/dG.
 4. G-function: the effective-ISIP line is no longer user-editable. It is the tangent to the
-   P-vs-G curve at the min-dP/dG point (plan.md scenario table: "line from min-dP/dG point").
+   P-vs-G curve at the contact point (correction from the initial min-dP/dG-anchored design below
+   -- plan.md's scenario table phrasing "line from min-dP/dG point" is superseded by this).
 
 ## 1. Overview x-max clamp
 
@@ -48,17 +49,19 @@ New pick on the G-function step, following the app's seed-then-drag idiom:
 - **UI**: a `DraggablePointController` on the twin axis with curve `(G, dPdG)` and gid
   `"min_dpdg_point"`, committing via new `picks.commit_min_dpdg_point(state, x)` →
   `state.min_dpdg_G = float(x)` then refresh. Shares the step's `_CaptureGate` with the contact
-  controller. Hint text: "Drag the min-dP/dG marker (the effective-ISIP tangent follows it) or
-  the contact marker."
+  controller. Hint text: "Drag the contact marker (the effective-ISIP tangent follows it) or
+  the min-dP/dG marker."
 
 ## 4. Effective-ISIP tangent: derived, not editable
 
 The effective-ISIP line stops being a stored, draggable pick and becomes a value derived from the
-min-dP/dG point.
+contact point (the compliance-method Shmin pick) -- not the min-dP/dG point. The min-dP/dG point
+stays exactly as built in §3: a separate, user-draggable diagnostic pick that does not feed this
+line.
 
 - **Model**: remove `PickState.eff_isip_line`. Add `DerivedResults.eff_isip_line:
   Optional[TangentPick] = None` (derived; not serialized). In `compute_all`, when
-  `state.min_dpdg_G` is set and diagnostics/resampled exist: `idx = nearest(G, min_dpdg_G)`,
+  `state.contact_G` is set and diagnostics/resampled exist: `idx = nearest(G, contact_G)`,
   tangent from a local fit with `half=4` (same math the old "anchor" commit used) →
   `res.eff_isip_line`, and `res.effective_isip = interpret.effective_isip(anchor, slope)`.
 - **Helper placement**: move the tangent-at-index math (`_local_slope` + `_tangent_from_index`)
@@ -95,8 +98,9 @@ New coverage:
   smaller default.
 - `suggest_min_dpdg_index`: picks an interior relative min over a smaller global endpoint min;
   falls back to masked argmin on monotonic data.
-- `commit_min_dpdg_point` + `compute_all`: setting `min_dpdg_G` yields `res.eff_isip_line`
-  anchored at the nearest sample and a finite `res.effective_isip`.
+- `commit_contact_point` + `compute_all`: setting `contact_G` yields `res.eff_isip_line` anchored
+  at the nearest sample and a finite `res.effective_isip`; setting `min_dpdg_G` alone (no
+  `contact_G`) yields no `res.eff_isip_line`.
 - Migration: JSON containing an old `eff_isip_line` dict loads with `min_dpdg_G ==` its
   `anchor_x` and no error.
 - Render: gfunction axes contain the `min_dpdg_point` gid on the twin axis and the eff_isip
