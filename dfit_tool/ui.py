@@ -22,7 +22,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import io_load, picks, plots, sliders
-from .model import PickState, TangentPick, compute_all
+from .model import PickState, TangentPick, compute_all, infer_step_status
 from .plots import ViewDefaults
 
 _SLIDER_GID = "slider"
@@ -38,6 +38,62 @@ STEPS = [
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid"]
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
                          "PC-D mixed", "PC-E none", "PC-F none"]
+
+# The 13 result-panel rows, in display order -- module level (not just a literal inside
+# _build_body) so FIELD_STEP below and tests can both refer to the same list.
+PANEL_FIELDS = [
+    "te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP", "effective ISIP",
+    "contact P", "Shmin compliance", "Shmin tangent", "closure P",
+    "net (compliance)", "net (tangent)", "delta closure", "pore pressure",
+]
+
+# Which step "owns" each panel field -- _update_panel shows "-" for a field whose step is still
+# not_visited, even if compute_all already produced a value for it (e.g. picks.seed_defaults ran
+# ahead of the user actually visiting that step).
+FIELD_STEP = {
+    "te (min)": "overview",
+    "Vinj (bbl)": "overview",
+    "qmax (bpm)": "overview",
+    "literal ISIP": "isip",
+    "effective ISIP": "gfunction",
+    "contact P": "gfunction",
+    "Shmin compliance": "gfunction",
+    "net (compliance)": "gfunction",
+    "Shmin tangent": "tangent",
+    "closure P": "tangent",
+    "net (tangent)": "tangent",
+    "delta closure": "tangent",
+    "pore pressure": "porepressure",
+}
+
+
+def step_index(key: str) -> int:
+    """Position of ``key`` in ``STEPS``."""
+    return next(i for i, (k, _) in enumerate(STEPS) if k == key)
+
+
+def next_step(key: str) -> str:
+    """The step after ``key``, or ``key`` itself if it is already the last one."""
+    i = step_index(key)
+    return STEPS[min(i + 1, len(STEPS) - 1)][0]
+
+
+def prev_step(key: str) -> str:
+    """The step before ``key``, or ``key`` itself if it is already the first one."""
+    i = step_index(key)
+    return STEPS[max(i - 1, 0)][0]
+
+
+def first_not_visited_step(step_status: dict[str, str]) -> str:
+    """Where ``_load_picks`` should land after loading a file: the first (in ``STEPS`` order)
+    step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
+    left off. If every step already has some status -- an old file whose picks cover the whole
+    workflow -- there is no natural "resume point", so the simplest sensible fallback is the
+    first step, "overview"."""
+    for key, _ in STEPS:
+        if step_status.get(key, "not_visited") == "not_visited":
+            return key
+    return "overview"
 
 
 @dataclass
@@ -169,36 +225,44 @@ class DfitApp:
         panel.pack_propagate(False)
         ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
-        for key in ["te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP", "effective ISIP",
-                    "contact P", "Shmin compliance", "Shmin tangent", "closure P",
-                    "net (compliance)", "net (tangent)", "delta closure", "pore pressure"]:
+        for key in PANEL_FIELDS:
             row = ttk.Frame(panel); row.pack(fill="x")
             ttk.Label(row, text=key, width=16).pack(side="left")
             v = ttk.Label(row, text="-", width=14, anchor="e"); v.pack(side="right")
             self.value_lbls[key] = v
 
         ttk.Separator(panel).pack(fill="x", pady=6)
-        ttk.Label(panel, text="Closure scenario").pack(anchor="w")
+
+        # Closure-scenario and postclosure/pp-axis widgets are step-aware: only relevant once the
+        # user has reached the step that produces the pick they annotate. Each cluster lives in
+        # its own frame so _update_panel_visibility can pack/pack_forget it as a unit without
+        # disturbing anything else in the panel. Neither frame is packed here -- refresh() ->
+        # _update_panel_visibility() does that, always relative to sep_before_notes so re-showing
+        # never reorders the panel.
+        self.frm_cscen = ttk.Frame(panel)
+        ttk.Label(self.frm_cscen, text="Closure scenario").pack(anchor="w")
         self.var_cscen = tk.StringVar(value="")
-        self.cmb_cscen = ttk.Combobox(panel, textvariable=self.var_cscen,
+        self.cmb_cscen = ttk.Combobox(self.frm_cscen, textvariable=self.var_cscen,
                                       values=CLOSURE_SCENARIOS, state="readonly")
         self.cmb_cscen.pack(fill="x")
         self.cmb_cscen.bind("<<ComboboxSelected>>", lambda e: self._on_scenario())
 
-        ttk.Label(panel, text="Postclosure scenario").pack(anchor="w", pady=(6, 0))
+        self.frm_pcscen = ttk.Frame(panel)
+        ttk.Label(self.frm_pcscen, text="Postclosure scenario").pack(anchor="w")
         self.var_pcscen = tk.StringVar(value="")
-        self.cmb_pcscen = ttk.Combobox(panel, textvariable=self.var_pcscen,
+        self.cmb_pcscen = ttk.Combobox(self.frm_pcscen, textvariable=self.var_pcscen,
                                        values=POSTCLOSURE_SCENARIOS, state="readonly")
         self.cmb_pcscen.pack(fill="x")
         self.cmb_pcscen.bind("<<ComboboxSelected>>", lambda e: self._on_scenario())
 
-        ttk.Label(panel, text="Pore-pressure axis").pack(anchor="w", pady=(6, 0))
+        ttk.Label(self.frm_pcscen, text="Pore-pressure axis").pack(anchor="w", pady=(6, 0))
         self.var_ppaxis = tk.StringVar(value="tm12")
         for txt, val in [("t^(-1/2)", "tm12"), ("t^(-1)", "tm1")]:
-            ttk.Radiobutton(panel, text=txt, variable=self.var_ppaxis, value=val,
+            ttk.Radiobutton(self.frm_pcscen, text=txt, variable=self.var_ppaxis, value=val,
                             command=self._on_scenario).pack(anchor="w")
 
-        ttk.Separator(panel).pack(fill="x", pady=6)
+        self.sep_before_notes = ttk.Separator(panel)
+        self.sep_before_notes.pack(fill="x", pady=6)
         ttk.Label(panel, text="Notes").pack(anchor="w")
         self.txt_notes = tk.Text(panel, height=5, width=36)
         self.txt_notes.pack(fill="x")
@@ -208,10 +272,23 @@ class DfitApp:
     def _build_stepbar(self):
         bar = ttk.Frame(self.root, padding=6)
         bar.pack(side="bottom", fill="x")
+
+        # Right side: Reset view, then the warning label at the far edge -- both pre-existing,
+        # just not previously placed in the stepbar. Packed right-to-left, so pack the
+        # rightmost-visually one (warn_lbl) first.
         self.warn_lbl = ttk.Label(bar, text="", foreground="red")
         self.warn_lbl.pack(side="right")
+        ttk.Button(bar, text="Reset view", command=self._reset_view).pack(side="right", padx=4)
+
+        # Left side: < Back, the six breadcrumbs, Next >, Skip >.
+        ttk.Button(bar, text="< Back", command=self._back).pack(side="left", padx=2)
+        self.step_buttons: dict[str, ttk.Button] = {}
         for key, label in STEPS:
-            ttk.Button(bar, text=label, command=lambda k=key: self._goto(k)).pack(side="left", padx=2)
+            btn = ttk.Button(bar, text=label, command=lambda k=key: self._goto(k))
+            btn.pack(side="left", padx=2)
+            self.step_buttons[key] = btn
+        ttk.Button(bar, text="Next >", command=self._next).pack(side="left", padx=2)
+        ttk.Button(bar, text="Skip >", command=self._skip).pack(side="left", padx=2)
 
     # ---- data / config --------------------------------------------------------------------------
     def _open(self):
@@ -263,8 +340,45 @@ class DfitApp:
 
     # ---- steps / render -------------------------------------------------------------------------
     def _goto(self, step: str):
+        """Navigate to ``step``. Breadcrumb buttons for a ``not_visited`` step are disabled by
+        _update_stepbar, so reaching one here means either it was already reached, or this is
+        the programmatic first jump onto a step (initial load, or Next/Skip/Back stepping one
+        further than the user has been). First-visit seeding lives here, not in Next/Skip/Back,
+        so the seed always runs regardless of which control got the user there."""
+        if self.td is None:
+            return
+        if self.state.step_status.get(step, "not_visited") == "not_visited":
+            self._seed_step(step)
+            self.state.step_status[step] = "visited"
         self.step = step
         self.refresh()
+
+    def _seed_step(self, key: str) -> None:
+        """No-op stub. Filled in by the seed-on-entry task (Task 6): pre-populate reasonable
+        default picks for ``key`` the first time it is visited."""
+        pass
+
+    def _next(self):
+        """Mark the current step done and advance. next_step() clamps at the last step, so at
+        "porepressure" this simply re-marks it done and re-refreshes -- a no-op in terms of
+        navigation, per the brief."""
+        if self.td is None:
+            return
+        self.state.step_status[self.step] = "done"
+        self._goto(next_step(self.step))
+
+    def _skip(self):
+        """Mark the current step skipped and advance, same clamping behavior as _next()."""
+        if self.td is None:
+            return
+        self.state.step_status[self.step] = "skipped"
+        self._goto(next_step(self.step))
+
+    def _back(self):
+        """Go to the previous step. No status change -- prev_step() clamps at the first step."""
+        if self.td is None:
+            return
+        self._goto(prev_step(self.step))
 
     def refresh(self):
         if self.td is None:
@@ -293,7 +407,31 @@ class DfitApp:
         self.fig.subplots_adjust(left=0.10, right=0.84, bottom=0.16, top=0.90)
         self._attach_controllers()
         self.canvas.draw_idle()
+        self._update_stepbar()
+        self._update_panel_visibility()
         self._update_panel()
+
+    def _update_stepbar(self):
+        """Disable breadcrumb buttons for steps still ``not_visited`` (so a click is only ever
+        honored for a reached step) and highlight the current step. Bold text rather than an
+        Accent.TButton style -- that style name is theme-specific and not guaranteed to exist."""
+        style = ttk.Style()
+        style.configure("StepCurrent.TButton", font=("TkDefaultFont", 9, "bold"))
+        for key, btn in self.step_buttons.items():
+            status = self.state.step_status.get(key, "not_visited")
+            btn.state(["!disabled"] if status != "not_visited" else ["disabled"])
+            btn.configure(style="StepCurrent.TButton" if key == self.step else "TButton")
+
+    def _update_panel_visibility(self):
+        """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
+        widgets only on "loglog"/"porepressure" -- both packed relative to sep_before_notes so
+        re-showing never reorders the panel."""
+        self.frm_cscen.pack_forget()
+        self.frm_pcscen.pack_forget()
+        if self.step == "gfunction":
+            self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
+        if self.step in ("loglog", "porepressure"):
+            self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
 
     def _twin_axes(self):
         """The step's twin (secondary y) Axes if it has one, else None.
@@ -517,7 +655,9 @@ class DfitApp:
             "pore pressure": s(r.pore_pressure),
         }
         for k, v in vals.items():
-            self.value_lbls[k].config(text=v)
+            owning_step = FIELD_STEP[k]
+            visited = self.state.step_status.get(owning_step, "not_visited") != "not_visited"
+            self.value_lbls[k].config(text=v if visited else "-")
         self.warn_lbl.config(text=" | ".join(r.warnings[:2]) if r.warnings else "")
 
     # ---- persistence ----------------------------------------------------------------------------
@@ -535,6 +675,10 @@ class DfitApp:
         if not path:
             return
         self.state = PickState.from_json(path)
+        if not self.state.step_status:
+            # An old save has real picks but no breadcrumb history -- infer it so the
+            # breadcrumb doesn't present the whole workflow as unreached.
+            self.state.step_status = infer_step_status(self.state)
         # reflect into widgets
         self.var_pressure.set(self.state.pressure_col)
         self.var_rate.set(self.state.rate_col or "")
@@ -549,7 +693,10 @@ class DfitApp:
         self.var_ppaxis.set(self.state.pp_axis)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
-        self.refresh()
+        # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
+        # workflow left off; if every step already has some status, there is no natural resume
+        # point, so land on "overview" (first_not_visited_step's fallback).
+        self._goto(first_not_visited_step(self.state.step_status))
 
 
 def _to_float(s: str):
