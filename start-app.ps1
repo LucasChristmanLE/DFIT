@@ -1,12 +1,35 @@
 # Starts the DFIT Interpretation Tool with no file loaded.
 # Run:  right-click start-app.cmd > open,  OR  from a shell:  .\start-app.ps1
 
-$python = 'C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe'
+$venvDir = 'C:\Users\LucasChristman\.venvs\dfit'
+$python = "$venvDir\Scripts\python.exe"
 $projectRoot = $PSScriptRoot
 
 try {
     if (-not (Test-Path $python)) {
-        throw "Python venv not found at $python. See dfit_tool\README.md for setup."
+        Write-Host "Venv not found at $venvDir. Creating it..."
+        if (Get-Command py -ErrorAction SilentlyContinue) {
+            & py -3.14 -m venv $venvDir
+        } else {
+            & C:\Python314\python.exe -m venv $venvDir
+        }
+
+        if (-not (Test-Path $python)) {
+            throw "Failed to create venv at $venvDir (python.exe not found after venv creation)."
+        }
+    }
+
+    & $python -c "import numpy, pandas, matplotlib, scipy, openpyxl" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing required packages..."
+        & $python -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip upgrade failed with exit code $LASTEXITCODE."
+        }
+        & $python -m pip install -r "$projectRoot\requirements.txt"
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip install -r requirements.txt failed with exit code $LASTEXITCODE."
+        }
     }
 
     Set-Location $projectRoot
