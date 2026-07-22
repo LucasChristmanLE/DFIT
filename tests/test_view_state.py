@@ -59,7 +59,8 @@ def test_gfunction_y2lim_default_capped_at_500_for_spiky_dpdg():
     p = np.linspace(5000.0, 4000.0, 60)
     res = DerivedResults()
     res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
-    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, t=np.linspace(1.0, 3000.0, 60),
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
                                   p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
     fig = Figure()
     ax = fig.add_subplot(111)

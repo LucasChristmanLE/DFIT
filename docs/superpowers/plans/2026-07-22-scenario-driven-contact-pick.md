@@ -27,7 +27,7 @@
 **Interfaces:**
 - Produces: `resample.Diagnostics.d2PdG2: np.ndarray` — same length as `G`, equal to `np.gradient(dPdG, G)`. Tasks 4 and 5 consume it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_scenario_contact.py`:
 
@@ -49,12 +49,12 @@ def test_diagnostics_has_d2pdg2():
     np.testing.assert_allclose(dg.d2PdG2, np.gradient(dg.dPdG, dg.G))
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_scenario_contact.py::test_diagnostics_has_d2pdg2 -v`
 Expected: FAIL — `TypeError: Diagnostics.__init__() ... 'd2PdG2'` missing / `AttributeError: d2PdG2`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `dfit_tool/resample.py`, add to the `Diagnostics` dataclass after `GdPdG`:
 
@@ -70,13 +70,18 @@ In `diagnostics()`, after `GdPdG = G * dPdG` add:
 
 and pass `d2PdG2=d2PdG2` in the returned `Diagnostics(...)`.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `python -m pytest tests/ -q`
 Expected: all PASS (nothing else constructs `Diagnostics` positionally past `GdPdG`; the only
 direct constructor call is in `diagnostics()` itself — verify with a grep for `Diagnostics(`).
 
-- [ ] **Step 5: Commit**
+> Deviation: the grep found a second direct `Diagnostics(...)` call in
+> `tests/test_view_state.py::test_gfunction_y2lim_default_capped_at_500_for_spiky_dpdg`, which
+> broke with `TypeError: missing 1 required positional argument: 'd2PdG2'`. Added
+> `d2PdG2=np.gradient(dPdG, G)` to that call (minimal fix) so the full suite passes.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/resample.py tests/test_scenario_contact.py

@@ -85,6 +85,7 @@ class Diagnostics:
     G: np.ndarray         # G-time
     dPdG: np.ndarray      # first derivative dP/dG, positive-up
     GdPdG: np.ndarray     # superposition semilog derivative G*dP/dG, positive-up
+    d2PdG2: np.ndarray    # slope of the (positive-up) dP/dG curve: np.gradient(dPdG, G)
     # log-log falloff diagnostics vs actual shut-in time:
     t: np.ndarray         # shut-in elapsed time (> 0 only)
     p: np.ndarray         # BHP aligned with t (psi)
@@ -105,6 +106,7 @@ def diagnostics(rs: Resampled, te: float, alpha: float = 1.0) -> Diagnostics:
     # G-function derivatives (positive-up: negate because p declines as G grows).
     dPdG = -np.gradient(p, G)
     GdPdG = G * dPdG
+    d2PdG2 = np.gradient(dPdG, G) if len(G) > 1 else np.zeros_like(G)
 
     # Log-log falloff: use strictly positive shut-in times.
     pos = dt > 0
@@ -113,4 +115,4 @@ def diagnostics(rs: Resampled, te: float, alpha: float = 1.0) -> Diagnostics:
     dp = p_pos[0] - p_pos if len(p_pos) else p_pos
     tdpdt = -t * np.gradient(p_pos, t) if len(p_pos) > 1 else np.zeros_like(t)
 
-    return Diagnostics(G=G, dPdG=dPdG, GdPdG=GdPdG, t=t, p=p_pos, dp=dp, tdpdt=tdpdt)
+    return Diagnostics(G=G, dPdG=dPdG, GdPdG=GdPdG, d2PdG2=d2PdG2, t=t, p=p_pos, dp=dp, tdpdt=tdpdt)
