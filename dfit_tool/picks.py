@@ -695,6 +695,50 @@ def commit_closure_point(state: PickState, x: float) -> None:
     state.closure_G = float(x)
 
 
+def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:
+    """Re-suggest the contact pick from the just-selected closure scenario (an explicit user
+    action, so it may overwrite a previous contact pick). Pure state mutation -- no matplotlib.
+
+    Rules (URTeC-2019-123 / plan.md scenario table):
+      - C-A clear: contact = first sample right of the min-dP/dG pick where dP/dG >= 110% of
+        the value at that pick. Anchors at ``state.min_dpdg_G`` (suggesting it first if unset)
+        so a dragged min pick drives the rule.
+      - C-B adequate: contact = the dP/dG inflection (flattest point of the decline).
+      - C-C no-contact / C-D rapid: no contact pick -> Shmin(compliance) and the effective
+        ISIP become None downstream (model.compute_all).
+
+    Returns a user-facing hint string when the rule finds nothing (picks left unchanged),
+    else None. Degrades to a no-op when diagnostics aren't ready.
+    """
+    scen = state.closure_scenario
+    if not scen:
+        return None
+    if scen.startswith(("C-C", "C-D")):
+        state.contact_G = None
+        return None
+    dg = res.diagnostics
+    if dg is None or len(dg.G) < 3:
+        return None
+    if scen.startswith("C-A"):
+        if state.min_dpdg_G is None:
+            idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+            state.min_dpdg_G = float(dg.G[idx])
+        min_idx = _nearest(dg.G, state.min_dpdg_G)
+        idx = interpret.suggest_contact_clear_index(dg.dPdG, min_idx)
+        if idx is None:
+            return ("dP/dG never rises 10% above the min -- not a clear contact "
+                    "(consider C-B or C-C).")
+        state.contact_G = float(dg.G[idx])
+        return None
+    if scen.startswith("C-B"):
+        idx = interpret.suggest_contact_inflection_index(dg.G, dg.dPdG)
+        if idx is None:
+            return "No inflection found on dP/dG -- drag the contact marker manually."
+        state.contact_G = float(dg.G[idx])
+        return None
+    return None
+
+
 # --------------------------------------------------------------------------------------------------
 # per-step seeding (auto-suggestions used as starting picks)
 #

@@ -76,3 +76,80 @@ def test_inflection_rule_respects_g_min():
     G = np.linspace(0.0, 12.0, 241)
     dPdG = 300.0 - (G + (G - 0.5) ** 3 / 3.0)  # flattening at G=0.5 < g_min
     assert interpret.suggest_contact_inflection_index(G, dPdG, g_min=1.0) is None
+
+
+from dfit_tool import picks
+from dfit_tool.model import DerivedResults, PickState
+from dfit_tool.resample import Diagnostics
+
+
+def _res_with(G, dPdG):
+    z = np.zeros_like(G)
+    dg = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                     t=G, p=z, dp=z, tdpdt=z)
+    return DerivedResults(diagnostics=dg)
+
+
+def test_scenario_ca_sets_contact_right_of_min():
+    G, dPdG = _s_curve()
+    state = PickState(closure_scenario="C-A clear", contact_G=99.0)
+    hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert hint is None
+    assert state.min_dpdg_G is not None and abs(state.min_dpdg_G - 5.0) < 0.2
+    assert state.contact_G is not None and state.contact_G > state.min_dpdg_G
+    assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1
+
+
+def test_scenario_ca_uses_existing_min_pick():
+    """The rule anchors at the user's (possibly dragged) min pick, not a re-detected min."""
+    G, dPdG = _s_curve()
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=6.0)
+    picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert state.min_dpdg_G == 6.0  # untouched
+    # threshold from the value AT the pick: (50 + 1) * 1.1 = 56.1 -> (G-5)^2 >= 6.1
+    assert abs(state.contact_G - (5.0 + np.sqrt(6.1))) < 0.1
+
+
+def test_scenario_ca_hints_when_no_rise():
+    G, dPdG = _monotonic_decline()
+    state = PickState(closure_scenario="C-A clear", contact_G=3.0)
+    hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert hint is not None
+    assert state.contact_G == 3.0  # left unchanged
+
+
+def test_scenario_cb_sets_contact_at_inflection():
+    G, dPdG = _decline_with_inflection()
+    state = PickState(closure_scenario="C-B adequate")
+    hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert hint is None
+    assert abs(state.contact_G - 6.0) < 0.2
+
+
+def test_scenario_cb_hints_when_no_inflection():
+    G, dPdG = _monotonic_decline()
+    state = PickState(closure_scenario="C-B adequate", contact_G=3.0)
+    hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert hint is not None
+    assert state.contact_G == 3.0
+
+
+def test_scenario_cc_cd_clear_contact():
+    G, dPdG = _s_curve()
+    for scen in ("C-C no-contact", "C-D rapid"):
+        state = PickState(closure_scenario=scen, contact_G=7.0, min_dpdg_G=5.0)
+        assert picks.apply_closure_scenario(state, _res_with(G, dPdG)) is None
+        assert state.contact_G is None
+        assert state.min_dpdg_G == 5.0  # the diagnostic pick survives
+
+
+def test_scenario_noop_cases():
+    G, dPdG = _s_curve()
+    # empty scenario
+    state = PickState(closure_scenario="", contact_G=7.0)
+    assert picks.apply_closure_scenario(state, _res_with(G, dPdG)) is None
+    assert state.contact_G == 7.0
+    # missing diagnostics
+    state = PickState(closure_scenario="C-A clear", contact_G=7.0)
+    assert picks.apply_closure_scenario(state, DerivedResults()) is None
+    assert state.contact_G == 7.0
