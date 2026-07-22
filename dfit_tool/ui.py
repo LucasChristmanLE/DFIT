@@ -592,32 +592,32 @@ class DfitApp:
                      "the ISIP tangent.")
         elif step == "gfunction":
             res = self.res
+            ax2 = self._twin_axes()
             step_ctrls = []
-            if res.diagnostics is not None and res.resampled is not None:
-                G, p = res.diagnostics.G, res.resampled.p
+            if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
+                G, p, dPdG = res.diagnostics.G, res.resampled.p, res.diagnostics.dPdG
                 gate = picks._CaptureGate()
 
-                def commit_line(kind, anchor_x, anchor_y, slope):
-                    picks.commit_eff_isip_line(self.state, res, kind, anchor_x, anchor_y, slope)
+                def commit_min_dpdg(x):
+                    picks.commit_min_dpdg_point(self.state, x)
                     self.refresh()
 
                 def commit_point(x):
                     picks.commit_contact_point(self.state, x)
                     self.refresh()
 
-                step_ctrls.append(picks.AnchorLineController(
-                    self.canvas, self.ax,
-                    gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
-                          "extension": "eff_isip_extension"},
-                    get_pick=lambda: self.state.eff_isip_line, commit_fn=commit_line,
-                    curve=(G, p), gate=gate))
+                step_ctrls.append(picks.DraggablePointController(
+                    self.canvas, ax2, "min_dpdg_point", G, dPdG, commit_fn=commit_min_dpdg,
+                    gate=gate))
                 step_ctrls.append(picks.DraggablePointController(
                     self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
                     gate=gate))
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(text="Drag the effective-ISIP line or the contact marker.")
+            self.hint_lbl.config(
+                text="Drag the min-dP/dG marker (the effective-ISIP tangent follows it) or "
+                     "the contact marker.")
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()

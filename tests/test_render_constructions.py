@@ -34,7 +34,8 @@ def _seeded():
     picks.seed_tangent(st, res)
     res = compute_all(st, td)
     assert st.isip_tangent is not None
-    assert st.eff_isip_line is not None and st.contact_G is not None
+    assert st.min_dpdg_G is not None and st.contact_G is not None
+    assert res.eff_isip_line is not None
     assert st.closure_slope is not None and st.closure_G is not None
     return td, st, res
 
@@ -151,7 +152,7 @@ def test_render_isip_early_return_still_returns_view_defaults():
 
 
 # --------------------------------------------------------------------------------------------------
-# render_gfunction: effective-ISIP construction + contact_point gid
+# render_gfunction: effective-ISIP construction (derived) + contact_point + min_dpdg_point gids
 # --------------------------------------------------------------------------------------------------
 def test_render_gfunction_eff_isip_construction_gids_and_extension_reaches_g_zero():
     td, st, res = _seeded()
@@ -170,14 +171,32 @@ def test_render_gfunction_eff_isip_construction_gids_and_extension_reaches_g_zer
     assert contact.get_xdata()[0] == pytest.approx(st.contact_G)
 
 
+def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
+    """The min-dP/dG marker is a real gid-tagged artist on the twin (dP/dG) axis. The eff-ISIP
+    construction gids (asserted above) are still drawn from the derived res.eff_isip_line, but no
+    AnchorLineController wiring exists for them anywhere in ui.py any more -- see
+    test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate below, which asserts
+    the step's only two controllers are both DraggablePointControllers."""
+    td, st, res = _seeded()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, td, st, res)
+    ax2 = next(a for a in fig.axes if a is not ax)
+
+    marker = _gid(ax2, "min_dpdg_point")
+    assert marker.get_xdata()[0] == pytest.approx(st.min_dpdg_G)
+    assert marker.get_marker() == "v"
+    assert marker.get_color() == "tab:red"
+
+
 # --------------------------------------------------------------------------------------------------
 # twinx interaction regressions
 # --------------------------------------------------------------------------------------------------
-def test_gfunction_dpdg_twin_owns_inaxes_but_primary_axis_controller_still_hit_tests_by_pixel():
-    """The eff-ISIP AnchorLineController lives on the primary (P-vs-G) axis, but the later-created
-    dP/dG twin sits on top and owns ``event.inaxes`` over the shared region -- the same
-    twin-owns-inaxes hazard ``test_overview_rate_twin_owns_inaxes_regression`` guards for the
-    overview's start/shut-in lines. The controller must still capture via its own pixel bbox."""
+def test_gfunction_dpdg_twin_owns_inaxes_but_contact_point_controller_still_hit_tests_by_pixel():
+    """The contact-point DraggablePointController lives on the primary (P-vs-G) axis, but the
+    later-created dP/dG twin sits on top and owns ``event.inaxes`` over the shared region -- the
+    same twin-owns-inaxes hazard ``test_overview_rate_twin_owns_inaxes_regression`` guards for
+    the overview's start/shut-in lines. The controller must still capture via its own pixel bbox."""
     td, st, res = _seeded()
     fig = Figure()
     ax = fig.add_subplot(111)
@@ -186,21 +205,17 @@ def test_gfunction_dpdg_twin_owns_inaxes_but_primary_axis_controller_still_hit_t
     canvas.draw()
     ax2 = next(a for a in fig.axes if a is not ax)
 
-    seg = _gid(ax, "eff_isip_segment")
-    ax_x, ax_y = seg.get_xdata()[0], seg.get_ydata()[0]  # the anchor end of the segment
-    px, py = ax.transData.transform((ax_x, ax_y))
+    pt = _gid(ax, "contact_point")
+    px, py = ax.transData.transform((pt.get_xdata()[0], pt.get_ydata()[0]))
     ev = MouseEvent("button_press_event", canvas, px, py, button=1)
     assert ev.inaxes is ax2
     assert ev.inaxes is not ax
 
     calls = []
-    ctrl = picks.AnchorLineController(
-        canvas, ax,
-        {"segment": "eff_isip_segment", "tick": "eff_isip_tick", "extension": "eff_isip_extension"},
-        get_pick=lambda: st.eff_isip_line, commit_fn=lambda *a: calls.append(a),
-        curve=(res.diagnostics.G, res.resampled.p))
+    ctrl = picks.DraggablePointController(canvas, ax, "contact_point", res.diagnostics.G,
+                                          res.resampled.p, commit_fn=calls.append)
     ctrl._on_press(ev)
-    assert ctrl._active is not None  # captured despite inaxes pointing at the twin
+    assert ctrl._dragging is True  # captured despite inaxes pointing at the twin
 
 
 def test_tangent_closure_point_controller_on_the_twin_hit_tests_correctly():
@@ -315,17 +330,25 @@ def test_isip_wiring_no_op_when_bhp_or_shutin_missing():
     assert stub._controllers == []
 
 
-def test_gfunction_wiring_attaches_two_controllers_sharing_one_gate():
+def test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 3  # AnchorLineController + DraggablePointController + hover
-    anchor_ctrl, point_ctrl, hover_ctrl = stub._controllers
-    assert anchor_ctrl.gate is point_ctrl.gate
+    assert len(stub._controllers) == 3  # min-dP/dG point + contact point + hover
+    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    assert isinstance(min_dpdg_ctrl, picks.DraggablePointController)
+    assert isinstance(contact_ctrl, picks.DraggablePointController)
+    assert min_dpdg_ctrl.gate is contact_ctrl.gate
     assert isinstance(hover_ctrl, picks.HoverCursorController)
+    ax2 = stub._twin_axes()
+    assert min_dpdg_ctrl.ax is ax2
+    assert contact_ctrl.ax is stub.ax
 
-    point_ctrl.commit_fn(3.5)
+    contact_ctrl.commit_fn(3.5)
     assert st.contact_G == pytest.approx(3.5)
+
+    min_dpdg_ctrl.commit_fn(4.2)
+    assert st.min_dpdg_G == pytest.approx(4.2)
 
 
 def test_gfunction_wiring_no_op_when_diagnostics_missing():

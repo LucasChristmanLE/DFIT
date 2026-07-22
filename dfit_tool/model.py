@@ -54,8 +54,9 @@ class PickState:
     # --- step 3: literal ISIP tangent (BHP vs time-seconds axis) ---
     isip_tangent: Optional[TangentPick] = None
 
-    # --- step 5: effective ISIP line (P vs G axis) + compliance contact ---
-    eff_isip_line: Optional[TangentPick] = None
+    # --- step 5: min-dP/dG point (P vs G axis; feeds the derived effective-ISIP tangent, see
+    # DerivedResults.eff_isip_line) + compliance contact ---
+    min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
     closure_scenario: str = ""  # C-A..C-D
 
@@ -103,9 +104,12 @@ def _encode(state: PickState) -> dict:
 
 
 def _decode(d: dict) -> PickState:
-    for key in ("isip_tangent", "eff_isip_line"):
-        if d.get(key) is not None:
-            d[key] = TangentPick(**d[key])
+    # Migrate an old save's eff_isip_line (a stored, draggable pick on P-vs-G) to min_dpdg_G: its
+    # anchor sat on the P-vs-G curve at the same G the min-dP/dG point now lives at.
+    if d.get("min_dpdg_G") is None and isinstance(d.get("eff_isip_line"), dict):
+        d["min_dpdg_G"] = d["eff_isip_line"].get("anchor_x")
+    if d.get("isip_tangent") is not None:
+        d["isip_tangent"] = TangentPick(**d["isip_tangent"])
     for key in ("loglog_window", "pp_window"):
         if d.get(key) is not None:
             d[key] = tuple(d[key])
@@ -131,7 +135,7 @@ def infer_step_status(state: PickState) -> dict[str, str]:
         status["overview"] = "done"
     if state.isip_tangent is not None:
         status["isip"] = "done"
-    if state.eff_isip_line is not None or state.contact_G is not None:
+    if state.min_dpdg_G is not None or state.contact_G is not None:
         status["gfunction"] = "done"
     if state.closure_G is not None:
         status["tangent"] = "done"
@@ -176,6 +180,10 @@ class DerivedResults:
     rate_all: Optional[np.ndarray] = field(default=None, repr=False)
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
     diagnostics: Optional[resample.Diagnostics] = field(default=None, repr=False)
+
+    # The effective-ISIP tangent (P vs G): derived from state.min_dpdg_G, not a stored pick --
+    # see compute_all. Not serialized (DerivedResults never is).
+    eff_isip_line: Optional[TangentPick] = field(default=None, repr=False)
 
     warnings: list[str] = field(default_factory=list)
 
@@ -235,10 +243,16 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             if len(rs.p) < 20:
                 res.warnings.append(f"Only {len(rs.p)} resampled points; consider a smaller step")
 
-    # Effective ISIP (P-vs-G line to G=0)
-    if state.eff_isip_line:
-        ln = state.eff_isip_line
-        res.effective_isip = interpret.effective_isip(ln.anchor_x, ln.anchor_y, ln.slope)
+    # Effective ISIP: tangent to P-vs-G at the min-dP/dG point, extrapolated to G=0. Derived here
+    # (not a stored pick) -- the anchor is the diagnostics sample nearest state.min_dpdg_G, the
+    # slope a local fit (half=4) around it, same math the old draggable "anchor" commit used.
+    if state.min_dpdg_G is not None and res.diagnostics is not None and res.resampled is not None:
+        dg = res.diagnostics
+        idx = int(np.nanargmin(np.abs(dg.G - state.min_dpdg_G)))
+        anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx,
+                                                                  half=4)
+        res.eff_isip_line = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
+        res.effective_isip = interpret.effective_isip(anchor_x, anchor_y, slope)
 
     # Compliance contact -> Shmin
     if state.contact_G is not None and res.diagnostics is not None:

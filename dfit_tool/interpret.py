@@ -144,6 +144,25 @@ def extrapolate(anchor_x: float, anchor_y: float, slope: float, target_x: float)
     return anchor_y + slope * (target_x - anchor_x)
 
 
+def local_slope(x: np.ndarray, y: np.ndarray, idx: int, half: int = 4) -> float:
+    """Slope of a least-squares fit over the +/-``half`` neighborhood of sample ``idx``."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    lo, hi = max(0, idx - half), min(len(x), idx + half + 1)
+    if hi - lo < 2:
+        return 0.0
+    m, _ = fit_line(x[lo:hi], y[lo:hi])
+    return m
+
+
+def tangent_from_index(x_arr: np.ndarray, y_arr: np.ndarray, idx: int,
+                       half: int = 4) -> tuple[float, float, float]:
+    """The tangent line anchored at sample ``idx``: ``(anchor_x, anchor_y, slope)``, the slope
+    from a local fit of the +/-``half`` neighborhood (``local_slope``)."""
+    slope = local_slope(x_arr, y_arr, idx, half=half)
+    return float(x_arr[idx]), float(y_arr[idx]), slope
+
+
 # --------------------------------------------------------------------------------------------------
 # ISIP
 # --------------------------------------------------------------------------------------------------
@@ -192,13 +211,25 @@ def pore_pressure(x_transform: np.ndarray, P: np.ndarray) -> float:
 # auto-suggestions for interactive picks
 # --------------------------------------------------------------------------------------------------
 def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> int:
-    """Index of the minimum of dP/dG for G >= g_min (skips the early water-hammer spike)."""
+    """Index of the relative minimum of dP/dG for G >= g_min (skips the early water-hammer
+    spike): among interior samples that dip below both neighbors (``dPdG[i] < dPdG[i-1] and
+    dPdG[i] <= dPdG[i+1]``), the one with the smallest dP/dG value -- the compliance "elbow" the
+    effective-ISIP tangent should anchor at. Falls back to the masked global minimum when the
+    curve has no interior local min (e.g. a monotonic decline -- the C-C no-contact shape)."""
     G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
     mask = G >= g_min
     if not mask.any():
         mask = np.ones_like(G, dtype=bool)
-    idx_local = int(np.nanargmin(np.where(mask, dPdG, np.inf)))
-    return idx_local
+    interior = np.zeros(len(y), dtype=bool)
+    if len(y) >= 3:
+        finite3 = np.isfinite(y[:-2]) & np.isfinite(y[1:-1]) & np.isfinite(y[2:])
+        local_min = (y[1:-1] < y[:-2]) & (y[1:-1] <= y[2:])
+        interior[1:-1] = finite3 & local_min & mask[1:-1]
+    if interior.any():
+        candidates = np.where(interior)[0]
+        return int(candidates[np.argmin(y[candidates])])
+    return int(np.nanargmin(np.where(mask, y, np.inf)))
 
 
 def suggest_closure_tangent(

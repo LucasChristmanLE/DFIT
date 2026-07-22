@@ -2,9 +2,10 @@
 AnchorLineController commit_fn is called as commit_fn(kind, anchor_x, anchor_y, slope) with the
 controller's *final* geometry -- see picks.py's module docstring above the commit_* functions."""
 
+import numpy as np
 import pytest
 
-from dfit_tool import picks
+from dfit_tool import interpret, picks
 from dfit_tool.model import PickState, TangentPick, compute_all
 from tests.helpers import make_testdata, overview_state
 
@@ -19,7 +20,7 @@ def _res():
 def test_commit_isip_tangent_anchor_snaps_and_refits_ignoring_passed_y_and_slope():
     td, st, res = _res()
     idx = picks._nearest(td.t_s, res.t_shutin_s + 120.0)
-    expected_slope = picks._local_slope(td.t_s, res.bhp_all, idx, half=30)
+    expected_slope = interpret.local_slope(td.t_s, res.bhp_all, idx, half=30)
 
     state = PickState()
     picks.commit_isip_tangent(state, td, res, "anchor",
@@ -48,30 +49,30 @@ def test_commit_isip_tangent_end_sets_slope_keeps_stored_anchor():
     assert state.isip_tangent == TangentPick(anchor_x=100.0, anchor_y=200.0, slope=7.0)
 
 
-def test_commit_eff_isip_line_anchor_snaps_and_refits():
-    td, st, res = _res()
-    dg, rs = res.diagnostics, res.resampled
-    idx = picks._nearest(dg.G, float(dg.G[dg.G.size // 2]))
-    expected_slope = picks._local_slope(dg.G, rs.p, idx, half=4)
-
+def test_commit_min_dpdg_point_sets_min_dpdg_g():
     state = PickState()
-    picks.commit_eff_isip_line(state, res, "anchor",
-                               anchor_x=float(dg.G[idx]), anchor_y=-1.0, slope=-1.0)
-
-    assert state.eff_isip_line.anchor_x == pytest.approx(float(dg.G[idx]))
-    assert state.eff_isip_line.anchor_y == pytest.approx(float(rs.p[idx]))
-    assert state.eff_isip_line.slope == pytest.approx(expected_slope)
+    picks.commit_min_dpdg_point(state, 5.5)
+    assert state.min_dpdg_G == pytest.approx(5.5)
 
 
-def test_commit_eff_isip_line_body_and_end():
+def test_commit_min_dpdg_point_then_compute_all_derives_eff_isip_line_and_effective_isip():
+    """commit_min_dpdg_point only sets state.min_dpdg_G; the effective-ISIP tangent it feeds is
+    derived by compute_all (model.py), not stored -- see DerivedResults.eff_isip_line."""
     td, st, res = _res()
-    state = PickState(eff_isip_line=TangentPick(anchor_x=1.0, anchor_y=2.0, slope=3.0))
-    picks.commit_eff_isip_line(state, res, "body", anchor_x=4.0, anchor_y=5.0, slope=999.0)
-    assert state.eff_isip_line == TangentPick(anchor_x=4.0, anchor_y=5.0, slope=3.0)
+    dg = res.diagnostics
+    target_G = float(dg.G[dg.G.size // 2])
 
-    state2 = PickState(eff_isip_line=TangentPick(anchor_x=1.0, anchor_y=2.0, slope=3.0))
-    picks.commit_eff_isip_line(state2, res, "end", anchor_x=-1.0, anchor_y=-1.0, slope=6.0)
-    assert state2.eff_isip_line == TangentPick(anchor_x=1.0, anchor_y=2.0, slope=6.0)
+    picks.commit_min_dpdg_point(st, target_G)
+    res2 = compute_all(st, td)
+
+    idx = int(np.nanargmin(np.abs(dg.G - target_G)))
+    expected_slope = interpret.local_slope(dg.G, res.resampled.p, idx, half=4)
+    assert res2.eff_isip_line is not None
+    assert res2.eff_isip_line.anchor_x == pytest.approx(float(dg.G[idx]))
+    assert res2.eff_isip_line.anchor_y == pytest.approx(float(res.resampled.p[idx]))
+    assert res2.eff_isip_line.slope == pytest.approx(expected_slope)
+    assert res2.effective_isip is not None
+    assert np.isfinite(res2.effective_isip)
 
 
 def test_commit_closure_line_sets_only_slope():

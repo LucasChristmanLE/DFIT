@@ -67,7 +67,7 @@ def test_infer_step_status_marks_done_per_picks_present():
     state = PickState(
         start_idx=10, shutin_idx=20,
         isip_tangent=TangentPick(anchor_x=0.0, anchor_y=0.0, slope=1.0),
-        eff_isip_line=TangentPick(anchor_x=0.0, anchor_y=0.0, slope=1.0),
+        min_dpdg_G=5.0,
         closure_G=1.5,
         loglog_window=(1.0, 2.0),
         pp_window=(3.0, 4.0),

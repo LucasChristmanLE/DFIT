@@ -27,7 +27,7 @@ def test_seed_overview_sets_only_the_injection_window():
     assert st.shutin_idx is not None
     # nothing else on the state was touched
     assert st.isip_tangent is None
-    assert st.eff_isip_line is None
+    assert st.min_dpdg_G is None
 
 
 def test_seed_isip_sets_only_isip_tangent():
@@ -40,20 +40,20 @@ def test_seed_isip_sets_only_isip_tangent():
     assert st.isip_tangent is not None
     assert isinstance(st.isip_tangent, TangentPick)
     # nothing downstream was touched
-    assert st.eff_isip_line is None
+    assert st.min_dpdg_G is None
     assert st.closure_slope is None
 
 
-def test_seed_gfunction_sets_eff_isip_line_and_contact_g_only():
+def test_seed_gfunction_sets_min_dpdg_g_and_contact_g_only():
     td = make_testdata()
     st = overview_state(td)
     picks.seed_overview(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
-    assert st.eff_isip_line is None and st.contact_G is None
+    assert st.min_dpdg_G is None and st.contact_G is None
     picks.seed_gfunction(st, res)
-    assert st.eff_isip_line is not None
+    assert st.min_dpdg_G is not None
     assert st.contact_G is not None
     # tangent-step fields untouched
     assert st.closure_slope is None
@@ -128,7 +128,7 @@ def test_seed_gfunction_no_op_when_diagnostics_missing():
     res = compute_all(st, td)
     assert res.diagnostics is None
     picks.seed_gfunction(st, res)
-    assert st.eff_isip_line is None
+    assert st.min_dpdg_G is None
     assert st.contact_G is None
 
 
@@ -190,11 +190,10 @@ def test_seed_gfunction_non_destructive():
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
-    pre_line = TangentPick(anchor_x=1.0, anchor_y=2.0, slope=3.0)
-    st.eff_isip_line = pre_line
+    st.min_dpdg_G = 1.0
     st.contact_G = 42.0
     picks.seed_gfunction(st, res)
-    assert st.eff_isip_line is pre_line
+    assert st.min_dpdg_G == 1.0
     assert st.contact_G == 42.0
 
 

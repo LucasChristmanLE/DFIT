@@ -73,11 +73,25 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
 
 # --------------------------------------------------------------------------------------------------
 def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers."""
+    """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers.
+
+    The falloff tail can run for weeks and would otherwise dwarf the active-injection region in
+    both the autoscaled extent and the x-slider's full range, so -- following ``render_isip``'s
+    precedent of clamping the *plotted data* -- every trace is masked to the last nonzero rate +
+    15 min before decimation when a rate channel exists and pumped at all; otherwise the full
+    record is plotted, unclamped.
+    """
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
-    xt, xp = _decimate(t_h, p)
+
+    t_end_h = None
+    if res.rate_all is not None and np.any(res.rate_all > 0):
+        last_active = int(np.where(res.rate_all > 0)[0][-1])
+        t_end_h = t_h[last_active] + 0.25
+    m = (t_h <= t_end_h) if t_end_h is not None else np.ones_like(t_h, dtype=bool)
+
+    xt, xp = _decimate(t_h[m], p[m])
     press_color = "black" if res.pressure_is_bhp else "tab:red"
     ax.plot(xt, xp, color=press_color, lw=0.8,
             label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
@@ -88,7 +102,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
 
     if res.rate_all is not None:
         ax2 = ax.twinx()
-        _, xr = _decimate(t_h, res.rate_all)
+        _, xr = _decimate(t_h[m], res.rate_all[m])
         ax2.plot(xt, xr, color="tab:blue", lw=0.7, alpha=0.7)
         ax2.set_ylabel("rate (bpm)", color="tab:blue")
         ax2.tick_params(axis="y", labelcolor="tab:blue")
@@ -110,6 +124,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
         act = np.where(res.rate_all > 0.1)[0]
         if act.size:
             xlim = (max(0, t_h[act[0]] - 0.2), t_h[act[-1]] + 0.5)
+    if xlim is not None and t_end_h is not None:
+        xlim = (xlim[0], min(xlim[1], t_end_h))
 
     title = "Overview"
     if res.te_s:
@@ -185,10 +201,10 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     finite = np.isfinite(dg.dPdG)
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.dPdG[finite], 95)
-        y2lim = (0, max(hi * 1.5, 1.0))
+        y2lim = (0, min(max(hi * 1.5, 1.0), 500.0))
 
-    if state.eff_isip_line is not None and res.effective_isip is not None:
-        ln = state.eff_isip_line
+    if res.eff_isip_line is not None and res.effective_isip is not None:
+        ln = res.eff_isip_line
         g_span = float(np.nanmax(dg.G) - np.nanmin(dg.G)) if len(dg.G) else 1.0
         y_span = (float(np.nanmax(rs.p) - np.nanmin(rs.p)) if len(rs.p)
                  else max(abs(ln.anchor_y), 1.0))
@@ -199,6 +215,10 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                   "extension": "eff_isip_extension"},
             tick_half_y=0.04 * y_span, label="effective-ISIP line")
         ax.plot(0.0, res.effective_isip, "o", color="tab:green")
+    if state.min_dpdg_G is not None:
+        y = float(np.interp(state.min_dpdg_G, dg.G, dg.dPdG))
+        ax2.plot(state.min_dpdg_G, y, marker="v", color="tab:red", ms=8, label="min dP/dG",
+                gid="min_dpdg_point")
     if state.contact_G is not None and res.contact_pressure is not None:
         ax.plot(state.contact_G, res.contact_pressure, "s", color="black", ms=7, label="contact",
                gid="contact_point")

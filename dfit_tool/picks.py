@@ -86,7 +86,7 @@ def _segment_distance_px(ax, p0_data, p1_data, event) -> float:
 # --------------------------------------------------------------------------------------------------
 class _CaptureGate:
     """Per-gesture press arbiter shared by controllers whose hit zones overlap on one Axes (e.g.
-    the eff-ISIP anchor sitting near the contact marker).
+    the min-dP/dG marker sitting near the contact marker).
 
     Ordering contract: a controller calls ``try_claim(self)`` only *after* its own hit-test at
     press has already succeeded -- claiming before hit-testing would let a miss on one controller
@@ -242,7 +242,8 @@ class AnchorLineController:
     Motion (nothing is written to ``PickState`` until release; artists update live via
     ``canvas.draw_idle()``):
       - **"anchor"**: snaps to the nearest ``curve`` sample by x-pixel and refits
-        ``(anchor_x, anchor_y, slope) = _tangent_from_index(curve_x, curve_y, idx, anchor_half)``.
+        ``(anchor_x, anchor_y, slope) = interpret.tangent_from_index(curve_x, curve_y, idx,
+        anchor_half)``.
       - **"body"**: translates the anchor by the press-to-cursor *data* delta; slope unchanged.
       - **"end"**: rotates about the (unchanged) anchor: ``slope = (y - anchor_y) / (x -
         anchor_x)`` for the cursor's current data position. A press-to-cursor horizontal pixel
@@ -386,7 +387,7 @@ class AnchorLineController:
         if kind == "anchor":
             x_arr, y_arr = self.curve
             idx = _nearest_index_by_pixel(self.ax, x_arr, event)
-            ax1, ay1, slope1 = _tangent_from_index(x_arr, y_arr, idx, self.anchor_half)
+            ax1, ay1, slope1 = interpret.tangent_from_index(x_arr, y_arr, idx, self.anchor_half)
         elif kind == "body":
             cx, cy = _data_from_pixel(self.ax, event)
             px0, py0 = self._press_data
@@ -625,22 +626,6 @@ def _nearest(arr: np.ndarray, value: float) -> int:
     return int(np.nanargmin(np.abs(np.asarray(arr, dtype=float) - value)))
 
 
-def _local_slope(x: np.ndarray, y: np.ndarray, idx: int, half: int = 4) -> float:
-    lo, hi = max(0, idx - half), min(len(x), idx + half + 1)
-    if hi - lo < 2:
-        return 0.0
-    m, _ = interpret.fit_line(x[lo:hi], y[lo:hi])
-    return m
-
-
-def _tangent_from_index(x_arr: np.ndarray, y_arr: np.ndarray, idx: int,
-                        half: int = 4) -> tuple[float, float, float]:
-    """The tangent line anchored at sample ``idx``: ``(anchor_x, anchor_y, slope)``, the slope
-    from a local fit of the +/-``half`` neighborhood (``_local_slope``)."""
-    slope = _local_slope(x_arr, y_arr, idx, half=half)
-    return float(x_arr[idx]), float(y_arr[idx]), slope
-
-
 # --------------------------------------------------------------------------------------------------
 # step pick handlers  (mutate PickState in place)
 # --------------------------------------------------------------------------------------------------
@@ -668,7 +653,7 @@ def commit_isip_tangent(state: PickState, td: TestData, res: DerivedResults,
     """Commit the literal-ISIP tangent (BHP vs time-seconds) after an AnchorLineController drag."""
     if kind == "anchor":
         idx = _nearest(td.t_s, anchor_x)
-        ax_, ay_, sl_ = _tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
+        ax_, ay_, sl_ = interpret.tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
         state.isip_tangent = TangentPick(anchor_x=ax_, anchor_y=ay_, slope=sl_)
     elif kind == "body":
         prev = state.isip_tangent
@@ -682,28 +667,6 @@ def commit_isip_tangent(state: PickState, td: TestData, res: DerivedResults,
                                          slope=float(slope))
 
 
-def commit_eff_isip_line(state: PickState, res: DerivedResults,
-                         kind: str, anchor_x: float, anchor_y: float, slope: float) -> None:
-    """Commit the effective-ISIP line (BHP vs G) after an AnchorLineController drag."""
-    if res.diagnostics is None or res.resampled is None:
-        return
-    G, p = res.diagnostics.G, res.resampled.p
-    if kind == "anchor":
-        idx = _nearest(G, anchor_x)
-        ax_, ay_, sl_ = _tangent_from_index(G, p, idx, half=4)
-        state.eff_isip_line = TangentPick(anchor_x=ax_, anchor_y=ay_, slope=sl_)
-    elif kind == "body":
-        prev = state.eff_isip_line
-        sl_ = prev.slope if prev is not None else float(slope)
-        state.eff_isip_line = TangentPick(anchor_x=float(anchor_x), anchor_y=float(anchor_y),
-                                          slope=sl_)
-    elif kind == "end":
-        prev = state.eff_isip_line
-        ax_, ay_ = (prev.anchor_x, prev.anchor_y) if prev is not None else (anchor_x, anchor_y)
-        state.eff_isip_line = TangentPick(anchor_x=float(ax_), anchor_y=float(ay_),
-                                          slope=float(slope))
-
-
 def commit_closure_line(state: PickState, res: DerivedResults,
                         kind: str, anchor_x: float, anchor_y: float, slope: float) -> None:
     """Commit the through-origin tangent-closure line (tangent-method step). The controller for
@@ -712,6 +675,12 @@ def commit_closure_line(state: PickState, res: DerivedResults,
     the origin. ``res``/``kind``/``anchor_x``/``anchor_y`` are accepted for signature symmetry
     with the other AnchorLineController commit functions but are not needed here."""
     state.closure_slope = float(slope)
+
+
+def commit_min_dpdg_point(state: PickState, x: float) -> None:
+    """DraggablePointController commit for the min-dP/dG pick (G-function step, dP/dG twin axis).
+    The effective-ISIP tangent is derived from this in model.compute_all, not stored here."""
+    state.min_dpdg_G = float(x)
 
 
 def commit_contact_point(state: PickState, x: float) -> None:
@@ -757,24 +726,24 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
     if res.t_shutin_s is None or res.bhp_all is None:
         return
     idx = _nearest(td.t_s, res.t_shutin_s + 60.0)
-    anchor_x, anchor_y, slope = _tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
+    anchor_x, anchor_y, slope = interpret.tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
     state.isip_tangent = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
 
 
 def seed_gfunction(state: PickState, res: DerivedResults) -> None:
-    """Effective-ISIP line anchored where the P-vs-G curve straightens (past the dP/dG hump
-    peak), plus the compliance contact pick at the hump itself."""
-    if state.eff_isip_line is not None and state.contact_G is not None:
+    """The min-dP/dG point (feeds the derived effective-ISIP tangent -- see
+    model.compute_all/DerivedResults.eff_isip_line), plus the compliance contact pick at the
+    dP/dG hump."""
+    if state.min_dpdg_G is not None and state.contact_G is not None:
         return
     dg = res.diagnostics
     if dg is None or res.resampled is None or len(dg.G) <= 5:
         return
-    hump = int(np.nanargmax(dg.dPdG))
-    anchor = min(hump + max(2, len(dg.G) // 10), len(dg.G) - 2)
-    anchor_x, anchor_y, slope = _tangent_from_index(dg.G, res.resampled.p, anchor, half=4)
-    if state.eff_isip_line is None:
-        state.eff_isip_line = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
+    if state.min_dpdg_G is None:
+        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        state.min_dpdg_G = float(dg.G[idx])
     if state.contact_G is None:
+        hump = int(np.nanargmax(dg.dPdG))
         state.contact_G = float(dg.G[hump])
 
 

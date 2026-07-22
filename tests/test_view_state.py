@@ -5,11 +5,12 @@ import numpy as np
 import pytest
 from matplotlib.figure import Figure
 
-from dfit_tool.model import compute_all
+from dfit_tool.model import DerivedResults, PickState, compute_all
+from dfit_tool.resample import Diagnostics, Resampled
 from dfit_tool import plots
 from dfit_tool.plots import ViewDefaults
 from dfit_tool.ui import ViewState, _resolve_view
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import PRESSURE_COL, make_testdata, overview_state
 
 
 def _render(renderer, td, state, res):
@@ -36,7 +37,7 @@ def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
     dg = res.diagnostics
     finite = np.isfinite(dg.dPdG)
     hi = np.percentile(dg.dPdG[finite], 95)
-    expected_clip = (0, max(hi * 1.5, 1.0))
+    expected_clip = (0, min(max(hi * 1.5, 1.0), 500.0))
 
     assert defaults.y2lim == pytest.approx(expected_clip)
 
@@ -47,6 +48,23 @@ def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
     # ViewDefaults carries.
     assert actual != pytest.approx(expected_clip)
     assert actual[1] >= float(np.nanmax(dg.dPdG[finite]))
+
+
+def test_gfunction_y2lim_default_capped_at_500_for_spiky_dpdg():
+    """The 95th-pct*1.5 default would otherwise scale to whatever the early water-hammer spike
+    demands; a hard 500 cap keeps the default view usable regardless."""
+    G = np.linspace(0.1, 20.0, 60)
+    dPdG = np.full(60, 5.0)
+    dPdG[:3] = 20000.0  # water-hammer spike
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, PickState(), res)
+    assert defaults.y2lim[1] == pytest.approx(500.0)
 
 
 def test_porepressure_does_not_force_axes_xlim_to_zero():
@@ -71,7 +89,10 @@ def test_overview_returns_injection_window_instead_of_setting_it():
 
     t_h = td.t_s / 3600.0
     span_h = max(t_h[state.shutin_idx] - t_h[state.start_idx], 0.25)
-    expected = (t_h[state.start_idx] - 0.5 * span_h, t_h[state.shutin_idx] + 2.0 * span_h)
+    last_active = int(np.where(res.rate_all > 0)[0][-1])
+    t_end_h = t_h[last_active] + 0.25
+    expected = (t_h[state.start_idx] - 0.5 * span_h,
+               min(t_h[state.shutin_idx] + 2.0 * span_h, t_end_h))
 
     assert defaults.xlim == pytest.approx(expected)
     # The Axes itself is left autoscaled to the full file extent (a few hundred seconds here),
@@ -79,6 +100,39 @@ def test_overview_returns_injection_window_instead_of_setting_it():
     actual = ax.get_xlim()
     assert actual != pytest.approx(expected)
     assert actual[1] < float(t_h[-1]) + 0.05
+
+
+def test_overview_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
+    # A long falloff tail (dt=1s, n=3000 -> ~50 min) so the +15-min-past-last-rate clamp binds.
+    td = make_testdata(n=3000, dt=1.0)
+    state = overview_state(td)
+    res = compute_all(state, td)
+    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+
+    t_h = td.t_s / 3600.0
+    last_active = int(np.where(res.rate_all > 0)[0][-1])
+    t_end_h = t_h[last_active] + 0.25
+    assert t_end_h < t_h[-1]  # the clamp really is binding for this file
+
+    press_line = ax.get_lines()[0]
+    assert press_line.get_xdata().max() <= t_end_h + 1e-9
+    twin = next(a for a in fig.axes if a is not ax)
+    rate_line = twin.get_lines()[0]
+    assert rate_line.get_xdata().max() <= t_end_h + 1e-9
+    assert defaults.xlim[1] == pytest.approx(t_end_h)
+
+
+def test_overview_no_clamp_when_rate_is_none():
+    td = make_testdata()
+    state = PickState(pressure_col=PRESSURE_COL)
+    res = compute_all(state, td)
+    assert res.rate_all is None
+    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+
+    t_h = td.t_s / 3600.0
+    press_line = ax.get_lines()[0]
+    assert press_line.get_xdata().max() == pytest.approx(float(t_h[-1]))
+    assert not any(a is not ax for a in fig.axes)  # no rate -> no twin either
 
 
 def test_resolve_view_first_visit_seeds_from_defaults_falling_back_to_full_extent():
