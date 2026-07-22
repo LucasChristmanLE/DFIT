@@ -550,14 +550,17 @@ class DfitApp:
                     self.state.qmax_bpm = None  # re-derive from the new window
                     self.refresh()
                 return on_release
-            self._controllers.append(picks.DragLineController(
+            drag_ctrl = picks.DragLineController(
                 self.canvas, self.ax,
                 handlers={"start": _commit("start_idx"),
-                          "shutin": _commit("shutin_idx")}))
+                          "shutin": _commit("shutin_idx")})
+            self._controllers.append(drag_ctrl)
+            self._controllers.append(picks.HoverCursorController(self.canvas, [drag_ctrl]))
             self.hint_lbl.config(
                 text="Drag the injection-start and shut-in lines to adjust the window.")
         elif step == "isip":
             res = self.res
+            step_ctrls = []
             if res.bhp_all is not None and res.t_shutin_s is not None:
                 t_min = (self.td.t_s - res.t_shutin_s) / 60.0
                 gate = picks._CaptureGate()
@@ -575,17 +578,21 @@ class DfitApp:
                     isip = anchor_y - slope * anchor_x  # value at x=0 -- shut-in on this axes
                     return f"ISIP ≈ {isip:.0f} psi"
 
-                self._controllers.append(picks.AnchorLineController(
+                step_ctrls.append(picks.AnchorLineController(
                     self.canvas, self.ax,
                     gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                           "extension": "isip_tangent_extension"},
                     get_pick=get_pick, commit_fn=commit, curve=(t_min, res.bhp_all),
                     anchor_half=30, readout_fn=readout, gate=gate))
+            self._controllers.extend(step_ctrls)
+            if step_ctrls:
+                self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
             self.hint_lbl.config(
                 text="Drag the anchor along the curve, the body to pan, or an end to rotate "
                      "the ISIP tangent.")
         elif step == "gfunction":
             res = self.res
+            step_ctrls = []
             if res.diagnostics is not None and res.resampled is not None:
                 G, p = res.diagnostics.G, res.resampled.p
                 gate = picks._CaptureGate()
@@ -598,19 +605,23 @@ class DfitApp:
                     picks.commit_contact_point(self.state, x)
                     self.refresh()
 
-                self._controllers.append(picks.AnchorLineController(
+                step_ctrls.append(picks.AnchorLineController(
                     self.canvas, self.ax,
                     gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
                           "extension": "eff_isip_extension"},
                     get_pick=lambda: self.state.eff_isip_line, commit_fn=commit_line,
                     curve=(G, p), gate=gate))
-                self._controllers.append(picks.DraggablePointController(
+                step_ctrls.append(picks.DraggablePointController(
                     self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
                     gate=gate))
+            self._controllers.extend(step_ctrls)
+            if step_ctrls:
+                self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
             self.hint_lbl.config(text="Drag the effective-ISIP line or the contact marker.")
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()
+            step_ctrls = []
             if res.diagnostics is not None and ax2 is not None:
                 dg = res.diagnostics
                 gate = picks._CaptureGate()
@@ -628,13 +639,16 @@ class DfitApp:
                     picks.commit_closure_point(self.state, x)
                     self.refresh()
 
-                self._controllers.append(picks.AnchorLineController(
+                step_ctrls.append(picks.AnchorLineController(
                     self.canvas, ax2, gids={"segment": "closure_line_segment"},
                     get_pick=get_closure_pick, commit_fn=commit_line, curve=None,
                     allow_anchor=False, allow_body=False, gate=gate))
-                self._controllers.append(picks.DraggablePointController(
+                step_ctrls.append(picks.DraggablePointController(
                     self.canvas, ax2, "closure_point", dg.G, dg.GdPdG, commit_fn=commit_point,
                     gate=gate))
+            self._controllers.extend(step_ctrls)
+            if step_ctrls:
+                self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
             self.hint_lbl.config(text="Rotate the through-origin line; drag the closure marker.")
         elif step == "loglog":
             def on_span(lo, hi):

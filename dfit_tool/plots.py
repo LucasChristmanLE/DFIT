@@ -78,9 +78,9 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
     xt, xp = _decimate(t_h, p)
-    press_color = "black" if state.pressure_is_bhp else "tab:red"
+    press_color = "black" if res.pressure_is_bhp else "tab:red"
     ax.plot(xt, xp, color=press_color, lw=0.8,
-            label="BHP" if state.pressure_is_bhp else "pressure")
+            label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
     ax.set_xlabel("time from file start (h)")
     ax.set_ylabel("pressure (psi)", color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
@@ -119,19 +119,21 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     return ViewDefaults(xlim=xlim)
 
 
-def render_isip(ax, td: TestData, state: PickState, res: DerivedResults,
-                window_min: float = 30.0) -> ViewDefaults:
+def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 3: BHP vs time after shut-in; the literal-ISIP tangent + extension to shut-in.
 
-    Plots the full post-shut-in decimated series (the falloff tail can be very long) so a
-    zoom slider has a real full extent to work within; the default view zooms to ``window_min``.
+    The literal ISIP always occurs just after shut-in, so the plotted data (and therefore the
+    maximum extent the x-slider can zoom within) is deliberately clamped to shut-in -5 min .. +15
+    min rather than the full falloff tail (which can run for days) -- the slider zooms further
+    within that fixed window. This also means the y autoscale reflects only this window, which is
+    desirable (an unbounded tail would otherwise dwarf the interesting early-time shape).
     """
     ax.clear()
     if res.bhp_all is None or res.t_shutin_s is None:
         ax.set_title("Literal ISIP -- set injection window first", fontsize=10)
         return ViewDefaults()
     t_min = (td.t_s - res.t_shutin_s) / 60.0
-    m = t_min >= -2.0
+    m = (t_min >= -5.0) & (t_min <= 15.0)
     xt, xp = _decimate(t_min[m], res.bhp_all[m])
     ax.plot(xt, xp, color="black", lw=0.9)
     ax.axvline(0.0, color="tab:red", lw=1.2, label="shut-in")
@@ -159,7 +161,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults,
     else:
         ax.set_title("Literal ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=(-2.0, window_min))
+    return ViewDefaults(xlim=(-5.0, 15.0))
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:

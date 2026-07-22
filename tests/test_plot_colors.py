@@ -30,3 +30,17 @@ def test_pressure_trace_is_red_when_surface():
     st = overview_state(make_testdata()); st.pressure_is_bhp = False
     _, ax = _overview_axis(st)
     assert ax.get_lines()[0].get_color() == "tab:red"
+
+
+def test_pressure_trace_is_black_and_labeled_bhp_when_density_and_tvd_convert_surface_to_bhp():
+    # pressure_is_bhp stays False (the checkbox is unchecked) but density/TVD are set, so
+    # model.compute_all derives true BHP from surface pressure -- the trace should follow the
+    # derived result (res.pressure_is_bhp), not the raw checkbox state.
+    st = overview_state(make_testdata())
+    st.pressure_is_bhp = False
+    st.density_ppg = 9.0
+    st.tvd_ft = 8000.0
+    _, ax = _overview_axis(st)
+    press_line = ax.get_lines()[0]
+    assert press_line.get_color() == "black"
+    assert press_line.get_label() == "bottomhole pressure"

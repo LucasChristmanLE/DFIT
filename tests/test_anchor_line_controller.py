@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 from matplotlib.figure import Figure
@@ -274,3 +276,54 @@ def test_missing_pick_is_a_no_op():
     ctrl._on_press(_event("button_press_event", canvas, ax, 5.0, 50.0))
     assert ctrl._active is None
     assert calls == []
+
+
+def test_tick_slide_grabs_whole_tick_not_just_the_anchor_point():
+    """Regression: the visible vertical tick is drawn taller on screen (``+/-tick_half_y`` data
+    units, often much more than ``tol_px`` pixels) than the ``tol_px`` circle the old hit-test drew
+    around only the anchor *point*. Pressing near the tick's tip -- farther than ``tol_px`` from
+    the anchor point, but still squarely on the tick -- must still enter "anchor" mode. Before the
+    fix, a steep segment passing within ``tol_px`` of that same pixel let the press fall through to
+    "body" instead (a pan when a slide was intended)."""
+    fig = Figure(figsize=(6.0, 6.0), dpi=100)
+    fig.subplots_adjust(left=0.1, right=0.9, bottom=0.1, top=0.9)  # exact 480x480 px axes bbox
+    ax = fig.add_subplot(111)
+    canvas = FigureCanvasAgg(fig)
+    ax.set_xlim(0.0, 50.0)      # scale_x = 480 / 50  = 9.6 px per data-unit
+    ax.set_ylim(-40.0, 80.0)    # scale_y = 480 / 120 = 4.0 px per data-unit
+    ax.set_autoscale_on(False)
+
+    # A steep segment (slope=8) through the anchor: at the pixel above the anchor where the tick's
+    # tip sits, the segment's finite body -- point-to-segment, not just its two endpoints -- passes
+    # within tol_px, which is exactly what let the old point-only "anchor" test fall through to
+    # "body" instead.
+    anchor_x, anchor_y, slope = 20.0, 20.0, 8.0
+    half = 5.0
+    x0, x1 = anchor_x - half, anchor_x + half
+    y0, y1 = anchor_y + slope * (x0 - anchor_x), anchor_y + slope * (x1 - anchor_x)
+    ax.plot([x0, x1], [y0, y1], gid="segment")
+    tick_half_y = 8.0  # 8 data-units * 4.0 px/unit = 32 px each way on screen, vs tol_px=12
+    ax.plot([anchor_x, anchor_x], [anchor_y - tick_half_y, anchor_y + tick_half_y], gid="tick")
+    canvas.draw()
+
+    pick = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
+    x_arr = np.linspace(x0 - 2.0, x1 + 2.0, 61)
+    y_arr = anchor_y + slope * (x_arr - anchor_x)  # perfectly linear, matching the segment's slope
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit,
+                                      curve=(x_arr, y_arr))
+
+    press_x, press_y = anchor_x, anchor_y + 7.5  # near the tick's tip, straight up from the anchor
+    apx = ax.transData.transform((anchor_x, anchor_y))
+    ppx = ax.transData.transform((press_x, press_y))
+    # Sanity: this press really is outside the old anchor-point-only circle.
+    assert math.hypot(ppx[0] - apx[0], ppx[1] - apx[1]) > ctrl.tol_px
+
+    ev = _event("button_press_event", canvas, ax, press_x, press_y)
+    ctrl._on_press(ev)
+    assert ctrl._active == "anchor"  # grabbed via the tick, not missed and fallen through to "body"
+
+    ctrl._on_motion(ev)
+    ctrl._on_release(ev)
+    assert len(calls) == 1
+    assert calls[0][0] == "anchor"  # the old bug's fallthrough result ("body") must not occur

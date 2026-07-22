@@ -19,11 +19,27 @@ import math
 from typing import Callable, Optional
 
 import numpy as np
+from matplotlib.backend_tools import Cursors
 from matplotlib.widgets import SpanSelector
 
 from . import interpret
 from .model import DerivedResults, PickState, TangentPick
 from .io_load import TestData
+
+
+# --------------------------------------------------------------------------------------------------
+# hover cursor mapping -- shared by every controller's hover_kind()/active_kind() and
+# HoverCursorController. Uses matplotlib's backend-agnostic Cursors enum + canvas.set_cursor, which
+# FigureCanvasBase implements as a no-op (so the Agg-backed test suite never touches Tkinter) and
+# FigureCanvasTkAgg implements for real.
+# --------------------------------------------------------------------------------------------------
+_HOVER_CURSORS = {
+    "anchor": Cursors.RESIZE_HORIZONTAL,   # slide along the backing curve
+    "body": Cursors.MOVE,                  # pan the line
+    "end": Cursors.HAND,                   # rotate about the anchor
+    "line": Cursors.RESIZE_HORIZONTAL,     # drag a vertical injection-start/shut-in line
+    "point": Cursors.HAND,                 # drag a contact/closure marker
+}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -183,6 +199,22 @@ class DragLineController:
             self.canvas.mpl_disconnect(cid)
         self._cids = []
 
+    # ---- hover probes (no side effects) -- see HoverCursorController ----
+    def hover_kind(self, event) -> Optional[str]:
+        """"line" if the event pixel is within ``tol_px`` of one of this controller's gid lines
+        (same x-distance test as ``_on_press``), else None."""
+        if not _axes_contains_pixel(self.ax, event) or event.x is None:
+            return None
+        for line in self._lines():
+            lx = line.get_xdata()[0]
+            px = self.ax.transData.transform((lx, 0.0))[0]
+            if abs(px - event.x) <= self.tol_px:
+                return "line"
+        return None
+
+    def active_kind(self) -> Optional[str]:
+        return "line" if self._active is not None else None
+
 
 class AnchorLineController:
     """Drag a gid-tagged anchored line: geometry is ``(anchor_x, anchor_y, slope)``. The current
@@ -200,7 +232,10 @@ class AnchorLineController:
     Hit priority at press (tolerance ``tol_px``, all through this axes' own transforms -- see
     ``_axes_contains_pixel``/``_data_from_pixel`` -- never ``event.inaxes``):
       1. the anchor/tick zone -- only if ``allow_anchor`` and ``curve`` is given and a "tick"
-         artist is present.
+         artist is present. Hits if the event pixel is within ``tol_px`` of either the anchor
+         *point* or the tick's own drawn *segment* (point-to-segment distance, via
+         ``_segment_distance_px``) -- the tick is often drawn taller on screen than ``tol_px``, so
+         testing only its center point would miss presses on the rest of the visible tick.
       2. either segment endpoint -- only if ``allow_rotate``.
       3. the segment body (point-to-segment pixel distance) -- only if ``allow_body``.
 
@@ -242,7 +277,7 @@ class AnchorLineController:
     def __init__(self, canvas, ax, gids: dict, get_pick: Callable[[], Optional[TangentPick]],
                  commit_fn: Callable[[str, float, float, float], None], curve=None,
                  anchor_half: int = 4, allow_anchor: bool = True, allow_body: bool = True,
-                 allow_rotate: bool = True, tol_px: float = 8.0, readout_fn=None,
+                 allow_rotate: bool = True, tol_px: float = 12.0, readout_fn=None,
                  gate: Optional[_CaptureGate] = None):
         self.canvas = canvas
         self.ax = ax
@@ -288,6 +323,10 @@ class AnchorLineController:
             if tick is not None:
                 apx = self.ax.transData.transform((pick.anchor_x, pick.anchor_y))
                 if math.hypot(event.x - apx[0], event.y - apx[1]) <= self.tol_px:
+                    return "anchor"
+                txs, tys = tick.get_xdata(), tick.get_ydata()
+                d = _segment_distance_px(self.ax, (txs[0], tys[0]), (txs[-1], tys[-1]), event)
+                if d <= self.tol_px:
                     return "anchor"
         if self.allow_rotate:
             xs, ys = segment.get_xdata(), segment.get_ydata()
@@ -414,6 +453,24 @@ class AnchorLineController:
             self._readout.remove()
             self._readout = None
 
+    # ---- hover probes (no side effects) -- see HoverCursorController ----
+    def hover_kind(self, event) -> Optional[str]:
+        """Reuses ``_hit_test`` to report what a press at ``event`` would capture ("anchor" /
+        "end" / "body"), without capturing anything. None when there's no pick or no "segment"
+        artist to test against (mirrors ``_on_press``'s own no-op guards)."""
+        if not _axes_contains_pixel(self.ax, event):
+            return None
+        pick = self.get_pick()
+        if pick is None:
+            return None
+        segment = self._artist(self.gids.get("segment"))
+        if segment is None:
+            return None
+        return self._hit_test(event, pick, segment)
+
+    def active_kind(self) -> Optional[str]:
+        return self._active
+
 
 class DraggablePointController:
     """Drag a single gid-tagged marker, snapped along a backing curve.
@@ -487,6 +544,73 @@ class DraggablePointController:
         self._dragging = False
         self.gate.release()
         self.commit_fn(float(self._final_x))
+
+    def disconnect(self):
+        for cid in self._cids:
+            self.canvas.mpl_disconnect(cid)
+        self._cids = []
+
+    # ---- hover probes (no side effects) -- see HoverCursorController ----
+    def hover_kind(self, event) -> Optional[str]:
+        """"point" if the event pixel is within ``tol_px`` of this controller's marker (same test
+        as ``_on_press``), else None."""
+        if not _axes_contains_pixel(self.ax, event):
+            return None
+        marker = self._artist()
+        if marker is None:
+            return None
+        xs, ys = marker.get_xdata(), marker.get_ydata()
+        if len(xs) == 0:
+            return None
+        mpx = self.ax.transData.transform((xs[0], ys[0]))
+        if math.hypot(event.x - mpx[0], event.y - mpx[1]) <= self.tol_px:
+            return "point"
+        return None
+
+    def active_kind(self) -> Optional[str]:
+        return "point" if self._dragging else None
+
+
+class HoverCursorController:
+    """Sets the canvas cursor to indicate what a press at the current pointer position would do,
+    by probing an ordered list of controllers (first hit wins). Each controller in ``controllers``
+    must expose ``hover_kind(event) -> Optional[str]`` and ``active_kind() -> Optional[str]``
+    (``AnchorLineController``, ``DragLineController``, ``DraggablePointController`` all do).
+
+    On every ``motion_notify_event``: if any controller reports an in-progress drag via
+    ``active_kind()``, that kind's cursor wins outright (held even if the pointer strays over empty
+    space mid-drag, e.g. panning); otherwise the first controller (in list order) whose
+    ``hover_kind(event)`` is not None sets the cursor; otherwise the cursor falls back to
+    ``Cursors.POINTER``. ``_HOVER_CURSORS`` maps kind -> ``matplotlib.backend_tools.Cursors``.
+
+    Uses the backend-agnostic ``canvas.set_cursor`` -- a no-op on ``FigureCanvasBase`` (so this
+    stays crash-free under the Agg backend the test suite runs on) and real on
+    ``FigureCanvasTkAgg`` -- so this module stays Tkinter-free. ``set_cursor`` is only called when
+    the resolved cursor differs from the previous event's, to avoid needless churn.
+    """
+
+    def __init__(self, canvas, controllers):
+        self.canvas = canvas
+        self.controllers = list(controllers)
+        self._last_cursor = None
+        self._cids = [canvas.mpl_connect("motion_notify_event", self._on_motion)]
+
+    def _resolve_kind(self, event) -> Optional[str]:
+        for ctrl in self.controllers:
+            kind = ctrl.active_kind()
+            if kind is not None:
+                return kind
+        for ctrl in self.controllers:
+            kind = ctrl.hover_kind(event)
+            if kind is not None:
+                return kind
+        return None
+
+    def _on_motion(self, event):
+        cursor = _HOVER_CURSORS.get(self._resolve_kind(event), Cursors.POINTER)
+        if cursor is not self._last_cursor:
+            self.canvas.set_cursor(cursor)
+            self._last_cursor = cursor
 
     def disconnect(self):
         for cid in self._cids:

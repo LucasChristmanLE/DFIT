@@ -119,6 +119,26 @@ def test_render_isip_tangent_construction_gids_colors_and_extension_reaches_shut
     assert tick.get_ydata()[0] != tick.get_ydata()[1]  # a short vertical mark, not a point
 
 
+def test_render_isip_clamps_view_and_plotted_data_to_shutin_window():
+    # n=1800 gives a 25-min falloff tail (shut-in at 300 s), so the +15-min clamp is binding.
+    td = make_testdata(n=1800)
+    st = overview_state(td)
+    picks.seed_overview(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    assert (td.t_s.max() - res.t_shutin_s) / 60.0 > 15.0  # raw data really extends past the clamp
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_isip(ax, td, st, res)
+
+    assert defaults.xlim == pytest.approx((-5.0, 15.0))
+    press_line = ax.get_lines()[0]  # the BHP decline trace (first line drawn)
+    xdata = press_line.get_xdata()
+    assert xdata.max() <= 15.0
+    assert xdata.min() >= -5.0
+
+
 def test_render_isip_early_return_still_returns_view_defaults():
     td = make_testdata()
     st = overview_state(td)
@@ -262,7 +282,7 @@ def test_isip_wiring_get_pick_and_commit_round_trip_seconds_through_axes_minutes
     td, st, res = _seeded()
     stub = _stub(td, st, res, "isip")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 1
+    assert len(stub._controllers) == 2  # AnchorLineController + its HoverCursorController
     ctrl = stub._controllers[0]
 
     p_min = ctrl.get_pick()
@@ -299,9 +319,10 @@ def test_gfunction_wiring_attaches_two_controllers_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 2
-    anchor_ctrl, point_ctrl = stub._controllers
+    assert len(stub._controllers) == 3  # AnchorLineController + DraggablePointController + hover
+    anchor_ctrl, point_ctrl, hover_ctrl = stub._controllers
     assert anchor_ctrl.gate is point_ctrl.gate
+    assert isinstance(hover_ctrl, picks.HoverCursorController)
 
     point_ctrl.commit_fn(3.5)
     assert st.contact_G == pytest.approx(3.5)
@@ -321,9 +342,10 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "tangent")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 2
-    anchor_ctrl, point_ctrl = stub._controllers
+    assert len(stub._controllers) == 3  # AnchorLineController + DraggablePointController + hover
+    anchor_ctrl, point_ctrl, hover_ctrl = stub._controllers
     assert anchor_ctrl.gate is point_ctrl.gate
+    assert isinstance(hover_ctrl, picks.HoverCursorController)
     ax2 = stub._twin_axes()
     assert anchor_ctrl.ax is ax2
     assert point_ctrl.ax is ax2

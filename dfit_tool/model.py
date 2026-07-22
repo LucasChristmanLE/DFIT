@@ -172,6 +172,7 @@ class DerivedResults:
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
     bhp_all: Optional[np.ndarray] = field(default=None, repr=False)
+    pressure_is_bhp: bool = field(default=False, repr=False)  # bhp_all holds true BHP, not surface
     rate_all: Optional[np.ndarray] = field(default=None, repr=False)
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
     diagnostics: Optional[resample.Diagnostics] = field(default=None, repr=False)
@@ -194,9 +195,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     res.t_all_s = td.t_s
     try:
         res.bhp_all = td.bhp(cfg) if cfg.bhp_inputs_ready() else td.pressure_surface(cfg)
+        res.pressure_is_bhp = cfg.bhp_inputs_ready()
     except Exception as e:  # pragma: no cover - defensive
         res.warnings.append(f"BHP computation failed: {e}")
         res.bhp_all = td.pressure_surface(cfg)
+        res.pressure_is_bhp = False
     if cfg.rate_col:
         res.rate_all = td.column(cfg.rate_col)
 
