@@ -601,43 +601,98 @@ def commit_closure_point(state: PickState, x: float) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
-# default seeding (auto-suggestions used as starting picks)
+# per-step seeding (auto-suggestions used as starting picks)
+#
+# Each seeder below fires exactly once per step, from ``ui.DfitApp._seed_step`` on that step's
+# first visit (never on a revisit). They are made non-destructive anyway -- each early-returns
+# if its target pick(s) are already set -- so a state loaded from JSON with real picks but an
+# un-visited step (e.g. an old save resumed via ``first_not_visited_step``) is never clobbered by
+# arriving at that step. Every seeder also degrades to a no-op (never a crash) when the inputs it
+# needs (``res.t_shutin_s``, ``res.diagnostics``, etc.) aren't ready yet -- out-of-order entry into
+# a step whose prerequisites weren't picked simply seeds nothing.
 # --------------------------------------------------------------------------------------------------
-def seed_defaults(state: PickState, td: TestData, res_fn: Callable[[PickState], DerivedResults]) -> None:
-    """Populate sensible starting picks after a file loads. ``res_fn`` recomputes DerivedResults."""
-    if state.rate_col:
-        rate = td.column(state.rate_col)
-        vol = td.column(state.volume_col) if state.volume_col else None
-        try:
-            state.start_idx, state.shutin_idx = interpret.suggest_injection_window(rate, vol)
-        except ValueError:
-            pass
+def seed_overview(state: PickState, td: TestData) -> None:
+    """Injection window (start/shut-in indices) from the rate (+ optional volume) curve."""
+    if state.start_idx is not None or state.shutin_idx is not None:
+        return
+    if not state.rate_col:
+        return
+    rate = td.column(state.rate_col)
+    vol = td.column(state.volume_col) if state.volume_col else None
+    try:
+        state.start_idx, state.shutin_idx = interpret.suggest_injection_window(rate, vol)
+    except ValueError:
+        pass
 
-    res = res_fn(state)
 
-    # literal-ISIP tangent: anchor ~1 min after shut-in, slope from a local fit of the early decline
-    if res.t_shutin_s is not None and res.bhp_all is not None:
-        idx = _nearest(td.t_s, res.t_shutin_s + 60.0)
-        slope = _local_slope(td.t_s, res.bhp_all, idx, half=30)
-        state.isip_tangent = TangentPick(anchor_x=float(td.t_s[idx]),
-                                         anchor_y=float(res.bhp_all[idx]), slope=slope)
+def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
+    """Literal-ISIP tangent: anchor ~1 min after shut-in, slope from a local fit of the early
+    decline."""
+    if state.isip_tangent is not None:
+        return
+    if res.t_shutin_s is None or res.bhp_all is None:
+        return
+    idx = _nearest(td.t_s, res.t_shutin_s + 60.0)
+    anchor_x, anchor_y, slope = _tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
+    state.isip_tangent = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
 
+
+def seed_gfunction(state: PickState, res: DerivedResults) -> None:
+    """Effective-ISIP line anchored where the P-vs-G curve straightens (past the dP/dG hump
+    peak), plus the compliance contact pick at the hump itself."""
+    if state.eff_isip_line is not None and state.contact_G is not None:
+        return
     dg = res.diagnostics
-    if dg is not None and res.resampled is not None and len(dg.G) > 5:
-        # effective-ISIP line: anchor where the P-vs-G curve straightens (past the dP/dG hump peak)
-        hump = int(np.nanargmax(dg.dPdG))
-        anchor = min(hump + max(2, len(dg.G) // 10), len(dg.G) - 2)
-        slope = _local_slope(dg.G, res.resampled.p, anchor, half=4)
-        state.eff_isip_line = TangentPick(anchor_x=float(dg.G[anchor]),
-                                          anchor_y=float(res.resampled.p[anchor]), slope=slope)
-        # compliance contact at the dP/dG hump peak
+    if dg is None or res.resampled is None or len(dg.G) <= 5:
+        return
+    hump = int(np.nanargmax(dg.dPdG))
+    anchor = min(hump + max(2, len(dg.G) // 10), len(dg.G) - 2)
+    anchor_x, anchor_y, slope = _tangent_from_index(dg.G, res.resampled.p, anchor, half=4)
+    if state.eff_isip_line is None:
+        state.eff_isip_line = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
+    if state.contact_G is None:
         state.contact_G = float(dg.G[hump])
-        # tangent closure from the through-origin departure
-        cslope, idep = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
+
+
+def seed_tangent(state: PickState, res: DerivedResults) -> None:
+    """Tangent-method closure (slope + departure pick) from the through-origin departure."""
+    if state.closure_slope is not None and state.closure_G is not None:
+        return
+    dg = res.diagnostics
+    if dg is None or res.resampled is None or len(dg.G) <= 5:
+        return
+    cslope, idep = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
+    if state.closure_slope is None:
         state.closure_slope = cslope
+    if state.closure_G is None:
         state.closure_G = float(dg.G[idep])
-        # late-time windows for log-log + pore pressure
-        if len(dg.t) > 6:
-            win = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
-            state.loglog_window = win
-            state.pp_window = win
+
+
+def seed_loglog(state: PickState, res: DerivedResults) -> None:
+    """Late-time window for the log-log diagnostic plot."""
+    if state.loglog_window is not None:
+        return
+    dg = res.diagnostics
+    if dg is None or len(dg.t) <= 6:
+        return
+    state.loglog_window = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
+
+
+def seed_pp(state: PickState, res: DerivedResults) -> None:
+    """Late-time window for the pore-pressure diagnostic plot."""
+    if state.pp_window is not None:
+        return
+    dg = res.diagnostics
+    if dg is None or len(dg.t) <= 6:
+        return
+    state.pp_window = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
+
+
+SEEDERS = {
+    "overview": seed_overview,
+    "isip": seed_isip,
+    "gfunction": seed_gfunction,
+    "tangent": seed_tangent,
+    "loglog": seed_loglog,
+    "porepressure": seed_pp,
+}

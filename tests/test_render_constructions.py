@@ -26,7 +26,12 @@ def _seeded():
     tangent constructions under test actually have something to draw."""
     td = make_testdata()
     st = overview_state(td)
-    picks.seed_defaults(st, td, lambda s: compute_all(s, td))
+    picks.seed_overview(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    picks.seed_gfunction(st, res)
+    picks.seed_tangent(st, res)
     res = compute_all(st, td)
     assert st.isip_tangent is not None
     assert st.eff_isip_line is not None and st.contact_G is not None

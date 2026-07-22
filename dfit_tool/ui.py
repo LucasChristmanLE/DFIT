@@ -48,8 +48,8 @@ PANEL_FIELDS = [
 ]
 
 # Which step "owns" each panel field -- _update_panel shows "-" for a field whose step is still
-# not_visited, even if compute_all already produced a value for it (e.g. picks.seed_defaults ran
-# ahead of the user actually visiting that step).
+# not_visited, even if compute_all already produced a value for it (e.g. a value carried over
+# from a loaded JSON pick file the user hasn't actually visited yet this session).
 FIELD_STEP = {
     "te (min)": "overview",
     "Vinj (bbl)": "overview",
@@ -302,7 +302,6 @@ class DfitApp:
         except Exception as e:
             messagebox.showerror("Load failed", str(e))
             return
-        self._views = {}
         self.file_lbl.config(text=os.path.basename(path))
         cols = self.td.columns
         for cmb in (self.cmb_pressure, self.cmb_rate, self.cmb_volume):
@@ -312,8 +311,9 @@ class DfitApp:
         self.var_rate.set(g["rate"] or "")
         self.var_volume.set(g["volume"] or "")
         self.var_isbhp.set(bool(g["pressure_is_bhp"]))
+        self.state = PickState()
+        self._views = {k: None for k, _ in STEPS}
         self._sync_state_from_widgets()
-        picks.seed_defaults(self.state, self.td, lambda s: compute_all(s, self.td))
         self._goto("overview")
 
     def _sync_state_from_widgets(self):
@@ -354,9 +354,19 @@ class DfitApp:
         self.refresh()
 
     def _seed_step(self, key: str) -> None:
-        """No-op stub. Filled in by the seed-on-entry task (Task 6): pre-populate reasonable
-        default picks for ``key`` the first time it is visited."""
-        pass
+        """Pre-populate reasonable default picks for ``key`` on its first visit, via
+        ``picks.SEEDERS``. "overview" and "isip" need ``self.td`` too; the rest take only
+        (state, res)."""
+        if self.td is None:
+            return
+        res = compute_all(self.state, self.td)
+        seeder = picks.SEEDERS[key]
+        if key == "overview":
+            seeder(self.state, self.td)
+        elif key == "isip":
+            seeder(self.state, self.td, res)
+        else:
+            seeder(self.state, res)
 
     def _next(self):
         """Mark the current step done and advance. next_step() clamps at the last step, so at
