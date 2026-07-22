@@ -86,6 +86,36 @@ def test_render_tangent_closure_artists_are_gid_tagged_on_the_twin_not_primary()
               for l in ax.get_lines())
 
 
+def test_render_tangent_closure_vline_on_primary_axis():
+    """Mirrors render_gfunction's dotted contact_vline (line 229): a dotted vertical marker at
+    state.closure_G drawn on the primary (BHP) axis, not the G*dP/dG twin."""
+    td, st, res = _seeded()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_tangent(ax, td, st, res)
+    ax2 = next(a for a in fig.axes if a is not ax)
+
+    vline = _gid(ax, "closure_vline")
+    assert vline.get_xdata()[0] == pytest.approx(st.closure_G)
+    assert all(l.get_gid() != "closure_vline" for l in ax2.get_lines())
+
+
+def test_render_tangent_no_closure_vline_when_no_closure_pick():
+    td = make_testdata()
+    st = overview_state(td)
+    picks.seed_overview(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    picks.seed_gfunction(st, res)
+    res = compute_all(st, td)
+    assert st.closure_G is None
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_tangent(ax, td, st, res)
+    assert all(l.get_gid() != "closure_vline" for l in ax.get_lines())
+
+
 def test_render_tangent_early_return_still_returns_view_defaults():
     td = make_testdata()
     st = overview_state(td)
@@ -365,8 +395,12 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "tangent")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 3  # AnchorLineController + DraggablePointController + hover
-    anchor_ctrl, point_ctrl, hover_ctrl = stub._controllers
+    # point controller first: press/hover priority follows list order, and the closure marker's
+    # tighter tolerance must beat the line body's rotate hit zone where the marker rides the line
+    assert len(stub._controllers) == 3  # DraggablePointController + AnchorLineController + hover
+    point_ctrl, anchor_ctrl, hover_ctrl = stub._controllers
+    assert isinstance(point_ctrl, picks.DraggablePointController)
+    assert isinstance(anchor_ctrl, picks.AnchorLineController)
     assert anchor_ctrl.gate is point_ctrl.gate
     assert isinstance(hover_ctrl, picks.HoverCursorController)
     ax2 = stub._twin_axes()

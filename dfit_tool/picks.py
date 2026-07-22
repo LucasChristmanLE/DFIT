@@ -237,7 +237,10 @@ class AnchorLineController:
          ``_segment_distance_px``) -- the tick is often drawn taller on screen than ``tol_px``, so
          testing only its center point would miss presses on the rest of the visible tick.
       2. either segment endpoint -- only if ``allow_rotate``.
-      3. the segment body (point-to-segment pixel distance) -- only if ``allow_body``.
+      3. the segment body (point-to-segment pixel distance) -- only if ``allow_body``. If
+         ``allow_body`` is false but ``allow_rotate`` is true, this same body distance test is
+         still run as a fallback and reported as "end" rather than "body" -- see "Pinned mode"
+         below.
 
     Motion (nothing is written to ``PickState`` until release; artists update live via
     ``canvas.draw_idle()``):
@@ -260,7 +263,10 @@ class AnchorLineController:
     *final* geometry -- never the raw cursor position -- where ``kind`` is one of "anchor" /
     "body" / "end". Pinned mode (``curve=None, allow_anchor=False, allow_body=False``) leaves only
     "end" reachable: a through-origin (or otherwise fixed-anchor) rotate-only line, with the
-    anchor staying at whatever ``get_pick()`` returns (e.g. anchor (0, 0)).
+    anchor staying at whatever ``get_pick()`` returns (e.g. anchor (0, 0)). Because the far
+    endpoint of such a line is often clipped off-screen, a press anywhere on the visible body also
+    hits as "end" in this mode (see hit priority #3 above), so the whole line is grabbable and a
+    body drag rotates about the anchor exactly like an endpoint drag would.
 
     ``readout_fn(kind, anchor_x, anchor_y, slope) -> str | None``, if given, drives a small Text
     artist: created on press, updated every motion, removed on release/disconnect (returning
@@ -344,6 +350,15 @@ class AnchorLineController:
             d = _segment_distance_px(self.ax, (xs[0], ys[0]), (xs[-1], ys[-1]), event)
             if d <= self.tol_px:
                 return "body"
+        elif self.allow_rotate:
+            # Pinned mode (allow_body=False): the through-origin segment's far endpoint is often
+            # clipped off-screen, leaving no reachable endpoint to grab. Fall back to a
+            # point-to-segment test against the visible body and still hand back "end" -- a press
+            # anywhere on the line rotates it about the (unchanged) anchor.
+            xs, ys = segment.get_xdata(), segment.get_ydata()
+            d = _segment_distance_px(self.ax, (xs[0], ys[0]), (xs[-1], ys[-1]), event)
+            if d <= self.tol_px:
+                return "end"
         return None
 
     def _on_press(self, event):

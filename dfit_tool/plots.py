@@ -271,6 +271,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
         yv = float(np.interp(state.closure_G, dg.G, dg.GdPdG))
         ax2.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
                 gid="closure_point")
+        ax.axvline(state.closure_G, color="black", ls=":", lw=1.2, gid="closure_vline")
     title = "Tangent method"
     if res.shmin_tangent is not None:
         title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"

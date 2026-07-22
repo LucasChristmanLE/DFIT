@@ -658,13 +658,16 @@ class DfitApp:
                     picks.commit_closure_point(self.state, x)
                     self.refresh()
 
+                # marker first: the whole line body is a rotate hit zone, and the marker rides
+                # the curve close to the line -- press/hover priority follows this order, so the
+                # marker's tighter tolerance must win before the line claims the shared gate
+                step_ctrls.append(picks.DraggablePointController(
+                    self.canvas, ax2, "closure_point", dg.G, dg.GdPdG, commit_fn=commit_point,
+                    gate=gate))
                 step_ctrls.append(picks.AnchorLineController(
                     self.canvas, ax2, gids={"segment": "closure_line_segment"},
                     get_pick=get_closure_pick, commit_fn=commit_line, curve=None,
                     allow_anchor=False, allow_body=False, gate=gate))
-                step_ctrls.append(picks.DraggablePointController(
-                    self.canvas, ax2, "closure_point", dg.G, dg.GdPdG, commit_fn=commit_point,
-                    gate=gate))
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))

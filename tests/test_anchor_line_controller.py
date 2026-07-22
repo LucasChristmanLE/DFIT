@@ -166,7 +166,7 @@ def test_end_drag_rotates_about_unchanged_anchor():
                       pytest.approx(expected_slope))]
 
 
-def test_pinned_mode_ignores_anchor_and_body_but_rotates():
+def test_pinned_mode_ignores_anchor_but_rotates_on_end_press():
     anchor_x0, anchor_y0, slope0 = 0.0, 0.0, 1.0
     pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
     fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0)
@@ -175,9 +175,9 @@ def test_pinned_mode_ignores_anchor_and_body_but_rotates():
                                       commit_fn=commit, curve=None, allow_anchor=False,
                                       allow_body=False)
 
-    # a press on the segment body: allow_body is False, and it's not near either endpoint either.
-    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
-    ctrl._on_press(_event("button_press_event", canvas, ax, mid_x, mid_y))
+    # a press far from the line entirely (not near either endpoint, not near the body): still a no-op.
+    far_off_x, far_off_y = anchor_x0 + 20.0, anchor_y0 - 20.0
+    ctrl._on_press(_event("button_press_event", canvas, ax, far_off_x, far_off_y))
     assert ctrl._active is None
 
     far_x, far_y = anchor_x0 + 5.0, anchor_y0 + slope0 * 5.0
@@ -195,6 +195,62 @@ def test_pinned_mode_ignores_anchor_and_body_but_rotates():
 
     ctrl._on_release(_event("button_release_event", canvas, ax, target_x, target_y))
     assert calls == [("end", pytest.approx(0.0), pytest.approx(0.0), pytest.approx(expected_slope))]
+
+
+def test_pinned_mode_body_press_now_rotates_about_unchanged_anchor():
+    """Regression: the through-origin segment on the tangent page is anchored at the axes corner
+    with its far endpoint usually clipped off-screen, so a press on the visible line body -- not
+    within tol_px of either drawn endpoint -- must still capture as "end" (rotate about the
+    unchanged anchor) in pinned mode. Before the fix, allow_body=False made this a no-op."""
+    anchor_x0, anchor_y0, slope0 = 0.0, 0.0, 1.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, {"segment": "segment"}, get_pick=lambda: pick,
+                                      commit_fn=commit, curve=None, allow_anchor=False,
+                                      allow_body=False)
+
+    # a point squarely on the segment body, but not within tol_px of either drawn endpoint.
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    press_ev = _event("button_press_event", canvas, ax, mid_x, mid_y)
+    apx = ax.transData.transform((anchor_x0, anchor_y0))
+    fpx = ax.transData.transform((anchor_x0 + 5.0, anchor_y0 + slope0 * 5.0))
+    assert math.hypot(press_ev.x - apx[0], press_ev.y - apx[1]) > ctrl.tol_px
+    assert math.hypot(press_ev.x - fpx[0], press_ev.y - fpx[1]) > ctrl.tol_px
+
+    assert ctrl.hover_kind(press_ev) == "end"
+
+    ctrl._on_press(press_ev)
+    assert ctrl._active == "end"
+
+    target_x, target_y = anchor_x0 + 5.0, anchor_y0 + 10.0
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, target_x, target_y))
+    motion_x, motion_y = _roundtrip(ax, target_x, target_y)
+    expected_slope = (motion_y - anchor_y0) / (motion_x - anchor_x0)
+
+    kind, ax1, ay1, slope1 = ctrl._final
+    assert kind == "end"
+    assert (ax1, ay1) == (anchor_x0, anchor_y0)  # anchor unchanged by the rotate
+    assert slope1 == pytest.approx(expected_slope)
+
+    ctrl._on_release(_event("button_release_event", canvas, ax, target_x, target_y))
+    assert calls == [("end", pytest.approx(anchor_x0), pytest.approx(anchor_y0),
+                      pytest.approx(expected_slope))]
+
+
+def test_default_mode_body_press_is_still_body_not_end():
+    """allow_body=True (e.g. the ISIP page) must be unaffected by the pinned-mode fallback."""
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit)
+
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    ev = _event("button_press_event", canvas, ax, mid_x, mid_y)
+    assert ctrl.hover_kind(ev) == "body"
+    ctrl._on_press(ev)
+    assert ctrl._active == "body"
 
 
 def test_twinx_regression_still_captures_via_pixel_not_inaxes():
