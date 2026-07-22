@@ -246,6 +246,9 @@ class DfitApp:
                                       values=CLOSURE_SCENARIOS, state="readonly")
         self.cmb_cscen.pack(fill="x")
         self.cmb_cscen.bind("<<ComboboxSelected>>", lambda e: self._on_scenario())
+        self.var_showd2 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_cscen, text="show d²P/dG²", variable=self.var_showd2,
+                        command=self._on_showd2).pack(anchor="w", pady=(4, 0))
 
         self.frm_pcscen = ttk.Frame(panel)
         ttk.Label(self.frm_pcscen, text="Postclosure scenario").pack(anchor="w")
@@ -316,6 +319,7 @@ class DfitApp:
         self.var_cscen.set("")
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
+        self.var_showd2.set(False)
         self.txt_notes.delete("1.0", "end")
         self._sync_state_from_widgets()
         self._goto("overview")
@@ -337,9 +341,24 @@ class DfitApp:
         self.refresh()
 
     def _on_scenario(self):
-        self.state.closure_scenario = self.var_cscen.get()
+        cscen = self.var_cscen.get()
+        cscen_changed = cscen != self.state.closure_scenario
+        self.state.closure_scenario = cscen
         self.state.postclosure_scenario = self.var_pcscen.get()
         self.state.pp_axis = self.var_ppaxis.get()
+        hint = None
+        if cscen_changed and self.td is not None:
+            # Selecting a closure scenario is an explicit request to re-derive the contact
+            # pick from that scenario's rule (it may overwrite a previous pick).
+            hint = picks.apply_closure_scenario(self.state, compute_all(self.state, self.td))
+        self.refresh()
+        if hint:
+            # After refresh(): _attach_controllers just set the step's default hint text,
+            # and the scenario feedback must win.
+            self.hint_lbl.config(text=hint)
+
+    def _on_showd2(self):
+        self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
 
     # ---- steps / render -------------------------------------------------------------------------
@@ -720,6 +739,7 @@ class DfitApp:
         self.var_cscen.set(self.state.closure_scenario)
         self.var_pcscen.set(self.state.postclosure_scenario)
         self.var_ppaxis.set(self.state.pp_axis)
+        self.var_showd2.set(self.state.show_d2pdg2)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
