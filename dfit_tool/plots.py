@@ -202,6 +202,9 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.dPdG[finite], 95)
         y2lim = (0, min(max(hi * 1.5, 1.0), 500.0))
+    if state.show_d2pdg2:
+        ax2.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
+                 gid="d2pdg2_curve")
 
     if res.eff_isip_line is not None and res.effective_isip is not None:
         ln = res.eff_isip_line
@@ -222,6 +225,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if state.contact_G is not None and res.contact_pressure is not None:
         ax.plot(state.contact_G, res.contact_pressure, "s", color="black", ms=7, label="contact",
                gid="contact_point")
+    if state.contact_G is not None:
+        ax.axvline(state.contact_G, color="black", ls=":", lw=1.2, gid="contact_vline")
 
     title = "G-function"
     if res.effective_isip is not None:

@@ -59,6 +59,7 @@ class PickState:
     min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
     closure_scenario: str = ""  # C-A..C-D
+    show_d2pdg2: bool = False  # overlay d2P/dG2 on the G-function step (helps spot the C-B inflection)
 
     # --- step 6: tangent-method closure (G*dP/dG through-origin departure) ---
     closure_G: Optional[float] = None

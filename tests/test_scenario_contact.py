@@ -79,7 +79,7 @@ def test_inflection_rule_respects_g_min():
 
 
 from dfit_tool import picks
-from dfit_tool.model import DerivedResults, PickState
+from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.resample import Diagnostics
 
 
@@ -153,3 +153,54 @@ def test_scenario_noop_cases():
     state = PickState(closure_scenario="C-A clear", contact_G=7.0)
     assert picks.apply_closure_scenario(state, DerivedResults()) is None
     assert state.contact_G == 7.0
+
+
+import matplotlib.pyplot as plt
+
+from dfit_tool import plots
+from tests.helpers import make_testdata, overview_state
+
+
+def _gfunction_fixture(**state_kw):
+    td = make_testdata()
+    state = overview_state(td)
+    for k, v in state_kw.items():
+        setattr(state, k, v)
+    res = compute_all(state, td)
+    assert res.diagnostics is not None
+    fig, ax = plt.subplots()
+    plots.render_gfunction(ax, td, state, res)
+    return fig
+
+
+def _gids(fig):
+    return {ln.get_gid() for a in fig.axes for ln in a.get_lines() if ln.get_gid()}
+
+
+def test_render_gfunction_contact_vline():
+    fig = _gfunction_fixture(contact_G=1.5)
+    assert "contact_vline" in _gids(fig)
+    plt.close(fig)
+    fig = _gfunction_fixture()  # no contact pick -> no vline
+    assert "contact_vline" not in _gids(fig)
+    plt.close(fig)
+
+
+def test_render_gfunction_d2_toggle():
+    fig = _gfunction_fixture(show_d2pdg2=True)
+    assert "d2pdg2_curve" in _gids(fig)
+    plt.close(fig)
+    fig = _gfunction_fixture(show_d2pdg2=False)
+    assert "d2pdg2_curve" not in _gids(fig)
+    plt.close(fig)
+
+
+def test_show_d2pdg2_round_trips(tmp_path):
+    p = tmp_path / "picks.json"
+    state = PickState(show_d2pdg2=True)
+    state.to_json(str(p))
+    assert PickState.from_json(str(p)).show_d2pdg2 is True
+    # an old save without the key defaults False
+    state2 = PickState()
+    state2.to_json(str(p))
+    assert PickState.from_json(str(p)).show_d2pdg2 is False
