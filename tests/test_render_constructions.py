@@ -71,7 +71,7 @@ def test_render_tangent_pressure_primary_gdpdg_secondary_mirrors_gfunction():
     assert defaults.y2lim == pytest.approx((0, max(hi * 1.5, 1.0)))
 
 
-def test_render_tangent_closure_artists_are_gid_tagged_on_the_twin_not_primary():
+def test_render_tangent_closure_point_on_primary_line_segment_on_twin():
     td, st, res = _seeded()
     fig = Figure()
     ax = fig.add_subplot(111)
@@ -79,11 +79,13 @@ def test_render_tangent_closure_artists_are_gid_tagged_on_the_twin_not_primary()
     ax2 = next(a for a in fig.axes if a is not ax)
 
     seg = _gid(ax2, "closure_line_segment")
-    pt = _gid(ax2, "closure_point")
+    pt = _gid(ax, "closure_point")
     assert seg.get_xdata()[0] == pytest.approx(0.0)  # through-origin
     assert pt.get_xdata()[0] == pytest.approx(st.closure_G)
-    assert all(l.get_gid() not in ("closure_line_segment", "closure_point")
-              for l in ax.get_lines())
+    rs = res.resampled
+    assert pt.get_ydata()[0] == pytest.approx(float(np.interp(st.closure_G, res.diagnostics.G, rs.p)))
+    assert all(l.get_gid() != "closure_line_segment" for l in ax.get_lines())
+    assert all(l.get_gid() != "closure_point" for l in ax2.get_lines())
 
 
 def test_render_tangent_closure_vline_on_primary_axis():
@@ -248,12 +250,12 @@ def test_gfunction_dpdg_twin_owns_inaxes_but_contact_point_controller_still_hit_
     assert ctrl._dragging is True  # captured despite inaxes pointing at the twin
 
 
-def test_tangent_closure_point_controller_on_the_twin_hit_tests_correctly():
-    """The tangent step's closure controllers live on ax2 (the G*dP/dG twin) itself. Empirically
-    ax2 -- created after the primary axis via ``ax.twinx()`` -- is the one matplotlib assigns
-    ``event.inaxes`` to over the shared region (same "later-created axes wins" rule as the
-    overview/gfunction twins above), so this is the safe direction; the assertion below confirms
-    the wiring still works from a real ``render_tangent`` figure rather than assuming it."""
+def test_tangent_closure_point_controller_on_the_primary_axis_hit_tests_correctly():
+    """The tangent step's closure marker now lives on the primary (BHP) axis, but the
+    later-created G*dP/dG twin sits on top and owns ``event.inaxes`` over the shared region --
+    the same twin-owns-inaxes hazard the gfunction contact-point controller test above guards
+    for. The controller must still capture a press on the dot via its own pixel bbox, and a
+    drag+release on a snapped sample must commit the corresponding G."""
     td, st, res = _seeded()
     fig = Figure()
     ax = fig.add_subplot(111)
@@ -262,17 +264,25 @@ def test_tangent_closure_point_controller_on_the_twin_hit_tests_correctly():
     canvas.draw()
     ax2 = next(a for a in fig.axes if a is not ax)
 
-    pt = _gid(ax2, "closure_point")
-    px, py = ax2.transData.transform((pt.get_xdata()[0], pt.get_ydata()[0]))
+    pt = _gid(ax, "closure_point")
+    px, py = ax.transData.transform((pt.get_xdata()[0], pt.get_ydata()[0]))
     ev = MouseEvent("button_press_event", canvas, px, py, button=1)
     assert ev.inaxes is ax2
+    assert ev.inaxes is not ax
 
     dg = res.diagnostics
     calls = []
-    ctrl = picks.DraggablePointController(canvas, ax2, "closure_point", dg.G, dg.GdPdG,
-                                          commit_fn=calls.append)
+    ctrl = picks.DraggablePointController(canvas, ax, "closure_point", dg.G, res.resampled.p,
+                                          commit_fn=calls.append, vline_gid="closure_vline")
     ctrl._on_press(ev)
     assert ctrl._dragging is True
+
+    idx = 3
+    sx, sy = float(dg.G[idx]), float(res.resampled.p[idx])
+    px2, py2 = ax.transData.transform((sx, sy))
+    ctrl._on_motion(MouseEvent("motion_notify_event", canvas, px2, py2))
+    ctrl._on_release(MouseEvent("button_release_event", canvas, px2, py2, button=1))
+    assert calls == [pytest.approx(sx)]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -395,8 +405,8 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "tangent")
     DfitApp._attach_controllers(stub)
-    # point controller first: press/hover priority follows list order, and the closure marker's
-    # tighter tolerance must beat the line body's rotate hit zone where the marker rides the line
+    # point controller first: press/hover priority follows list order, and the closure marker/
+    # vline must beat the through-origin line body's rotate hit zone where they cross on screen
     assert len(stub._controllers) == 3  # DraggablePointController + AnchorLineController + hover
     point_ctrl, anchor_ctrl, hover_ctrl = stub._controllers
     assert isinstance(point_ctrl, picks.DraggablePointController)
@@ -405,7 +415,8 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
     assert isinstance(hover_ctrl, picks.HoverCursorController)
     ax2 = stub._twin_axes()
     assert anchor_ctrl.ax is ax2
-    assert point_ctrl.ax is ax2
+    assert point_ctrl.ax is stub.ax  # closure marker now rides the primary BHP axis
+    assert point_ctrl.vline_gid == "closure_vline"
 
     pick = anchor_ctrl.get_pick()
     assert (pick.anchor_x, pick.anchor_y) == (0.0, 0.0)

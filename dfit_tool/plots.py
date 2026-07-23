@@ -240,8 +240,9 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 6: BHP and G*dP/dG vs G-time -- mirrors ``render_gfunction``'s twinx layout (BHP on
-    the primary/left axis, G*dP/dG on the twin/right). The through-origin line and the closure
-    departure point are picked on the G*dP/dG curve, so they live on the twin axis."""
+    the primary/left axis, G*dP/dG on the twin/right). The through-origin line is still picked
+    on the G*dP/dG curve and lives on the twin axis, but the closure marker now rides the BHP
+    curve on the primary axis."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Tangent method -- need a falloff", fontsize=10)
@@ -268,8 +269,8 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
         ax2.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
                 label="through-origin", gid="closure_line_segment")
     if state.closure_G is not None:
-        yv = float(np.interp(state.closure_G, dg.G, dg.GdPdG))
-        ax2.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
+        yv = float(np.interp(state.closure_G, dg.G, rs.p))
+        ax.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
                 gid="closure_point")
         ax.axvline(state.closure_G, color="black", ls=":", lw=1.2, gid="closure_vline")
     title = "Tangent method"

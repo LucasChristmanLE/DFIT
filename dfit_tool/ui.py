@@ -641,7 +641,7 @@ class DfitApp:
             res = self.res
             ax2 = self._twin_axes()
             step_ctrls = []
-            if res.diagnostics is not None and ax2 is not None:
+            if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
                 dg = res.diagnostics
                 gate = picks._CaptureGate()
 
@@ -658,12 +658,13 @@ class DfitApp:
                     picks.commit_closure_point(self.state, x)
                     self.refresh()
 
-                # marker first: the whole line body is a rotate hit zone, and the marker rides
-                # the curve close to the line -- press/hover priority follows this order, so the
-                # marker's tighter tolerance must win before the line claims the shared gate
+                # marker+vline first: the whole line body is a rotate hit zone for the
+                # through-origin line, and the closure marker/vline sit on the primary axis where
+                # they cross it on screen -- press/hover priority follows this order, so the
+                # marker/vline must win before the through-origin line claims the shared gate
                 step_ctrls.append(picks.DraggablePointController(
-                    self.canvas, ax2, "closure_point", dg.G, dg.GdPdG, commit_fn=commit_point,
-                    gate=gate))
+                    self.canvas, self.ax, "closure_point", dg.G, res.resampled.p,
+                    commit_fn=commit_point, vline_gid="closure_vline", gate=gate))
                 step_ctrls.append(picks.AnchorLineController(
                     self.canvas, ax2, gids={"segment": "closure_line_segment"},
                     get_pick=get_closure_pick, commit_fn=commit_line, curve=None,
@@ -671,7 +672,8 @@ class DfitApp:
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(text="Rotate the through-origin line; drag the closure marker.")
+            self.hint_lbl.config(
+                text="Rotate the through-origin line; drag the closure marker or its vertical line.")
         elif step == "loglog":
             def on_span(lo, hi):
                 picks.handle_loglog_span(self.state, lo, hi)

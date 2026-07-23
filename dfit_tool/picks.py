@@ -497,13 +497,22 @@ class DraggablePointController:
     release, ``commit_fn(float(snapped_x))`` is called once with the final snapped x. A missing
     marker artist (gid not found) makes press a no-op.
 
+    ``vline_gid`` optionally names a companion gid-tagged vertical line (an ``axvline``) that
+    tracks the same pick, e.g. the tangent page's dotted closure line. When given, a press within
+    ``tol_px`` of that line's x-pixel (same test as ``DragLineController``) also captures the
+    marker -- so the whole line body is draggable, not just the dot -- and motion moves the vline
+    to the same snapped x alongside the marker. A missing marker artist still makes press a no-op
+    even if the vline would hit, since the marker is what gets dragged. Hit-testing looks up the
+    vline on ``self.ax`` (the axes this controller was built against), so it only works when the
+    marker and vline share an axes.
+
     ``gate`` follows the same claim-after-hit-test / release-on-release contract as
     ``AnchorLineController`` -- see ``_CaptureGate``.
     """
 
     def __init__(self, canvas, ax, gid: str, curve_x: np.ndarray, curve_y: np.ndarray,
                  commit_fn: Callable[[float], None], tol_px: float = 8.0,
-                 gate: Optional[_CaptureGate] = None):
+                 vline_gid: Optional[str] = None, gate: Optional[_CaptureGate] = None):
         self.canvas = canvas
         self.ax = ax
         self.gid = gid
@@ -511,6 +520,7 @@ class DraggablePointController:
         self.curve_y = curve_y
         self.commit_fn = commit_fn
         self.tol_px = tol_px
+        self.vline_gid = vline_gid
         self.gate = gate if gate is not None else _CaptureGate()
 
         self._dragging = False
@@ -527,17 +537,42 @@ class DraggablePointController:
                 return line
         return None
 
+    def _vline(self):
+        if self.vline_gid is None:
+            return None
+        for line in self.ax.get_lines():
+            if line.get_gid() == self.vline_gid:
+                return line
+        return None
+
+    def _hit_marker(self, event) -> bool:
+        marker = self._artist()
+        if marker is None:
+            return False
+        xs, ys = marker.get_xdata(), marker.get_ydata()
+        if len(xs) == 0:
+            return False
+        mpx = self.ax.transData.transform((xs[0], ys[0]))
+        return math.hypot(event.x - mpx[0], event.y - mpx[1]) <= self.tol_px
+
+    def _hit_vline(self, event) -> bool:
+        vline = self._vline()
+        if vline is None:
+            return False
+        vx = vline.get_xdata()[0]
+        px = self.ax.transData.transform((vx, 0.0))[0]
+        return abs(px - event.x) <= self.tol_px
+
     def _on_press(self, event):
         if event.button != 1 or not _axes_contains_pixel(self.ax, event):
             return
         marker = self._artist()
         if marker is None:
             return
-        xs, ys = marker.get_xdata(), marker.get_ydata()
+        xs = marker.get_xdata()
         if len(xs) == 0:
             return
-        mpx = self.ax.transData.transform((xs[0], ys[0]))
-        if math.hypot(event.x - mpx[0], event.y - mpx[1]) > self.tol_px:
+        if not (self._hit_marker(event) or self._hit_vline(event)):
             return
         if not self.gate.try_claim(self):
             return
@@ -548,10 +583,14 @@ class DraggablePointController:
         if not self._dragging or event.x is None or event.y is None:
             return
         idx = _nearest_index_by_pixel(self.ax, self.curve_x, event)
+        sx = float(self.curve_x[idx])
         marker = self._artist()
         if marker is not None:
-            marker.set_data([float(self.curve_x[idx])], [float(self.curve_y[idx])])
-        self._final_x = float(self.curve_x[idx])
+            marker.set_data([sx], [float(self.curve_y[idx])])
+        vline = self._vline()
+        if vline is not None:
+            vline.set_xdata([sx, sx])
+        self._final_x = sx
         self.canvas.draw_idle()
 
     def _on_release(self, event):
@@ -569,18 +608,14 @@ class DraggablePointController:
     # ---- hover probes (no side effects) -- see HoverCursorController ----
     def hover_kind(self, event) -> Optional[str]:
         """"point" if the event pixel is within ``tol_px`` of this controller's marker (same test
-        as ``_on_press``), else None."""
+        as ``_on_press``); else "line" if within ``tol_px`` of the companion vline (when
+        ``vline_gid`` is set); else None."""
         if not _axes_contains_pixel(self.ax, event):
             return None
-        marker = self._artist()
-        if marker is None:
-            return None
-        xs, ys = marker.get_xdata(), marker.get_ydata()
-        if len(xs) == 0:
-            return None
-        mpx = self.ax.transData.transform((xs[0], ys[0]))
-        if math.hypot(event.x - mpx[0], event.y - mpx[1]) <= self.tol_px:
+        if self._hit_marker(event):
             return "point"
+        if self._hit_vline(event):
+            return "line"
         return None
 
     def active_kind(self) -> Optional[str]:
