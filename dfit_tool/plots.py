@@ -303,7 +303,7 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
         from .interpret import loglog_slope
         i0 = int(np.searchsorted(dg.t, lo))
         i1 = int(np.searchsorted(dg.t, hi))
-        s = loglog_slope(dg.t, dg.dp, i0, i1)
+        s = loglog_slope(dg.t, dg.tdpdt, i0, i1)
         ax.set_title(f"Log-log   window slope={s:.2f}   ({state.postclosure_scenario or '?'})",
                      fontsize=10)
     else:
