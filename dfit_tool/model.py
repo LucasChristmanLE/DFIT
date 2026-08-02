@@ -164,13 +164,17 @@ class DerivedResults:
 
     # pressures
     literal_isip: Optional[float] = None
-    effective_isip: Optional[float] = None
+    effective_isip_compliance: Optional[float] = None
+    effective_isip_tangent: Optional[float] = None
+    effective_isip_variable: Optional[float] = None
     contact_pressure: Optional[float] = None
     shmin_compliance: Optional[float] = None
     shmin_tangent: Optional[float] = None
+    shmin_variable: Optional[float] = None
     closure_pressure: Optional[float] = None
     net_pressure_compliance: Optional[float] = None
     net_pressure_tangent: Optional[float] = None
+    net_pressure_variable: Optional[float] = None
     delta_closure: Optional[float] = None
     pore_pressure: Optional[float] = None
 
@@ -184,7 +188,7 @@ class DerivedResults:
 
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
-    eff_isip_line: Optional[TangentPick] = field(default=None, repr=False)
+    eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
 
     warnings: list[str] = field(default_factory=list)
 
@@ -254,8 +258,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         idx = int(np.nanargmin(np.abs(dg.G - state.contact_G)))
         anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx,
                                                                   half=4)
-        res.eff_isip_line = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
-        res.effective_isip = interpret.effective_isip(anchor_x, anchor_y, slope)
+        res.eff_isip_line_compliance = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
+        res.effective_isip_compliance = interpret.effective_isip(anchor_x, anchor_y, slope)
 
     # Compliance contact -> Shmin
     if state.contact_G is not None and res.diagnostics is not None:
@@ -267,12 +271,40 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.closure_pressure = float(np.interp(state.closure_G, res.diagnostics.G, res.resampled.p))
         res.shmin_tangent = interpret.shmin_tangent(res.closure_pressure)
 
-    # Net pressures (effective ISIP is the reference per plan)
-    ref = res.effective_isip if res.effective_isip is not None else res.literal_isip
-    if ref is not None and res.shmin_compliance is not None:
-        res.net_pressure_compliance = interpret.net_pressure(ref, res.shmin_compliance)
-    if ref is not None and res.shmin_tangent is not None:
-        res.net_pressure_tangent = interpret.net_pressure(ref, res.shmin_tangent)
+    # Effective ISIP (tangent method): same construction as the compliance block above, anchored
+    # at state.closure_G instead of state.contact_G.
+    if state.closure_G is not None and res.diagnostics is not None and res.resampled is not None:
+        dg = res.diagnostics
+        idx = int(np.nanargmin(np.abs(dg.G - state.closure_G)))
+        x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
+        res.effective_isip_tangent = interpret.effective_isip(x, y, slope)
+
+    # Variable compliance method: average the raw contact/closure picks in G-time, then read
+    # Shmin (variable) off the P-vs-G curve at that midpoint and build its own effective ISIP the
+    # same way as the other two methods. Guarded on both picks being present.
+    if (state.contact_G is not None and state.closure_G is not None
+            and res.diagnostics is not None and res.resampled is not None):
+        dg = res.diagnostics
+        G_var = (state.contact_G + state.closure_G) / 2.0
+        res.shmin_variable = float(np.interp(G_var, dg.G, res.resampled.p))
+        idx = int(np.nanargmin(np.abs(dg.G - G_var)))
+        x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
+        res.effective_isip_variable = interpret.effective_isip(x, y, slope)
+
+    # Net pressures: each method references its own effective ISIP, falling back to literal ISIP
+    # per-method when that method's effective ISIP isn't available.
+    ref_compliance = res.effective_isip_compliance if res.effective_isip_compliance is not None \
+        else res.literal_isip
+    ref_tangent = res.effective_isip_tangent if res.effective_isip_tangent is not None \
+        else res.literal_isip
+    ref_variable = res.effective_isip_variable if res.effective_isip_variable is not None \
+        else res.literal_isip
+    if ref_compliance is not None and res.shmin_compliance is not None:
+        res.net_pressure_compliance = interpret.net_pressure(ref_compliance, res.shmin_compliance)
+    if ref_tangent is not None and res.shmin_tangent is not None:
+        res.net_pressure_tangent = interpret.net_pressure(ref_tangent, res.shmin_tangent)
+    if ref_variable is not None and res.shmin_variable is not None:
+        res.net_pressure_variable = interpret.net_pressure(ref_variable, res.shmin_variable)
     if res.shmin_compliance is not None and res.shmin_tangent is not None:
         res.delta_closure = res.shmin_compliance - res.shmin_tangent
 

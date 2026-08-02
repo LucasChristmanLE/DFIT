@@ -206,8 +206,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         ax2.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
                  gid="d2pdg2_curve")
 
-    if res.eff_isip_line is not None and res.effective_isip is not None:
-        ln = res.eff_isip_line
+    if res.eff_isip_line_compliance is not None and res.effective_isip_compliance is not None:
+        ln = res.eff_isip_line_compliance
         g_span = float(np.nanmax(dg.G) - np.nanmin(dg.G)) if len(dg.G) else 1.0
         y_span = (float(np.nanmax(rs.p) - np.nanmin(rs.p)) if len(rs.p)
                  else max(abs(ln.anchor_y), 1.0))
@@ -217,7 +217,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
             gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
                   "extension": "eff_isip_extension"},
             tick_half_y=0.04 * y_span, label="effective-ISIP line")
-        ax.plot(0.0, res.effective_isip, "o", color="tab:green")
+        ax.plot(0.0, res.effective_isip_compliance, "o", color="tab:green")
     if state.min_dpdg_G is not None:
         y = float(np.interp(state.min_dpdg_G, dg.G, dg.dPdG))
         ax2.plot(state.min_dpdg_G, y, marker="v", color="tab:red", ms=8, label="min dP/dG",
@@ -229,8 +229,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         ax.axvline(state.contact_G, color="black", ls=":", lw=1.2, gid="contact_vline")
 
     title = "G-function"
-    if res.effective_isip is not None:
-        title += f"   eff.ISIP={res.effective_isip:.0f}"
+    if res.effective_isip_compliance is not None:
+        title += f"   eff.ISIP={res.effective_isip_compliance:.0f}"
     if res.shmin_compliance is not None:
         title += f"   Shmin(compl)={res.shmin_compliance:.0f}"
     ax.set_title(title, fontsize=10)

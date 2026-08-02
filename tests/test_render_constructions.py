@@ -35,7 +35,7 @@ def _seeded():
     res = compute_all(st, td)
     assert st.isip_tangent is not None
     assert st.min_dpdg_G is not None and st.contact_G is not None
-    assert res.eff_isip_line is not None
+    assert res.eff_isip_line_compliance is not None
     assert st.closure_slope is not None and st.closure_G is not None
     return td, st, res
 
@@ -205,7 +205,8 @@ def test_render_gfunction_eff_isip_construction_gids_and_extension_reaches_g_zer
 
 def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
     """The min-dP/dG marker is a real gid-tagged artist on the twin (dP/dG) axis. The eff-ISIP
-    construction gids (asserted above) are still drawn from the derived res.eff_isip_line, but no
+    construction gids (asserted above) are still drawn from the derived
+    res.eff_isip_line_compliance, but no
     AnchorLineController wiring exists for them anywhere in ui.py any more -- see
     test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate below, which asserts
     the step's only two controllers are both DraggablePointControllers."""

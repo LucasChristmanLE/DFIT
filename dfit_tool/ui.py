@@ -39,30 +39,38 @@ CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rap
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
                          "PC-D mixed", "PC-E none", "PC-F none"]
 
-# The 13 result-panel rows, in display order -- module level (not just a literal inside
+# The 16 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
-    "te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP", "effective ISIP",
-    "contact P", "Shmin compliance", "Shmin tangent", "closure P",
-    "net (compliance)", "net (tangent)", "delta closure", "pore pressure",
+    "te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP",
+    "eff ISIP (compliance)", "eff ISIP (tangent)", "eff ISIP (variable)",
+    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
+    "net (compliance)", "net (tangent)", "net (variable)",
+    "delta closure", "pore pressure",
 ]
 
 # Which step "owns" each panel field -- _update_panel shows "-" for a field whose step is still
 # not_visited, even if compute_all already produced a value for it (e.g. a value carried over
-# from a loaded JSON pick file the user hasn't actually visited yet this session).
+# from a loaded JSON pick file the user hasn't actually visited yet this session). The three
+# variable-method rows are guarded in compute_all on both the contact and closure picks, so they
+# stay None (and display "-") until the gfunction step has actually been visited -- same
+# precedent as "delta closure" owning only "tangent".
 FIELD_STEP = {
     "te (min)": "overview",
     "Vinj (bbl)": "overview",
     "qmax (bpm)": "overview",
     "literal ISIP": "isip",
-    "effective ISIP": "gfunction",
+    "eff ISIP (compliance)": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
     "net (compliance)": "gfunction",
+    "eff ISIP (tangent)": "tangent",
     "Shmin tangent": "tangent",
-    "closure P": "tangent",
     "net (tangent)": "tangent",
     "delta closure": "tangent",
+    "eff ISIP (variable)": "tangent",
+    "Shmin variable": "tangent",
+    "net (variable)": "tangent",
     "pore pressure": "porepressure",
 }
 
@@ -696,13 +704,16 @@ class DfitApp:
             "Vinj (bbl)": s(r.vinj, "{:.1f}"),
             "qmax (bpm)": s(r.qmax_bpm, "{:.2f}"),
             "literal ISIP": s(r.literal_isip),
-            "effective ISIP": s(r.effective_isip),
+            "eff ISIP (compliance)": s(r.effective_isip_compliance),
+            "eff ISIP (tangent)": s(r.effective_isip_tangent),
+            "eff ISIP (variable)": s(r.effective_isip_variable),
             "contact P": s(r.contact_pressure),
             "Shmin compliance": s(r.shmin_compliance),
             "Shmin tangent": s(r.shmin_tangent),
-            "closure P": s(r.closure_pressure),
+            "Shmin variable": s(r.shmin_variable),
             "net (compliance)": s(r.net_pressure_compliance),
             "net (tangent)": s(r.net_pressure_tangent),
+            "net (variable)": s(r.net_pressure_variable),
             "delta closure": s(r.delta_closure),
             "pore pressure": s(r.pore_pressure),
         }

@@ -57,7 +57,8 @@ def test_commit_min_dpdg_point_sets_min_dpdg_g():
 
 def test_commit_min_dpdg_point_alone_does_not_derive_eff_isip_line():
     """min_dpdg_G is a diagnostic pick only -- it does not feed the effective-ISIP tangent
-    (that's contact_G; see test_commit_contact_point_then_compute_all_derives_eff_isip_line)."""
+    (that's contact_G; see
+    test_commit_contact_point_then_compute_all_derives_eff_isip_line_compliance)."""
     td, st, res = _res()
     dg = res.diagnostics
     target_G = float(dg.G[dg.G.size // 2])
@@ -66,8 +67,8 @@ def test_commit_min_dpdg_point_alone_does_not_derive_eff_isip_line():
     assert st.contact_G is None
     res2 = compute_all(st, td)
 
-    assert res2.eff_isip_line is None
-    assert res2.effective_isip is None
+    assert res2.eff_isip_line_compliance is None
+    assert res2.effective_isip_compliance is None
 
 
 def test_commit_closure_line_sets_only_slope():
@@ -84,9 +85,10 @@ def test_commit_contact_point_sets_contact_g():
     assert state.contact_G == pytest.approx(12.5)
 
 
-def test_commit_contact_point_then_compute_all_derives_eff_isip_line_and_effective_isip():
+def test_commit_contact_point_then_compute_all_derives_eff_isip_line_compliance():
     """commit_contact_point only sets state.contact_G; the effective-ISIP tangent it feeds is
-    derived by compute_all (model.py), not stored -- see DerivedResults.eff_isip_line."""
+    derived by compute_all (model.py), not stored -- see
+    DerivedResults.eff_isip_line_compliance."""
     td, st, res = _res()
     dg = res.diagnostics
     target_G = float(dg.G[dg.G.size // 2])
@@ -96,12 +98,12 @@ def test_commit_contact_point_then_compute_all_derives_eff_isip_line_and_effecti
 
     idx = int(np.nanargmin(np.abs(dg.G - target_G)))
     expected_slope = interpret.local_slope(dg.G, res.resampled.p, idx, half=4)
-    assert res2.eff_isip_line is not None
-    assert res2.eff_isip_line.anchor_x == pytest.approx(float(dg.G[idx]))
-    assert res2.eff_isip_line.anchor_y == pytest.approx(float(res.resampled.p[idx]))
-    assert res2.eff_isip_line.slope == pytest.approx(expected_slope)
-    assert res2.effective_isip is not None
-    assert np.isfinite(res2.effective_isip)
+    assert res2.eff_isip_line_compliance is not None
+    assert res2.eff_isip_line_compliance.anchor_x == pytest.approx(float(dg.G[idx]))
+    assert res2.eff_isip_line_compliance.anchor_y == pytest.approx(float(res.resampled.p[idx]))
+    assert res2.eff_isip_line_compliance.slope == pytest.approx(expected_slope)
+    assert res2.effective_isip_compliance is not None
+    assert np.isfinite(res2.effective_isip_compliance)
 
 
 def test_commit_closure_point_sets_closure_g():

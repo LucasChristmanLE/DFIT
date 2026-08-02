@@ -829,7 +829,7 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
 def seed_gfunction(state: PickState, res: DerivedResults) -> None:
     """The min-dP/dG point (a diagnostic pick), plus the compliance contact pick at the dP/dG
     hump -- the contact pick feeds the derived effective-ISIP tangent, see
-    model.compute_all/DerivedResults.eff_isip_line."""
+    model.compute_all/DerivedResults.eff_isip_line_compliance."""
     if state.min_dpdg_G is not None and state.contact_G is not None:
         return
     dg = res.diagnostics
