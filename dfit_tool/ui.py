@@ -24,6 +24,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from . import io_load, picks, plots, sliders
 from .model import PickState, TangentPick, compute_all, infer_step_status
 from .plots import ViewDefaults
+from .questionnaire import find_questionnaire, parse_questionnaire
 
 _SLIDER_GID = "slider"
 
@@ -215,6 +216,15 @@ class DfitApp:
         ttk.Button(cfg2, text="Save picks…", command=self._save_picks).pack(side="right", padx=4)
         ttk.Button(cfg2, text="Load picks…", command=self._load_picks).pack(side="right")
 
+        # Provenance for the density/TVD prefill above -- set by _load when a questionnaire xlsx
+        # is auto-detected next to the CSV; empty when none was found. Density/TVD stay ordinary
+        # editable entries either way, this is just so the user can see (and judge) the source. On
+        # its own full-width row so long warning text isn't clipped by the buttons packed on cfg2.
+        cfg3 = ttk.Frame(self.root, padding=(6, 2))
+        cfg3.pack(side="top", fill="x")
+        self.quest_lbl = ttk.Label(cfg3, text="", foreground="gray")
+        self.quest_lbl.pack(fill="x", anchor="w")
+
     def _build_body(self):
         body = ttk.Frame(self.root)
         body.pack(side="top", fill="both", expand=True)
@@ -329,8 +339,44 @@ class DfitApp:
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
         self.txt_notes.delete("1.0", "end")
+        # Density/TVD are per-well; clear the stale previous well's values before (maybe)
+        # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
+        self.var_density.set("")
+        self.var_tvd.set("")
+        self._load_questionnaire(path)
         self._sync_state_from_widgets()
         self._goto("overview")
+
+    def _load_questionnaire(self, csv_path: str):
+        """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill density/TVD.
+
+        Best-effort only: a missing or malformed questionnaire must never block the CSV load
+        already underway, so any failure here is swallowed and just leaves the provenance label
+        empty. Density/TVD entries are prefilled even when the parse is uncertain (e.g. a coerced
+        SG->ppg reading) -- the provenance label shows the raw source text so it can be checked.
+        """
+        self.quest_lbl.config(text="")
+        try:
+            xlsx_path, find_warnings = find_questionnaire(csv_path)
+            if xlsx_path is None:
+                return
+            result = parse_questionnaire(xlsx_path)
+        except Exception:
+            return
+
+        parts = []
+        if result.density_ppg is not None:
+            self.var_density.set(str(result.density_ppg))
+            parts.append(f'density {result.density_ppg} ppg ["{result.density_source}"]')
+        if result.tvd_ft is not None:
+            self.var_tvd.set(str(result.tvd_ft))
+            parts.append(f'TVD {result.tvd_ft} ft ["{result.tvd_source}"]')
+        all_warnings = find_warnings + result.warnings
+        if all_warnings:
+            parts.append("warnings: " + "; ".join(all_warnings))
+        if parts:
+            text = f"Questionnaire: {', '.join(parts)} — {os.path.basename(xlsx_path)}"
+            self.quest_lbl.config(text=text)
 
     def _sync_state_from_widgets(self):
         self.state.pressure_col = self.var_pressure.get()
@@ -750,6 +796,10 @@ class DfitApp:
         self.var_isbhp.set(self.state.pressure_is_bhp)
         self.var_density.set("" if self.state.density_ppg is None else str(self.state.density_ppg))
         self.var_tvd.set("" if self.state.tvd_ft is None else str(self.state.tvd_ft))
+        # Density/TVD above now came from the picks file, not the questionnaire that was auto-
+        # detected (if any) when the CSV was loaded -- clear the stale provenance label so it
+        # doesn't misattribute these values.
+        self.quest_lbl.config(text="")
         self.var_alpha.set(str(self.state.alpha))
         self.var_step.set(str(self.state.resample_step))
         self.var_cscen.set(self.state.closure_scenario)
