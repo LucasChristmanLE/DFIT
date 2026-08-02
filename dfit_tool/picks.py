@@ -684,7 +684,13 @@ def handle_loglog_span(state: PickState, lo: float, hi: float) -> None:
 
 
 def handle_pp_span(state: PickState, lo: float, hi: float) -> None:
-    state.pp_window = (float(lo), float(hi))
+    # Span arrives in the plotted transform domain (x = t**expo); pp_window is shut-in seconds.
+    if hi <= 0:
+        return
+    expo = -0.5 if state.pp_axis == "tm12" else -1.0
+    t_lo = float(hi) ** (1.0 / expo)
+    t_hi = float(lo) ** (1.0 / expo) if lo > 0 else float("inf")
+    state.pp_window = (t_lo, t_hi)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -874,7 +880,13 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
     dg = res.diagnostics
     if dg is None or len(dg.t) <= 6:
         return
-    state.pp_window = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
+    if state.loglog_window is not None:
+        state.pp_window = state.loglog_window
+    else:
+        # The last decade alone can hold <2 samples on sparsely-resampled falloffs; widen lo to
+        # at least the second-to-last sample so the seeded window always has >=2 points to fit.
+        lo = min(float(dg.t[-1]) / 10.0, float(dg.t[-2]))
+        state.pp_window = (lo, float(dg.t[-1]))
 
 
 SEEDERS = {

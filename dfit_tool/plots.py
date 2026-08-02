@@ -327,6 +327,12 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     ax.grid(True, alpha=0.3)
     xmax = float(np.nanmax(x)) if x.size else 1.0
 
+    if state.pp_window is not None:
+        lo, hi = state.pp_window
+        x_lo = 0.0 if not np.isfinite(hi) else hi ** expo
+        x_hi = lo ** expo if lo > 0 else xmax
+        ax.axvspan(x_lo, x_hi, color="tab:orange", alpha=0.15)
+
     if state.pp_window is not None and res.pore_pressure is not None:
         lo, hi = state.pp_window
         m = (dg.t >= lo) & (dg.t <= hi)
@@ -336,7 +342,15 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             xr = np.array([0.0, x[m].max()])
             ax.plot(xr, intercept + slope * xr, color="tab:green", ls="--", lw=1.3)
             ax.plot(0.0, res.pore_pressure, "o", color="tab:green")
-        ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
+            pmin = float(dg.p[m].min())
+            if res.pore_pressure >= pmin:
+                ax.set_title(
+                    f"Pore pressure = {res.pore_pressure:.0f} psi  (>= observed -- adjust window)",
+                    fontsize=10)
+            else:
+                ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
+        else:
+            ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
     return ViewDefaults(xlim=(0.0, xmax))
