@@ -4,12 +4,14 @@ The loader is deliberately format-tolerant: DFIT exports carry a datetime column
 ``MM/DD/YYYY HH:MM:SS`` but occasionally leaks raw Excel serial numbers (e.g. ``43508.34097``) in
 the long falloff tail. Both are parsed onto one elapsed-seconds time base.
 
-Only CSV is handled in this build; a Fracpro ``.DBS`` reader is a later addition (see ../plan.md).
+Two formats are handled: CSV (``load_csv``) and Fracpro's binary ``.DBS`` format (``load_dbs``).
+``load`` dispatches on the file extension.
 """
 
 from __future__ import annotations
 
 import re
+import struct
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -189,3 +191,114 @@ def load_csv(path: str) -> TestData:
     t_s = elapsed_seconds(dt)
 
     return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=columns)
+
+
+# --------------------------------------------------------------------------------------------------
+# Fracpro .DBS binary format
+# --------------------------------------------------------------------------------------------------
+# Reverse-engineered layout (little-endian throughout):
+#   0x000            4-byte magic: 77 EF CD AB
+#   0x004  uint32    file save timestamp (Unix epoch seconds; varies per file -- not validated)
+#   0x2B4  uint32    n_channels
+#   0x2B8  uint32    n_samples
+#   0x2C0  float32   sample interval, in MINUTES
+#   0x2C4  float32   total duration in minutes (informational only, not used here; has been seen
+#                    not to equal n_samples * interval_min in a real merged file)
+#   0x2CC  uint32    data_offset -- start of the sample records
+#   0x334  ...       channel table: n_channels records of 84 bytes each
+#     +0   char[4]   tag (e.g. "THCS", "SLRT")
+#     +16  cstr      display name (latin-1, NUL-terminated); rest of the record is unused
+#   data_offset ...  n_samples records of (4 + 4*n_channels) bytes each:
+#                    uint32 sample index, then one float32 per channel (table order)
+# There is no absolute start timestamp for the *data* in the file -- only elapsed time
+# (index * interval). The 0x004 timestamp is when the file was saved, not when logging started.
+_DBS_MAGIC = bytes.fromhex("77efcdab")
+_DBS_HEADER_SIZE = 0x334
+_DBS_CHANNEL_RECORD_SIZE = 84
+
+
+def load_dbs(path: str) -> TestData:
+    """Load a Fracpro ``.DBS`` binary file and attach an elapsed-seconds time base.
+
+    See the module-level comment above for the binary layout. Returns the same ``TestData``
+    shape as ``load_csv``: a synthetic ``"DateTime"`` column (the file carries no wall-clock
+    time, only elapsed samples) plus one float64 column per channel.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if data[:4] != _DBS_MAGIC:
+        raise ValueError(f"{path!r}: not a Fracpro DBS file (bad magic)")
+
+    n_channels, n_samples = struct.unpack_from("<II", data, 0x2B4)
+    interval_min = struct.unpack_from("<f", data, 0x2C0)[0]
+    data_offset = struct.unpack_from("<I", data, 0x2CC)[0]
+
+    if not (1 <= n_channels <= 64):
+        raise ValueError(f"{path!r}: n_channels {n_channels} out of sane range (1..64)")
+    if n_samples <= 0:
+        raise ValueError(f"{path!r}: n_samples {n_samples} is not positive")
+    if not (np.isfinite(interval_min) and interval_min > 0):
+        raise ValueError(f"{path!r}: sample interval {interval_min} is not a positive finite number")
+
+    expected_offset = _DBS_HEADER_SIZE + _DBS_CHANNEL_RECORD_SIZE * n_channels
+    if data_offset != expected_offset:
+        raise ValueError(
+            f"{path!r}: data_offset {data_offset} != expected {expected_offset} "
+            f"for {n_channels} channel(s)"
+        )
+
+    record_size = 4 + 4 * n_channels
+    expected_size = data_offset + n_samples * record_size
+    if expected_size != len(data):
+        raise ValueError(
+            f"{path!r}: file size {len(data)} != expected {expected_size} "
+            f"for {n_samples} samples of {record_size} bytes"
+        )
+
+    # Channel names: display name at +16 in each 84-byte record, NUL-terminated latin-1, falling
+    # back to the 4-char tag if blank. Duplicate names are deduped by suffixing the tag, then by
+    # appending " (2)", " (3)", ... until unique -- every channel must land in its own column, or
+    # the dict-based assembly below would silently overwrite one channel's data with another's.
+    # "DateTime" is seeded into `seen` so a channel literally named that can't clobber the
+    # synthetic datetime column.
+    names: list[str] = []
+    seen: set[str] = {"DateTime"}
+    for i in range(n_channels):
+        rec_off = _DBS_HEADER_SIZE + _DBS_CHANNEL_RECORD_SIZE * i
+        tag = data[rec_off:rec_off + 4].decode("latin-1", errors="replace").strip("\x00").strip()
+        raw_name = data[rec_off + 16:rec_off + _DBS_CHANNEL_RECORD_SIZE]
+        nul = raw_name.find(b"\x00")
+        if nul >= 0:
+            raw_name = raw_name[:nul]
+        name = raw_name.decode("latin-1").strip() or tag
+        if name in seen:
+            name = f"{name} [{tag}]"
+        n = 2
+        base = name
+        while name in seen:
+            name = f"{base} ({n})"
+            n += 1
+        seen.add(name)
+        names.append(name)
+
+    # Bulk-read the whole data region in one call: a structured dtype of (index, c0, c1, ...).
+    dtype = np.dtype([("idx", "<u4")] + [(f"c{i}", "<f4") for i in range(n_channels)])
+    rec = np.frombuffer(data, dtype=dtype, count=n_samples, offset=data_offset)
+
+    t_s = rec["idx"].astype(np.float64) * float(interval_min) * 60.0
+
+    dt_col = "DateTime"
+    cols = {dt_col: (pd.Timestamp("1970-01-01") + pd.to_timedelta(t_s, unit="s")).astype("datetime64[us]")}
+    for i, name in enumerate(names):
+        cols[name] = rec[f"c{i}"].astype(np.float64)
+    df = pd.DataFrame(cols)
+
+    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns))
+
+
+def load(path: str) -> TestData:
+    """Dispatch to ``load_dbs`` or ``load_csv`` based on the file extension."""
+    if path.lower().endswith(".dbs"):
+        return load_dbs(path)
+    return load_csv(path)

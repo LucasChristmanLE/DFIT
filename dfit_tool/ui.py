@@ -313,13 +313,20 @@ class DfitApp:
 
     # ---- data / config --------------------------------------------------------------------------
     def _open(self):
-        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All", "*.*")])
+        path = filedialog.askopenfilename(
+            filetypes=[
+                ("DFIT data", "*.csv *.dbs"),
+                ("CSV", "*.csv"),
+                ("Fracpro DBS", "*.dbs"),
+                ("All", "*.*"),
+            ]
+        )
         if path:
             self._load(path)
 
     def _load(self, path: str):
         try:
-            self.td = io_load.load_csv(path)
+            self.td = io_load.load(path)
         except Exception as e:
             messagebox.showerror("Load failed", str(e))
             return
