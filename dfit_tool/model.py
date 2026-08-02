@@ -51,7 +51,7 @@ class PickState:
     shutin_idx: Optional[int] = None
     qmax_bpm: Optional[float] = None  # auto-detected; overridable
 
-    # --- step 3: literal ISIP tangent (BHP vs time-seconds axis) ---
+    # --- step 3: apparent ISIP tangent (BHP vs time-seconds axis) ---
     isip_tangent: Optional[TangentPick] = None
 
     # --- step 5: min-dP/dG point (P vs G axis; a diagnostic pick) + compliance contact (feeds
@@ -163,7 +163,7 @@ class DerivedResults:
     t_shutin_s: Optional[float] = None
 
     # pressures
-    literal_isip: Optional[float] = None
+    apparent_isip: Optional[float] = None
     effective_isip_compliance: Optional[float] = None
     effective_isip_tangent: Optional[float] = None
     effective_isip_variable: Optional[float] = None
@@ -234,10 +234,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if res.qmax_bpm and res.qmax_bpm > 0:
             res.te_s = interpret.effective_te_seconds(res.vinj, res.qmax_bpm)
 
-    # Literal ISIP (needs shut-in time)
+    # Apparent ISIP (needs shut-in time)
     if state.isip_tangent and res.t_shutin_s is not None:
         tg = state.isip_tangent
-        res.literal_isip = interpret.literal_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
+        res.apparent_isip = interpret.apparent_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
 
     # Resample + diagnostics (needs te)
     if res.te_s and res.t_shutin_s is not None and res.bhp_all is not None:
@@ -299,14 +299,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
         res.effective_isip_variable = interpret.effective_isip(x, y, slope)
 
-    # Net pressures: each method references its own effective ISIP, falling back to literal ISIP
+    # Net pressures: each method references its own effective ISIP, falling back to apparent ISIP
     # per-method when that method's effective ISIP isn't available.
     ref_compliance = res.effective_isip_compliance if res.effective_isip_compliance is not None \
-        else res.literal_isip
+        else res.apparent_isip
     ref_tangent = res.effective_isip_tangent if res.effective_isip_tangent is not None \
-        else res.literal_isip
+        else res.apparent_isip
     ref_variable = res.effective_isip_variable if res.effective_isip_variable is not None \
-        else res.literal_isip
+        else res.apparent_isip
     if ref_compliance is not None and res.shmin_compliance is not None:
         res.net_pressure_compliance = interpret.net_pressure(ref_compliance, res.shmin_compliance)
     if ref_tangent is not None and res.shmin_tangent is not None:

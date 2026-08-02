@@ -133,13 +133,13 @@ def test_net_pressures_each_use_their_own_effective_isip_and_can_differ():
     assert len(refs) > 1
 
 
-def test_net_pressure_falls_back_to_literal_isip_when_effective_isip_unavailable(monkeypatch):
+def test_net_pressure_falls_back_to_apparent_isip_when_effective_isip_unavailable(monkeypatch):
     td, st, res = _res()
     dg = res.diagnostics
     contact_G, closure_G = _picked_gs(dg)
 
-    # Literal ISIP needs a shut-in tangent; state.isip_tangent is a stored pick (not derived), so
-    # a stand-in TangentPick anchored at t_shutin_s is enough to give literal_isip a value.
+    # Apparent ISIP needs a shut-in tangent; state.isip_tangent is a stored pick (not derived), so
+    # a stand-in TangentPick anchored at t_shutin_s is enough to give apparent_isip a value.
     st.isip_tangent = TangentPick(anchor_x=res.t_shutin_s, anchor_y=4500.0, slope=-10.0)
     picks.commit_contact_point(st, contact_G)
     picks.commit_closure_point(st, closure_G)
@@ -152,14 +152,14 @@ def test_net_pressure_falls_back_to_literal_isip_when_effective_isip_unavailable
     assert res2.effective_isip_compliance is None
     assert res2.effective_isip_tangent is None
     assert res2.effective_isip_variable is None
-    assert res2.literal_isip is not None
+    assert res2.apparent_isip is not None
     assert res2.shmin_compliance is not None
     assert res2.shmin_tangent is not None
     assert res2.shmin_variable is not None
 
     assert res2.net_pressure_compliance == pytest.approx(
-        interpret.net_pressure(res2.literal_isip, res2.shmin_compliance))
+        interpret.net_pressure(res2.apparent_isip, res2.shmin_compliance))
     assert res2.net_pressure_tangent == pytest.approx(
-        interpret.net_pressure(res2.literal_isip, res2.shmin_tangent))
+        interpret.net_pressure(res2.apparent_isip, res2.shmin_tangent))
     assert res2.net_pressure_variable == pytest.approx(
-        interpret.net_pressure(res2.literal_isip, res2.shmin_variable))
+        interpret.net_pressure(res2.apparent_isip, res2.shmin_variable))

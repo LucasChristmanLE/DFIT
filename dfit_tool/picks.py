@@ -706,7 +706,7 @@ def handle_pp_span(state: PickState, lo: float, hi: float) -> None:
 # --------------------------------------------------------------------------------------------------
 def commit_isip_tangent(state: PickState, td: TestData, res: DerivedResults,
                         kind: str, anchor_x: float, anchor_y: float, slope: float) -> None:
-    """Commit the literal-ISIP tangent (BHP vs time-seconds) after an AnchorLineController drag."""
+    """Commit the apparent-ISIP tangent (BHP vs time-seconds) after an AnchorLineController drag."""
     if kind == "anchor":
         idx = _nearest(td.t_s, anchor_x)
         ax_, ay_, sl_ = interpret.tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
@@ -821,7 +821,7 @@ def seed_overview(state: PickState, td: TestData) -> None:
 
 
 def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
-    """Literal-ISIP tangent: anchor ~1 min after shut-in, slope from a local fit of the early
+    """Apparent-ISIP tangent: anchor ~1 min after shut-in, slope from a local fit of the early
     decline."""
     if state.isip_tangent is not None:
         return

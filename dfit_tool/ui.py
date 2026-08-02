@@ -30,7 +30,7 @@ _SLIDER_GID = "slider"
 
 STEPS = [
     ("overview", "Overview"),
-    ("isip", "Literal ISIP"),
+    ("isip", "Apparent ISIP"),
     ("gfunction", "G-function"),
     ("tangent", "Tangent"),
     ("loglog", "Log-log"),
@@ -43,7 +43,7 @@ POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
 # The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
-    "te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP",
+    "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
     "eff ISIP (compliance)", "eff ISIP (tangent)", "eff ISIP (variable)",
     "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
@@ -61,7 +61,7 @@ FIELD_STEP = {
     "te (min)": "overview",
     "Vinj (bbl)": "overview",
     "qmax (bpm)": "overview",
-    "literal ISIP": "isip",
+    "apparent ISIP": "isip",
     "eff ISIP (compliance)": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
@@ -135,7 +135,7 @@ def _resolve_view(stored: Optional[ViewState], defaults: ViewDefaults,
 
 def _isip_pick_in_minutes(pick: Optional[TangentPick],
                           t_shutin_s: float) -> Optional[TangentPick]:
-    """Convert the stored literal-ISIP tangent -- ``anchor_x`` in seconds-since-file-start
+    """Convert the stored apparent-ISIP tangent -- ``anchor_x`` in seconds-since-file-start
     (``td.t_s`` scale), ``slope`` in psi/s -- into the minutes-from-shut-in coordinates
     ``plots.render_isip`` actually plots, for the ``AnchorLineController`` wired to that Axes.
     Inverse: ``_isip_minutes_to_seconds``."""
@@ -490,8 +490,18 @@ class DfitApp:
 
         full_x = self.ax.get_xlim()
         full_y = self.ax.get_ylim()
+        if self.step == "gfunction" and defaults.ylim is not None:
+            # The Axes' own autoscale over full_y also picks up the effective-ISIP tangent's
+            # dashed extension (drawn on this same Axes), which can swing the pressure axis to
+            # extreme psi values far outside the real BHP data. The renderer's own data-driven
+            # ylim is the true outer bound for this step's pressure axis.
+            full_y = defaults.ylim
         twin = self._twin_axes()
         full_y2 = twin.get_ylim() if twin is not None else None
+        if self.step == "gfunction" and full_y2 is not None:
+            # Hard-clamp the derivative (dP/dG) slider's full range to 0-500 regardless of how
+            # extreme the raw dPdG spike is, so the slider itself can never travel past it.
+            full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], 500.0))
 
         view = _resolve_view(self._views.get(self.step), defaults, full_x, full_y, full_y2)
         self._views[self.step] = view
@@ -760,7 +770,7 @@ class DfitApp:
             "te (min)": s(r.te_s / 60 if r.te_s else None, "{:.2f}"),
             "Vinj (bbl)": s(r.vinj, "{:.1f}"),
             "qmax (bpm)": s(r.qmax_bpm, "{:.2f}"),
-            "literal ISIP": s(r.literal_isip),
+            "apparent ISIP": s(r.apparent_isip),
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
             "eff ISIP (tangent)": s(r.effective_isip_tangent),
             "eff ISIP (variable)": s(r.effective_isip_variable),

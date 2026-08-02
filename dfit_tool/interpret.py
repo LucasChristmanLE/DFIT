@@ -1,4 +1,4 @@
-"""DFIT interpretation math: te, ISIP (literal/effective), Shmin (compliance/tangent),
+"""DFIT interpretation math: te, ISIP (apparent/effective), Shmin (compliance/tangent),
 net pressure, pore pressure, and auto-suggestion helpers for the interactive picks.
 
 Functions here are pure: they take data arrays and pick parameters and return numbers. The
@@ -166,8 +166,8 @@ def tangent_from_index(x_arr: np.ndarray, y_arr: np.ndarray, idx: int,
 # --------------------------------------------------------------------------------------------------
 # ISIP
 # --------------------------------------------------------------------------------------------------
-def literal_isip(anchor_t: float, anchor_p: float, slope_psi_per_s: float, t_shutin: float) -> float:
-    """Literal ISIP: early BHP-decline tangent extrapolated back to the shut-in instant."""
+def apparent_isip(anchor_t: float, anchor_p: float, slope_psi_per_s: float, t_shutin: float) -> float:
+    """Apparent ISIP: early BHP-decline tangent extrapolated back to the shut-in instant."""
     return extrapolate(anchor_t, anchor_p, slope_psi_per_s, t_shutin)
 
 

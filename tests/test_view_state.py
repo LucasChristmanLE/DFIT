@@ -1,15 +1,19 @@
 """Renderer view contract: render_* never sets Axes limits; it returns a ViewDefaults that the
 caller (ui.py) applies. Also covers the pure view-resolution helper ui.py uses in refresh()."""
 
+import types
+
 import numpy as np
 import pytest
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
+from dfit_tool import picks
 from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.resample import Diagnostics, Resampled
 from dfit_tool import plots
 from dfit_tool.plots import ViewDefaults
-from dfit_tool.ui import ViewState, _resolve_view
+from dfit_tool.ui import DfitApp, ViewState, _resolve_view
 from tests.helpers import PRESSURE_COL, make_testdata, overview_state
 
 
@@ -37,7 +41,7 @@ def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
     dg = res.diagnostics
     finite = np.isfinite(dg.dPdG)
     hi = np.percentile(dg.dPdG[finite], 95)
-    expected_clip = (0, min(max(hi * 1.5, 1.0), 500.0))
+    expected_clip = (0, min(max(hi * 1.5, 1.0), 50.0))
 
     assert defaults.y2lim == pytest.approx(expected_clip)
 
@@ -50,9 +54,10 @@ def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
     assert actual[1] >= float(np.nanmax(dg.dPdG[finite]))
 
 
-def test_gfunction_y2lim_default_capped_at_500_for_spiky_dpdg():
+def test_gfunction_y2lim_default_capped_at_50_for_spiky_dpdg():
     """The 95th-pct*1.5 default would otherwise scale to whatever the early water-hammer spike
-    demands; a hard 500 cap keeps the default view usable regardless."""
+    demands; a hard 50 cap keeps the default view tightly zoomed to the meaningful early-time
+    derivative regardless."""
     G = np.linspace(0.1, 20.0, 60)
     dPdG = np.full(60, 5.0)
     dPdG[:3] = 20000.0  # water-hammer spike
@@ -65,7 +70,7 @@ def test_gfunction_y2lim_default_capped_at_500_for_spiky_dpdg():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, None, PickState(), res)
-    assert defaults.y2lim[1] == pytest.approx(500.0)
+    assert defaults.y2lim[1] == pytest.approx(50.0)
 
 
 def test_porepressure_does_not_force_axes_xlim_to_zero():
@@ -149,3 +154,79 @@ def test_resolve_view_revisit_reuses_stored_view_unchanged():
     defaults = ViewDefaults(xlim=(100.0, 200.0))
     view = _resolve_view(stored, defaults, full_x=(0.0, 10.0), full_y=(0.0, 5.0), full_y2=None)
     assert view is stored
+
+
+def test_gfunction_ylim_default_scales_from_pressure_data_only():
+    # The effective-ISIP tangent's dashed extension can swing far outside the real BHP range;
+    # defaults.ylim must come from the pressure data alone, not the Axes' full autoscale.
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    res = compute_all(state, td)
+    fig, ax, defaults = _render(plots.render_gfunction, td, state, res)
+
+    rs = res.resampled
+    finite_p = np.isfinite(rs.p)
+    p_lo, p_hi = float(np.nanmin(rs.p[finite_p])), float(np.nanmax(rs.p[finite_p]))
+    pad = 0.05 * max(p_hi - p_lo, 1.0)
+
+    assert defaults.ylim == pytest.approx((p_lo - pad, p_hi + pad))
+    # The tangent construction is drawn on this same Axes, so its dashed extension really can
+    # push the Axes' own autoscale far outside the pressure-data-only ylim above.
+    actual = ax.get_ylim()
+    assert actual[0] < defaults.ylim[0] or actual[1] > defaults.ylim[1]
+
+
+# --------------------------------------------------------------------------------------------------
+# DfitApp.refresh(): step-specific full_y/full_y2 clamps for the gfunction step (drives the
+# slider's outer/full range, not just the default view -- ``_build_sliders`` reads these).
+# --------------------------------------------------------------------------------------------------
+def _refresh_stub(td, state, step):
+    """Duck-typed DfitApp stand-in exposing only what refresh()/_build_sliders/_twin_axes touch,
+    same headless-Agg approach as test_build_sliders.py's _make_app_stub."""
+    stub = types.SimpleNamespace()
+    stub.fig = Figure()
+    stub.ax = stub.fig.add_subplot(111)
+    stub.canvas = FigureCanvasAgg(stub.fig)
+    stub.td = td
+    stub.state = state
+    stub.step = step
+    stub._views = {}
+    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
+    stub._attach_controllers = lambda: None
+    stub._update_stepbar = lambda: None
+    stub._update_panel_visibility = lambda: None
+    stub._update_panel = lambda: None
+    stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
+    stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
+    stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
+    stub.refresh = types.MethodType(DfitApp.refresh, stub)
+    return stub
+
+
+def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500():
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    res = compute_all(state, td)
+    stub = _refresh_stub(td, state, "gfunction")
+
+    stub.refresh()
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, td, state, stub.res)
+
+    # full_y: the y-slider's outer range must equal the renderer's data-driven ylim, not
+    # whatever the Axes autoscaled to (which includes the tangent construction).
+    assert (stub._y_slider.valmin, stub._y_slider.valmax) == pytest.approx(defaults.ylim)
+
+    # full_y2: the dP/dG slider's outer range must never exceed 0-500.
+    assert stub._y2_slider.valmin >= 0.0
+    assert stub._y2_slider.valmax <= 500.0

@@ -23,7 +23,7 @@ Then open a CSV (e.g. the Argentine test file) and step through the workflow.
 - `io_load.py`  — CSV load, datetime parse (incl. Excel-serial fallback), channel mapping, surface→BHP.
 - `gfunction.py`— G/g functions, G-time (α=1 default, α=0.5 option).
 - `resample.py` — 30-psi pressure-increment resampling, derivatives, tail guard.
-- `interpret.py`— te, ISIP (literal/effective), Shmin (compliance/tangent), net pressure, pore pressure.
+- `interpret.py`— te, ISIP (apparent/effective), Shmin (compliance/tangent), net pressure, pore pressure.
 - `picks.py`    — matplotlib interactive pickers (no Tkinter dependency).
 - `ui.py`       — Tkinter/ttk shell hosting the canvas + pick panel + step bar.
 - `app.py`      — entry point.

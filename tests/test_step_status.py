@@ -105,7 +105,7 @@ def test_field_step_mapping_matches_spec():
         "te (min)": "overview",
         "Vinj (bbl)": "overview",
         "qmax (bpm)": "overview",
-        "literal ISIP": "isip",
+        "apparent ISIP": "isip",
         "eff ISIP (compliance)": "gfunction",
         "contact P": "gfunction",
         "Shmin compliance": "gfunction",

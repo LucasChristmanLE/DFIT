@@ -55,7 +55,7 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
     """Draw one gid-tagged tangent construction per plan.md step 3: a finite ``segment`` through
     the anchor, a short vertical ``tick`` at the anchor, and a dashed ``extension`` running from
     the segment's near end back to the reference vertical ``ref_x`` (the shut-in line for the
-    literal-ISIP construction, G=0 for the effective-ISIP construction) -- the ISIP marker sits
+    apparent-ISIP construction, G=0 for the effective-ISIP construction) -- the ISIP marker sits
     where the extension crosses ``ref_x``. ``gids`` maps "segment"/"tick"/"extension" to the exact
     gid string each piece is drawn with, matched by ``picks.AnchorLineController``.
     """
@@ -136,17 +136,18 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
 
 
 def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 3: BHP vs time after shut-in; the literal-ISIP tangent + extension to shut-in.
+    """Step 3: BHP vs time after shut-in; the apparent-ISIP tangent + extension to shut-in.
 
-    The literal ISIP always occurs just after shut-in, so the plotted data (and therefore the
+    The apparent ISIP always occurs just after shut-in, so the plotted data (and therefore the
     maximum extent the x-slider can zoom within) is deliberately clamped to shut-in -5 min .. +15
     min rather than the full falloff tail (which can run for days) -- the slider zooms further
-    within that fixed window. This also means the y autoscale reflects only this window, which is
-    desirable (an unbounded tail would otherwise dwarf the interesting early-time shape).
+    within that fixed window. The *default* view on first visit is a tighter -1..3 min, so the
+    early-time shape near shut-in is visible without the user having to zoom in manually; the
+    slider can still pan/zoom back out to the full -5..15 clamp.
     """
     ax.clear()
     if res.bhp_all is None or res.t_shutin_s is None:
-        ax.set_title("Literal ISIP -- set injection window first", fontsize=10)
+        ax.set_title("Apparent ISIP -- set injection window first", fontsize=10)
         return ViewDefaults()
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)
@@ -171,13 +172,13 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
             gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                   "extension": "isip_tangent_extension"},
             tick_half_y=0.04 * y_span, label="ISIP tangent")
-        ax.plot(0.0, res.literal_isip, "o", color="tab:purple")
-    if res.literal_isip is not None:
-        ax.set_title(f"Literal ISIP = {res.literal_isip:.0f} psi", fontsize=10)
+        ax.plot(0.0, res.apparent_isip, "o", color="tab:purple")
+    if res.apparent_isip is not None:
+        ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi", fontsize=10)
     else:
-        ax.set_title("Literal ISIP -- place the tangent", fontsize=10)
+        ax.set_title("Apparent ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=(-5.0, 15.0))
+    return ViewDefaults(xlim=(-1.0, 3.0))
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -193,6 +194,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.set_ylabel("BHP (psi)")
     ax.grid(True, alpha=0.3)
 
+    # The pressure axis must scale from the BHP data only -- the effective-ISIP tangent's dashed
+    # extension (drawn below, on this same Axes) can swing to extreme psi values far outside the
+    # real data, and the Axes' own autoscale would otherwise pick that up too.
+    finite_p = np.isfinite(rs.p)
+    ylim = None
+    if finite_p.any():
+        p_lo, p_hi = float(np.nanmin(rs.p[finite_p])), float(np.nanmax(rs.p[finite_p]))
+        pad = 0.05 * max(p_hi - p_lo, 1.0)
+        ylim = (p_lo - pad, p_hi + pad)
+
     ax2 = ax.twinx()
     ax2.plot(dg.G, dg.dPdG, color="tab:red", lw=1.0, label="dP/dG")
     ax2.set_ylabel("dP/dG", color="tab:red")
@@ -201,7 +212,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     finite = np.isfinite(dg.dPdG)
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.dPdG[finite], 95)
-        y2lim = (0, min(max(hi * 1.5, 1.0), 500.0))
+        y2lim = (0, min(max(hi * 1.5, 1.0), 50.0))
     if state.show_d2pdg2:
         ax2.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
                  gid="d2pdg2_curve")
@@ -235,7 +246,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         title += f"   Shmin(compl)={res.shmin_compliance:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
-    return ViewDefaults(y2lim=y2lim)
+    return ViewDefaults(ylim=ylim, y2lim=y2lim)
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:

@@ -9,7 +9,7 @@ The first build of the DFIT interpretation tool (`dfit_tool/`) works end to end 
    - The guard is inconsistent: `guarded_span` ([ui.py:337-341](dfit_tool/ui.py#L337-L341)) never checks toolbar mode, so log-log spans fight an active zoom rectangle.
    - `refresh()` destroys/recreates the Axes every time ([ui.py:219-220](dfit_tool/ui.py#L219-L220)); only the overview drag passes `preserve_view=True`, so every other step snaps back to default limits after any pick. The toolbar's nav stack also goes stale on the dead Axes.
 2. **Rectangular zoom is the wrong tool** — replace with per-axis range sliders.
-3. **Literal-ISIP tangent has no drag/pan/rotate** — `handle_isip_click` ([picks.py:162-171](dfit_tool/picks.py#L162-L171)) refits the whole tangent from any click. Same click-refits-everything pattern on the gfunction/tangent steps.
+3. **Apparent-ISIP tangent has no drag/pan/rotate** — `handle_isip_click` ([picks.py:162-171](dfit_tool/picks.py#L162-L171)) refits the whole tangent from any click. Same click-refits-everything pattern on the gfunction/tangent steps.
 4. **Tangent plot lacks pressure** — `render_tangent` ([plots.py:147-170](dfit_tool/plots.py#L147-L170)) is a single axis with only G·dP/dG.
 5. **Workflow is not sequential** — all six step buttons freely clickable, all 13 result labels + both scenario comboboxes always visible, and `seed_defaults` ([picks.py:212-249](dfit_tool/picks.py#L212-L249)) fills every pick at load.
 6. **Venv confusion** — `start-app.ps1` hard-codes the venv python with no provisioning and no `requirements.txt`. (Venv is outside the project deliberately: OneDrive must not sync package files.)
@@ -71,7 +71,7 @@ The first build of the DFIT interpretation tool (`dfit_tool/`) works end to end 
 - `AnchorLineController(canvas, ax, gids, commit_fn, curve=None, allow_anchor=True, allow_body=True, allow_rotate=True, tol_px=8.0, readout_fn=None, gate=None)`:
   - `gids` names the renderer-drawn artists: segment, anchor tick, dashed extension.
   - Hit priority: anchor → ends → body. Motion: **anchor** snaps to nearest `curve` sample and refits slope (`_tangent_from_index`, extracted from the duplicated logic in the old handlers/seeds); **body** translates the anchor by the drag delta, slope unchanged; **end** rotates about the anchor (`slope = (y−ay)/(x−ax)`, divide-by-zero → keep prior slope). Artists updated live; nothing written to `PickState` until release.
-  - `readout_fn` (optional) drives a live Text artifact during drag — used for the live literal-ISIP intercept readout.
+  - `readout_fn` (optional) drives a live Text artifact during drag — used for the live apparent-ISIP intercept readout.
   - `curve=None, allow_anchor=False, allow_body=False` = pinned-anchor rotate-only mode for the through-origin line.
 - `DraggablePointController(canvas, ax, gid, curve_x, curve_y, commit_fn, tol_px=8.0, gate=None)` — drags a marker snapped along a curve; commit on release.
 - Delete `handle_isip_click` / `handle_gfunction_click` / `handle_tangent_click` (picks.py:162-198); replace with pure commit functions: `commit_isip_tangent`, `commit_eff_isip_line`, `commit_closure_line`, `commit_contact_point`, `commit_closure_point`. Spans (`handle_loglog_span`/`handle_pp_span`, `SpanController`) untouched.
@@ -81,7 +81,7 @@ The first build of the DFIT interpretation tool (`dfit_tool/`) works end to end 
 **Files:** `dfit_tool/plots.py`, `dfit_tool/ui.py`
 
 - `render_tangent`: mirror `render_gfunction` — **P vs G on the left axis (black)**, `ax2 = ax.twinx()` with **G·dP/dG on the right (red)**; through-origin line and closure marker move to `ax2`, gid-tagged (`closure_line_segment`, `closure_point`); return the percentile `y2lim`.
-- `render_isip` / `render_gfunction`: draw the tangent constructions as gid-tagged pieces per plan.md step 3 — finite segment + short perpendicular tick at the anchor + dashed extension to the reference vertical (shut-in line for literal ISIP; G=0 for effective ISIP), replacing today's single continuous line.
+- `render_isip` / `render_gfunction`: draw the tangent constructions as gid-tagged pieces per plan.md step 3 — finite segment + short perpendicular tick at the anchor + dashed extension to the reference vertical (shut-in line for apparent ISIP; G=0 for effective ISIP), replacing today's single continuous line.
 - `_attach_controllers` wiring:
   - `isip`: `AnchorLineController` on `self.ax`, `curve=(td.t_s, res.bhp_all)`, readout = live intercept at shut-in; commit → `commit_isip_tangent` + `refresh()`.
   - `gfunction`: `AnchorLineController` (eff-ISIP line, `curve=(G, p)`) + `DraggablePointController` (contact on the P curve), one shared gate, both on `self.ax` (pressure axis).
@@ -96,7 +96,7 @@ The first build of the DFIT interpretation tool (`dfit_tool/`) works end to end 
 - Harden `_decode` (model.py:100-107): filter the input dict to known dataclass field names (`dataclasses.fields`) so old/foreign JSONs never raise; missing `step_status` falls to the default.
 - `_build_stepbar` rewrite: `< Back` | six breadcrumb buttons | `Next >` | `Skip >` … `Reset view` + warning label on the right. Breadcrumb click only honored when that step's status ≠ not_visited; `_update_stepbar()` (called from `refresh`) disables unreached steps and highlights the current one (Accent style if the theme has it, else bold text).
 - `_goto(key)`: if the step is `not_visited`, run `_seed_step(key)` (Task 6) and mark `visited`; then `refresh()`. `Next` marks current `done` then advances; `Skip` marks `skipped` then advances.
-- Step-aware panel: `FIELD_STEP` map (te/Vinj/qmax → overview; literal ISIP → isip; effective ISIP/contact P/Shmin compliance/net compliance → gfunction; Shmin tangent/closure P/net tangent/delta closure → tangent; pore pressure → porepressure). In `_update_panel`, show `-` for any field whose owning step is still `not_visited`.
+- Step-aware panel: `FIELD_STEP` map (te/Vinj/qmax → overview; apparent ISIP → isip; effective ISIP/contact P/Shmin compliance/net compliance → gfunction; Shmin tangent/closure P/net tangent/delta closure → tangent; pore pressure → porepressure). In `_update_panel`, show `-` for any field whose owning step is still `not_visited`.
 - Scenario widget visibility: wrap the closure-scenario combobox in `frm_cscen` and the postclosure combobox + pp-axis radios in `frm_pcscen`; `_update_panel_visibility()` packs `frm_cscen` only on `gfunction` and `frm_pcscen` only on `loglog`/`porepressure`, using `pack(before=self.sep_before_notes)` so re-showing never reorders the panel.
 - `_load_picks` backfill: an old JSON has picks but no `step_status`, which would lock the whole breadcrumb. After `from_json`, if `step_status` is empty, infer it: mark a step `done` when its picks exist (`start_idx/shutin_idx` → overview, `isip_tangent` → isip, `eff_isip_line/contact_G` → gfunction, `closure_G` → tangent, `loglog_window` → loglog, `pp_window` → porepressure).
 

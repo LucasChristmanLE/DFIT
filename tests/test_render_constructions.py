@@ -1,8 +1,8 @@
 """Task 4: the tangent-step twinx relayout, the gid-tagged tangent constructions (segment/tick/
 dashed-extension) on render_isip/render_gfunction/render_tangent, and the controller wiring that
-drags them -- including the literal-ISIP seconds<->minutes coordinate reconciliation ui.py's
+drags them -- including the apparent-ISIP seconds<->minutes coordinate reconciliation ui.py's
 wiring performs (render_isip plots minutes-from-shut-in; state.isip_tangent/commit_isip_tangent
-store seconds-since-file-start / psi-per-second, per interpret.literal_isip's signature).
+store seconds-since-file-start / psi-per-second, per interpret.apparent_isip's signature).
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def test_render_tangent_early_return_still_returns_view_defaults():
 
 
 # --------------------------------------------------------------------------------------------------
-# render_isip: literal-ISIP tangent construction
+# render_isip: apparent-ISIP tangent construction
 # --------------------------------------------------------------------------------------------------
 def test_render_isip_tangent_construction_gids_colors_and_extension_reaches_shutin():
     td, st, res = _seeded()
@@ -165,7 +165,7 @@ def test_render_isip_clamps_view_and_plotted_data_to_shutin_window():
     ax = fig.add_subplot(111)
     defaults = plots.render_isip(ax, td, st, res)
 
-    assert defaults.xlim == pytest.approx((-5.0, 15.0))
+    assert defaults.xlim == pytest.approx((-1.0, 3.0))
     press_line = ax.get_lines()[0]  # the BHP decline trace (first line drawn)
     xdata = press_line.get_xdata()
     assert xdata.max() <= 15.0

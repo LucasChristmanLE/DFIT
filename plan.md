@@ -9,7 +9,7 @@ auditable interpretation and then aggregate the results across the whole set.
 The interpretation follows the **compliance-method procedure** of McClure et al.
 (URTeC-2019-123) and the ResFrac practical-guidelines blog. Per-test deliverables:
 
-- **Literal ISIP** — bottomhole pressure at shut-in, from a tangent fit to the early BHP decline
+- **Apparent ISIP** — bottomhole pressure at shut-in, from a tangent fit to the early BHP decline
   extrapolated back to the shut-in instant (FracPro-style construction).
 - **Effective ISIP** — y-intercept of the pre-contact straight line on the P vs G-time plot.
 - **Shmin, compliance method** — contact pressure − 75 psi.
@@ -20,7 +20,7 @@ Aggregate results (the research question):
 
 - **Δclosure** (Shmin_compliance − Shmin_tangent) vs (Shmin_compliance − pore pressure).
 - **Net-pressure distribution**, compliance vs tangent (net = reference ISIP − Shmin).
-- Effective vs literal ISIP; scenario-frequency counts and **closure-quality / postclosure-trend
+- Effective vs apparent ISIP; scenario-frequency counts and **closure-quality / postclosure-trend
   frequency counts**; grouped by play / fluid / orientation.
 
 Permeability is explicitly out of scope (would require rock/fluid inputs and fracture-geometry
@@ -73,7 +73,7 @@ edited later. Steps that don't apply (per scenario) are skipped and recorded as 
    `[start, shut-in]` window**, so a start placed after pretest cycles / wellbore-fill keeps that
    pre-injection volume out of te. The start instant is *not* used as a duration.
    Record the shut-in time as a persistent vertical marker carried into the ISIP and G-function plots.
-3. **Literal ISIP (tangent construction).** Replicates the FracPro pick, done here *before* the
+3. **Apparent ISIP (tangent construction).** Replicates the FracPro pick, done here *before* the
    G-function so it is available as a reference for effective ISIP and the rapid-closure band. On a
    Cartesian BHP-vs-time plot zoomed to the first minutes after shut-in:
    - A **vertical line marks the selected shut-in** (from step 2).
@@ -81,7 +81,7 @@ edited later. Steps that don't apply (per scenario) are skipped and recorded as 
      settles, drawn as a finite segment with a **short vertical tick through its anchor point** (the
      crosshair in the reference screenshot). The segment extends as a dashed line to the shut-in
      vertical. This is a manual pick — no auto-fit.
-   - **Literal ISIP = the tangent value at the shut-in vertical** (the decline extrapolated back to
+   - **Apparent ISIP = the tangent value at the shut-in vertical** (the decline extrapolated back to
      the instant of shut-in), read off where the dashed extension crosses the vertical marker.
    - **Interaction:** dragging the anchor slides the tangent *along* the BHP curve; grabbing the
      **line body** pans it without changing slope; grabbing a **segment end** rotates it to adjust
@@ -115,7 +115,7 @@ Each scenario code also records a plain **`closure_quality`** label for grouping
 | C-A clear contact | clear | clear "S" (min then rise) | contact at min+10%, −75 psi | line from min-dP/dG point |
 | C-B adequate | adequate | monotonic w/ inflection | contact just after inflection, −75 psi | line from inflection |
 | C-C no contact | no-contact | monotonic, no inflection | **none** (no Shmin, no net pressure) | none |
-| C-D rapid closure | rapid | monotonic, concave-up, no tortuosity (vertical/microfrac) | literal ISIP − 100–250 psi | ISIP; net pressure not estimable |
+| C-D rapid closure | rapid | monotonic, concave-up, no tortuosity (vertical/microfrac) | apparent ISIP − 100–250 psi | ISIP; net pressure not estimable |
 
 ### Postclosure scenarios (drives pore-pressure axis)
 Each scenario code also records a plain **`postclosure_trend`** label for grouping and QC.
@@ -138,7 +138,7 @@ Each scenario code also records a plain **`postclosure_trend`** label for groupi
 `file`, `test_id`, `status` (new/in_progress/done/skipped), `interpreter`, `review_date`,
 `orientation`, `fluid_type`, `play`, `pressure_source` (BHP/WHP), `tvd`, `fluid_density`,
 `t_start_inj`, `t_shutin`, `te`, `Vinj`, `max_rate`,
-`literal_ISIP`, `effective_ISIP`,
+`apparent_ISIP`, `effective_ISIP`,
 `closure_scenario`, `closure_quality` (clear/adequate/no-contact/rapid), `contact_pressure`, `Shmin_compliance`,
 `Shmin_tangent`, `tangent_Gc`,
 `postclosure_scenario`, `postclosure_trend` (linear/false-radial/radial/mixed/none), `pore_pressure`, `pp_axis`, `pp_confidence`,
@@ -152,7 +152,7 @@ scales, α form, unit/conversion settings. Makes every interpretation reproducib
 
 - `01_overview.png` — P & rate vs time with injection-start and shut-in markers, te annotation.
 - `01b_isip.png` — BHP vs time zoomed to post-shut-in, the ISIP tangent segment and its dashed
-  extension to the shut-in vertical, and the literal-ISIP value at the intercept.
+  extension to the shut-in vertical, and the apparent-ISIP value at the intercept.
 - `02_gfunction.png` — P & dP/dG vs G-time; contact point marked, min-dP/dG point marked, the
   effective-ISIP extrapolation line drawn to the G=0 intercept, closure scenario labeled.
 - `03_tangent.png` — G·dP/dG vs G-time with the tangent construction line and the closure
@@ -208,7 +208,7 @@ port happens, use PySide6 (LGPL), not PyQt (GPL/commercial), for the Liberty-int
   anchor, pannable body, rotatable ends), G-window & contact, closure tangent line (auto-suggested
   through-origin fit + departure point, user-adjustable), log-log window; each returns coordinates
   and writes to the pick JSON.
-- `interpret.py` — literal & effective ISIP, Shmin (both methods), net pressure, pore pressure,
+- `interpret.py` — apparent & effective ISIP, Shmin (both methods), net pressure, pore pressure,
   scenario branching from the tables above.
 - `store.py` — master-log read/write, per-file JSON, status + resume.
 - `ui.py` — Tkinter/`ttk` shell: file-queue Treeview, embedded matplotlib canvas, pick-panel form,
@@ -221,7 +221,7 @@ port happens, use PySide6 (LGPL), not PyQt (GPL/commercial), for the Liberty-int
 
 **Net-pressure convention:** compute net pressure from **effective ISIP − Shmin** (paper
 convention; tangent's lower Shmin yields higher net pressure — the effect we want to characterize).
-Also store literal ISIP − Shmin for comparison.
+Also store apparent ISIP − Shmin for comparison.
 
 ---
 
@@ -253,14 +253,14 @@ Per-test metadata (needed for BHP conversion, scenario expectation, and grouping
 - **Play/formation** — grouping variable for the aggregate correlations.
 
 Interpretation conventions:
-- Preferred **literal ISIP** definition. Default here is the FracPro-style tangent: fit the early
+- Preferred **apparent ISIP** definition. Default here is the FracPro-style tangent: fit the early
   BHP decline and extrapolate back to shut-in. Confirm this, or whether they want instantaneous
   post-water-hammer or a fixed time offset instead.
 - **Example data file ahead of the meeting** — one representative CSV so the loader, shut-in pick,
   and ISIP tangent can be validated against real column names, units, sample rate, and BHP/WHP
   structure before the full 200-file set arrives.
 - Confirm **G-function α=1** for all (shale), α=0.5 only if any test is >1 md.
-- Which **reference ISIP for net pressure** — effective (recommended) or literal?
+- Which **reference ISIP for net pressure** — effective (recommended) or apparent?
 - Any tests expected to be **microfrac / very low rate** (rapid-closure regime)?
 
 Scope & output:
