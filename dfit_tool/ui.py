@@ -40,12 +40,13 @@ CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rap
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
                          "PC-D mixed", "PC-E none", "PC-F none"]
 
-# The 16 result-panel rows, in display order -- module level (not just a literal inside
+# The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "literal ISIP",
     "eff ISIP (compliance)", "eff ISIP (tangent)", "eff ISIP (variable)",
     "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
+    "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
     "delta closure", "pore pressure",
 ]
@@ -64,13 +65,16 @@ FIELD_STEP = {
     "eff ISIP (compliance)": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
+    "tc compliance (min)": "gfunction",
     "net (compliance)": "gfunction",
     "eff ISIP (tangent)": "tangent",
     "Shmin tangent": "tangent",
+    "tc tangent (min)": "tangent",
     "net (tangent)": "tangent",
     "delta closure": "tangent",
     "eff ISIP (variable)": "tangent",
     "Shmin variable": "tangent",
+    "tc variable (min)": "tangent",
     "net (variable)": "tangent",
     "pore pressure": "porepressure",
 }
@@ -764,6 +768,12 @@ class DfitApp:
             "Shmin compliance": s(r.shmin_compliance),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
+            "tc compliance (min)": s(r.closure_time_compliance_s / 60
+                                      if r.closure_time_compliance_s is not None else None, "{:.2f}"),
+            "tc tangent (min)": s(r.closure_time_tangent_s / 60
+                                   if r.closure_time_tangent_s is not None else None, "{:.2f}"),
+            "tc variable (min)": s(r.closure_time_variable_s / 60
+                                    if r.closure_time_variable_s is not None else None, "{:.2f}"),
             "net (compliance)": s(r.net_pressure_compliance),
             "net (tangent)": s(r.net_pressure_tangent),
             "net (variable)": s(r.net_pressure_variable),

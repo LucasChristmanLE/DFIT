@@ -1,6 +1,6 @@
 """Unit tests for the variable compliance method (compute_all): shmin_variable / eff-ISIP
-(tangent) / eff-ISIP (variable), their guards on contact_G/closure_G, and the per-method net
-pressures -- see the pattern in
+(tangent) / eff-ISIP (variable), the per-method closure times (closure_time_*_s), their guards
+on contact_G/closure_G, and the per-method net pressures -- see the pattern in
 test_commit_functions.py::test_commit_contact_point_then_compute_all_derives_eff_isip_line_compliance."""
 
 import numpy as np
@@ -59,6 +59,9 @@ def test_variable_compliance_guard_only_contact_g_set_leaves_variable_and_tangen
     assert res2.effective_isip_tangent is None
     assert res2.shmin_variable is None
     assert res2.effective_isip_variable is None
+    assert res2.closure_time_compliance_s is not None
+    assert res2.closure_time_tangent_s is None
+    assert res2.closure_time_variable_s is None
 
 
 def test_variable_compliance_guard_only_closure_g_set_sets_tangent_but_not_variable():
@@ -72,6 +75,35 @@ def test_variable_compliance_guard_only_closure_g_set_sets_tangent_but_not_varia
     assert res2.effective_isip_tangent is not None
     assert res2.shmin_variable is None
     assert res2.effective_isip_variable is None
+    assert res2.closure_time_tangent_s is not None
+    assert res2.closure_time_compliance_s is None
+    assert res2.closure_time_variable_s is None
+
+
+# --------------------------------------------------------------------------------------------------
+# closure time (minutes since shut-in), in seconds on DerivedResults
+# --------------------------------------------------------------------------------------------------
+def test_closure_time_both_picks_set_matches_independent_calc_and_orders_correctly():
+    td, st, res = _res()
+    dg = res.diagnostics
+    contact_G, closure_G = _picked_gs(dg)
+
+    picks.commit_contact_point(st, contact_G)
+    picks.commit_closure_point(st, closure_G)
+    res2 = compute_all(st, td)
+
+    G_var = (contact_G + closure_G) / 2.0
+    expected_tc_compliance = float(np.interp(contact_G, dg.G, res.resampled.dt))
+    expected_tc_tangent = float(np.interp(closure_G, dg.G, res.resampled.dt))
+    expected_tc_variable = float(np.interp(G_var, dg.G, res.resampled.dt))
+
+    assert res2.closure_time_compliance_s == pytest.approx(expected_tc_compliance)
+    assert res2.closure_time_tangent_s == pytest.approx(expected_tc_tangent)
+    assert res2.closure_time_variable_s == pytest.approx(expected_tc_variable)
+
+    # contact_G < closure_G (per _picked_gs) and dt increases with G, so the three closure times
+    # are strictly ordered.
+    assert res2.closure_time_compliance_s < res2.closure_time_variable_s < res2.closure_time_tangent_s
 
 
 # --------------------------------------------------------------------------------------------------

@@ -171,6 +171,9 @@ class DerivedResults:
     shmin_compliance: Optional[float] = None
     shmin_tangent: Optional[float] = None
     shmin_variable: Optional[float] = None
+    closure_time_compliance_s: Optional[float] = None
+    closure_time_tangent_s: Optional[float] = None
+    closure_time_variable_s: Optional[float] = None
     closure_pressure: Optional[float] = None
     net_pressure_compliance: Optional[float] = None
     net_pressure_tangent: Optional[float] = None
@@ -265,11 +268,15 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if state.contact_G is not None and res.diagnostics is not None:
         res.contact_pressure = float(np.interp(state.contact_G, res.diagnostics.G, res.resampled.p))
         res.shmin_compliance = interpret.shmin_compliance(res.contact_pressure)
+        res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
+                                                          res.resampled.dt))
 
     # Tangent closure -> Shmin
     if state.closure_G is not None and res.diagnostics is not None:
         res.closure_pressure = float(np.interp(state.closure_G, res.diagnostics.G, res.resampled.p))
         res.shmin_tangent = interpret.shmin_tangent(res.closure_pressure)
+        res.closure_time_tangent_s = float(np.interp(state.closure_G, res.diagnostics.G,
+                                                       res.resampled.dt))
 
     # Effective ISIP (tangent method): same construction as the compliance block above, anchored
     # at state.closure_G instead of state.contact_G.
@@ -287,6 +294,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         dg = res.diagnostics
         G_var = (state.contact_G + state.closure_G) / 2.0
         res.shmin_variable = float(np.interp(G_var, dg.G, res.resampled.p))
+        res.closure_time_variable_s = float(np.interp(G_var, dg.G, res.resampled.dt))
         idx = int(np.nanargmin(np.abs(dg.G - G_var)))
         x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
         res.effective_isip_variable = interpret.effective_isip(x, y, slope)
