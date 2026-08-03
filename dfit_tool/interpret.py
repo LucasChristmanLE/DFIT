@@ -5,7 +5,7 @@ Functions here are pure: they take data arrays and pick parameters and return nu
 interactive layer (picks.py / ui.py) owns the pick state and calls these to recompute live.
 
 Scenario tables (closure C-A..C-D, postclosure PC-A..PC-F) and offsets (75 psi compliance,
-rapid-closure 100-250 psi) are defined in ../plan.md.
+rapid-closure 100-250 psi) are defined in ../CLAUDE.md.
 """
 
 from __future__ import annotations

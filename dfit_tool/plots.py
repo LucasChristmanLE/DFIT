@@ -52,7 +52,7 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
                                ref_x: float, half: float, color: str, gids: dict,
                                tick_half_y: float, label: Optional[str] = None,
                                lw: float = 1.6) -> None:
-    """Draw one gid-tagged tangent construction per plan.md step 3: a finite ``segment`` through
+    """Draw one gid-tagged tangent construction (see the workflow steps in ../CLAUDE.md): a finite ``segment`` through
     the anchor, a short vertical ``tick`` at the anchor, and a dashed ``extension`` running from
     the segment's near end back to the reference vertical ``ref_x`` (the shut-in line for the
     apparent-ISIP construction, G=0 for the effective-ISIP construction) -- the ISIP marker sits
