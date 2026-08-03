@@ -364,7 +364,8 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
-    return ViewDefaults(xlim=(0.0, xmax))
+    xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
+    return ViewDefaults(xlim=(0.0, xhi))
 
 
 RENDERERS = {
