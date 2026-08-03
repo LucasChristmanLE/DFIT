@@ -114,6 +114,14 @@ def _decode(d: dict) -> PickState:
     for key in ("loglog_window", "pp_window"):
         if d.get(key) is not None:
             d[key] = tuple(d[key])
+    # A foreign/corrupted save can carry an explicit JSON null for a string field that
+    # PickState defaults to "" -- e.g. compute_all calls state.closure_scenario.startswith(...)
+    # unconditionally, which raises AttributeError on None. Coerce null -> "" for every scenario
+    # field so a null here never raises downstream, matching this module's "old or foreign JSON
+    # never raises" contract.
+    for key in ("closure_scenario", "postclosure_scenario"):
+        if key in d and d[key] is None:
+            d[key] = ""
     # Filter to known field names so an old save (missing step_status -> falls to its default)
     # or a foreign/future save (extra keys we don't understand yet) never raises a TypeError
     # from an unexpected/missing keyword argument.
@@ -184,6 +192,7 @@ class DerivedResults:
     shmin_compliance: Optional[float] = None
     shmin_tangent: Optional[float] = None
     shmin_variable: Optional[float] = None
+    shmin_rapid: Optional[float] = None
     closure_time_compliance_s: Optional[float] = None
     closure_time_tangent_s: Optional[float] = None
     closure_time_variable_s: Optional[float] = None
@@ -283,6 +292,12 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.shmin_compliance = interpret.shmin_compliance(res.contact_pressure)
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
                                                           res.resampled.dt))
+
+    # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, no effective ISIP --
+    # a separate field so this doesn't feed net_pressure_compliance/delta_closure, see
+    # ../CLAUDE.md and the plan's decision D2).
+    if state.closure_scenario.startswith("C-D") and res.apparent_isip is not None:
+        res.shmin_rapid = interpret.shmin_rapid(res.apparent_isip)
 
     # Tangent closure -> Shmin
     if state.closure_G is not None and res.diagnostics is not None:

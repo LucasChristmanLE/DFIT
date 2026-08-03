@@ -22,10 +22,14 @@ from typing import Optional
 import numpy as np
 from matplotlib.figure import Figure
 
+from . import interpret
 from .model import DerivedResults, PickState
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
+
+
+D2_AXIS_GID = "d2pdg2_axis"  # gid on the gfunction step's optional third (d2P/dG2) twin axes
 
 
 @dataclass
@@ -35,6 +39,7 @@ class ViewDefaults:
     xlim: Optional[tuple[float, float]] = None
     ylim: Optional[tuple[float, float]] = None
     y2lim: Optional[tuple[float, float]] = None
+    y3lim: Optional[tuple[float, float]] = None
 
 
 def _decimate(x: np.ndarray, *ys: np.ndarray):
@@ -102,7 +107,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     ax.plot(xt, xp, color=press_color, lw=0.8,
             label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
     ax.set_xlabel("time from file start (h)")
-    ax.set_ylabel("pressure (psi)", color=press_color)
+    ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
@@ -219,9 +224,29 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.dPdG[finite], 95)
         y2lim = (0, min(max(hi * 1.5, 1.0), 50.0))
+
+    y3lim = None
     if state.show_d2pdg2:
-        ax2.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
+        # A third y-axis, offset further right so it doesn't collide with the dP/dG twin's
+        # ticks/label -- see D2_AXIS_GID (ui.py excludes it from the twin lookup/y2 slider, and
+        # gives it no slider/persisted view of its own, decision D3).
+        ax3 = ax.twinx()
+        ax3.set_gid(D2_AXIS_GID)
+        ax3.spines["right"].set_position(("axes", 1.12))
+        ax3.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
                  gid="d2pdg2_curve")
+        ax3.set_ylabel("d2P/dG2", color="tab:purple")
+        ax3.tick_params(axis="y", labelcolor="tab:purple")
+        # Scale from G >= 1 only (same g_min convention as interpret.suggest_min_dpdg_index):
+        # the resampled grid is densest across the early water-hammer spike, so percentiles
+        # over all samples would still be dominated by its huge |d2| values.
+        finite_d2 = np.isfinite(dg.d2PdG2) & (dg.G >= 1.0)
+        if not finite_d2.any():
+            finite_d2 = np.isfinite(dg.d2PdG2)
+        if finite_d2.any():
+            lo, hi = np.percentile(dg.d2PdG2[finite_d2], [5, 95])
+            pad = 0.10 * max(hi - lo, 1e-9)
+            y3lim = (lo - pad, hi + pad)
 
     if res.eff_isip_line_compliance is not None and res.effective_isip_compliance is not None:
         ln = res.eff_isip_line_compliance
@@ -235,7 +260,9 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                   "extension": "eff_isip_extension"},
             tick_half_y=0.04 * y_span, label="effective-ISIP line", draw_tick=False)
         ax.plot(0.0, res.effective_isip_compliance, "o", color="tab:green")
-    if state.min_dpdg_G is not None:
+    # The triangle is only meaningful for C-A (rel-min anchor) / C-B (inflection seed) -- C-C/C-D
+    # have no contact rule and blank leaves it hidden until a scenario is chosen (decision 4).
+    if state.min_dpdg_G is not None and state.closure_scenario.startswith(("C-A", "C-B")):
         y = float(np.interp(state.min_dpdg_G, dg.G, dg.dPdG))
         ax2.plot(state.min_dpdg_G, y, marker="v", color="tab:red", ms=8, label="min dP/dG",
                 gid="min_dpdg_point")
@@ -250,10 +277,12 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         title += f"   eff.ISIP={res.effective_isip_compliance:.0f}"
     if res.shmin_compliance is not None:
         title += f"   Shmin(compl)={res.shmin_compliance:.0f}"
+    if res.shmin_rapid is not None:
+        title += f"   Shmin(rapid)={interpret.format_shmin_rapid(res.shmin_rapid, verbose=True)}"
     title += f"   ({state.closure_scenario or '?'})"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
-    return ViewDefaults(ylim=ylim, y2lim=y2lim)
+    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim)
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -403,7 +432,9 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     full_y = ax.get_ylim()
     if step_key == "gfunction" and defaults.ylim is not None:
         full_y = defaults.ylim
-    twin = next((a for a in fig.axes if a is not ax), None)
+    # Exclude the d2P/dG2 axis (D2_AXIS_GID) from the twin lookup -- it gets no slider/persisted
+    # view of its own (decision D3) and must never be mistaken for the dP/dG twin here.
+    twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)
     full_y2 = twin.get_ylim() if twin is not None else None
     if step_key == "gfunction" and full_y2 is not None:
         full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], 500.0))
@@ -420,7 +451,14 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     if twin is not None and y2lim is not None:
         twin.set_ylim(y2lim)
 
-    fig.subplots_adjust(left=0.10, right=0.90, bottom=0.16, top=0.90)
+    # The d2 axis is never part of stored_view (D3) -- always apply the renderer's fresh default.
+    d2_axis = next((a for a in fig.axes if a.get_gid() == D2_AXIS_GID), None)
+    d2_on = d2_axis is not None
+    if d2_axis is not None and defaults.y3lim is not None:
+        d2_axis.set_ylim(defaults.y3lim)
+
+    right = 0.80 if (step_key == "gfunction" and d2_on) else 0.90
+    fig.subplots_adjust(left=0.10, right=right, bottom=0.16, top=0.90)
     return fig
 
 

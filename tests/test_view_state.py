@@ -204,6 +204,7 @@ def _refresh_stub(td, state, step):
     stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
     stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
     stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
+    stub._d2_axes = types.MethodType(DfitApp._d2_axes, stub)
     stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     return stub
@@ -232,3 +233,79 @@ def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500()
     # full_y2: the dP/dG slider's outer range must never exceed 0-500.
     assert stub._y2_slider.valmin >= 0.0
     assert stub._y2_slider.valmax <= 500.0
+
+
+# --------------------------------------------------------------------------------------------------
+# decision D3: the gfunction step's d2P/dG2 axis gets no slider and no persisted view -- refresh()
+# applies the renderer's fresh y3lim every time instead.
+# --------------------------------------------------------------------------------------------------
+def test_refresh_applies_fresh_y3lim_to_d2_axis():
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    state.show_d2pdg2 = True
+    res = compute_all(state, td)
+    stub = _refresh_stub(td, state, "gfunction")
+
+    stub.refresh()
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, td, state, stub.res)
+    assert defaults.y3lim is not None
+    d2_axis = stub._d2_axes()
+    assert d2_axis is not None
+    assert d2_axis.get_ylim() == pytest.approx(defaults.y3lim)
+
+
+def test_refresh_builds_no_third_slider_for_d2_axis():
+    """No y3 slider exists at all -- _build_sliders only ever makes x/y/y2, and _twin_axes
+    (which the y2 slider is built from) excludes the d2 axis (D2_AXIS_GID)."""
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    state.show_d2pdg2 = True
+    res = compute_all(state, td)
+    stub = _refresh_stub(td, state, "gfunction")
+
+    stub.refresh()
+
+    assert not hasattr(stub, "_y3_slider")
+    # the y2 slider still targets the dP/dG twin, not the d2 axis
+    assert stub._y2_slider is not None
+    assert stub._twin_axes().get_gid() != plots.D2_AXIS_GID
+
+
+def test_refresh_d2_ylim_not_persisted_across_refreshes():
+    """Panning/zooming the d2 axis is impossible (no slider), but even if the underlying data
+    changed between refreshes the axis must show the renderer's current default, never a value
+    left over from ``_views`` (which never stores it, per decision D3)."""
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    state.show_d2pdg2 = True
+    res = compute_all(state, td)
+    stub = _refresh_stub(td, state, "gfunction")
+
+    stub.refresh()
+    d2_axis = stub._d2_axes()
+    stale_ylim = (-9999.0, 9999.0)
+    d2_axis.set_ylim(stale_ylim)  # simulate a leftover/stale limit
+
+    stub.refresh()  # a fresh Figure/Axes is built each refresh -- get the new d2 axis
+    d2_axis = stub._d2_axes()
+    assert d2_axis.get_ylim() != stale_ylim
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, td, state, stub.res)
+    assert d2_axis.get_ylim() == pytest.approx(defaults.y3lim)

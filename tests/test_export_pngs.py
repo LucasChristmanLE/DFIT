@@ -70,3 +70,40 @@ def test_render_step_figure_applies_stored_view_twin():
     assert fig.axes[0].get_ylim() == (500.0, 900.0)
     twin = next(a for a in fig.axes if a is not fig.axes[0])
     assert twin.get_ylim() == (10.0, 120.0)
+
+
+def test_render_step_figure_builds_d2_axis_and_applies_fresh_y3lim():
+    """The d2 axis (D2_AXIS_GID) gets no persisted view (decision D3): render_step_figure
+    always applies the renderer's own fresh y3lim, even when a stored_view (for the primary +
+    dP/dG twin) is supplied."""
+    td = make_testdata()
+    state = overview_state(td)
+    state.show_d2pdg2 = True
+    res = compute_all(state, td)
+
+    probe = Figure().add_subplot(111)
+    defaults = plots.RENDERERS["gfunction"](probe, td, state, res)
+    assert defaults.y3lim is not None
+
+    fig = plots.render_step_figure(
+        "gfunction", td, state, res,
+        stored_view=((1.0, 3.0), (500.0, 900.0), (10.0, 120.0)))
+    d2_axis = next(a for a in fig.axes if a.get_gid() == plots.D2_AXIS_GID)
+    assert d2_axis.get_ylim() == defaults.y3lim
+    # the primary + dP/dG twin still take the stored view
+    assert fig.axes[0].get_xlim() == (1.0, 3.0)
+    twin = next(a for a in fig.axes if a is not fig.axes[0] and a.get_gid() != plots.D2_AXIS_GID)
+    assert twin.get_ylim() == (10.0, 120.0)
+
+
+def test_save_all_step_pngs_smoke_test_with_d2_on(tmp_path):
+    td = make_testdata()
+    state = overview_state(td)
+    state.show_d2pdg2 = True
+    res = compute_all(state, td)
+
+    paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
+    assert len(paths) == 6
+    full = tmp_path / "3_gfunction.png"
+    assert full.exists()
+    assert full.stat().st_size > 0

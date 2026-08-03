@@ -17,6 +17,8 @@ import numpy as np
 
 BBL_PER_MIN = 1.0  # BPM is bbl/min; time integrated in minutes gives bbl.
 COMPLIANCE_OFFSET_PSI = 75.0
+RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-250 psi)
+RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
 
 
 # --------------------------------------------------------------------------------------------------
@@ -189,6 +191,26 @@ def shmin_tangent(closure_pressure: float) -> float:
     return closure_pressure
 
 
+def shmin_rapid(apparent_isip: float, offset: float = RAPID_CLOSURE_OFFSET_PSI) -> float:
+    """C-D "rapid" Shmin = apparent (literal) ISIP - offset (default the 175 psi midpoint of
+    the 100-250 psi range the ResFrac guidelines give as an approximate range; no contact pick
+    or effective ISIP is constructed for this scenario)."""
+    return apparent_isip - offset
+
+
+def format_shmin_rapid(value: float, verbose: bool = False) -> str:
+    """Panel/title string for the C-D Shmin. Short form (default, e.g. ``"9325 ±75"``) fits the
+    result panel's narrow value column; ``verbose=True`` appends the range it stands in for
+    (e.g. ``"9325 ±75 (ISIP − 100–250)"``), used in the G-function title where width isn't
+    constrained."""
+    lo, hi = RAPID_CLOSURE_RANGE_PSI
+    half_range = (hi - lo) / 2.0
+    short = f"{value:.0f} ±{half_range:.0f}"
+    if not verbose:
+        return short
+    return f"{short} (ISIP − {lo:.0f}–{hi:.0f})"
+
+
 def net_pressure(reference_isip: float, shmin: float) -> float:
     """Net pressure = reference ISIP - Shmin."""
     return reference_isip - shmin
@@ -249,18 +271,28 @@ def suggest_contact_clear_index(
 
 
 def suggest_contact_inflection_index(
-    G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0
+    G: np.ndarray,
+    dPdG: np.ndarray,
+    g_min: float = 1.0,
+    seed: Optional[float] = None,
+    d2: Optional[np.ndarray] = None,
 ) -> Optional[int]:
     """C-B "adequate" contact rule: the inflection of a monotonically declining dP/dG -- the
-    flattest point of the decline, i.e. the interior local maximum of d(dP/dG)/dG over
+    flattest point of the decline, i.e. an interior local maximum of d(dP/dG)/dG over
     G >= ``g_min`` (masking the early water-hammer region, mirroring
     ``suggest_min_dpdg_index``). Returns None when no interior local max exists (a shape with
-    no flattening, e.g. a pure exponential-style decline)."""
+    no flattening, e.g. a pure exponential-style decline).
+
+    ``d2`` lets a caller reuse an already-computed d2P/dG2 (e.g. ``resample.Diagnostics.d2PdG2``)
+    instead of recomputing ``np.gradient`` here. ``seed`` (a G value), when given, picks the
+    candidate local max **nearest** the seed instead of the tallest one -- the triangle-drag
+    re-derive path (``picks.re_derive_contact_from_min``) uses this so the analyst's dragged
+    seed drives which inflection is picked when the curve has more than one."""
     G = np.asarray(G, dtype=float)
     y = np.asarray(dPdG, dtype=float)
     if len(y) < 3:
         return None
-    d2 = np.gradient(y, G)
+    d2 = np.asarray(d2, dtype=float) if d2 is not None else np.gradient(y, G)
     mask = G >= g_min
     if not mask.any():
         mask = np.ones_like(G, dtype=bool)
@@ -268,10 +300,12 @@ def suggest_contact_inflection_index(
     finite3 = np.isfinite(d2[:-2]) & np.isfinite(d2[1:-1]) & np.isfinite(d2[2:])
     local_max = (d2[1:-1] > d2[:-2]) & (d2[1:-1] >= d2[2:])
     interior[1:-1] = finite3 & local_max & mask[1:-1]
-    if interior.any():
-        candidates = np.where(interior)[0]
-        return int(candidates[np.argmax(d2[candidates])])
-    return None
+    if not interior.any():
+        return None
+    candidates = np.where(interior)[0]
+    if seed is not None:
+        return int(candidates[np.argmin(np.abs(G[candidates] - seed))])
+    return int(candidates[np.argmax(d2[candidates])])
 
 
 def suggest_closure_tangent(

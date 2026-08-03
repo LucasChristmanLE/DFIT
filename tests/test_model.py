@@ -4,7 +4,9 @@ step_status persistence specifically)."""
 
 import json
 
-from dfit_tool.model import PickState, _decode
+from dfit_tool.model import PickState, _decode, compute_all
+
+from tests.helpers import overview_state, make_testdata
 
 
 def test_decode_migrates_old_eff_isip_line_anchor_to_min_dpdg_g(tmp_path):
@@ -35,3 +37,24 @@ def test_decode_without_eff_isip_line_leaves_min_dpdg_g_none():
     d = {"pressure_col": "P"}
     loaded = _decode(d)
     assert loaded.min_dpdg_G is None
+
+
+def test_decode_coerces_null_scenario_fields_to_empty_string(tmp_path):
+    """A foreign/corrupted save can carry an explicit JSON null for a field PickState defaults
+    to "" -- compute_all calls state.closure_scenario.startswith(...) unconditionally, which
+    raised AttributeError on None before this coercion. _decode must never raise on old or
+    foreign JSON (../CLAUDE.md's persistence invariant)."""
+    d = {"pressure_col": "P", "closure_scenario": None, "postclosure_scenario": None}
+    path = tmp_path / "picks.json"
+    path.write_text(json.dumps(d), encoding="utf-8")
+
+    loaded = PickState.from_json(str(path))
+
+    assert loaded.closure_scenario == ""
+    assert loaded.postclosure_scenario == ""
+
+    td = make_testdata()
+    state = overview_state(td)
+    state.closure_scenario = loaded.closure_scenario
+    state.postclosure_scenario = loaded.postclosure_scenario
+    compute_all(state, td)  # must not raise

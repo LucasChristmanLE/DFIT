@@ -22,9 +22,9 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import guide_content, io_load, picks, plots, sliders
+from . import guide_content, interpret, io_load, picks, plots, sliders
 from .model import PickState, TangentPick, compute_all, infer_step_status, step_gate_error
-from .plots import ViewDefaults
+from .plots import D2_AXIS_GID, ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
 _SLIDER_GID = "slider"
@@ -59,7 +59,7 @@ _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
     "eff ISIP (compliance)", "eff ISIP (tangent)", "eff ISIP (variable)",
-    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
+    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable", "Shmin rapid",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
     "delta closure", "pore pressure",
@@ -79,6 +79,7 @@ FIELD_STEP = {
     "eff ISIP (compliance)": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
+    "Shmin rapid": "gfunction",
     "tc compliance (min)": "gfunction",
     "net (compliance)": "gfunction",
     "eff ISIP (tangent)": "tangent",
@@ -287,6 +288,9 @@ class DfitApp:
         self.var_showd2 = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.frm_cscen, text="show d²P/dG²", variable=self.var_showd2,
                         command=self._on_showd2).pack(anchor="w", pady=(4, 0))
+        self.btn_gfunction_reset = ttk.Button(self.frm_cscen, text="Reset picks",
+                                              command=self._on_reset_gfunction_picks)
+        self.btn_gfunction_reset.pack(anchor="w", pady=(6, 0))
         ttk.Button(self.frm_cscen, text="Interpretation guide...",
                    command=lambda: self._open_guide("closure")).pack(anchor="w", pady=(6, 0))
 
@@ -463,6 +467,16 @@ class DfitApp:
     def _on_showd2(self):
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
+
+    def _on_reset_gfunction_picks(self):
+        """The G-function step's adaptive "Reset picks" button: re-run the active scenario's
+        auto-pick, discarding any manual drags (decision 3)."""
+        hint = picks.reset_gfunction_picks(self.state, compute_all(self.state, self.td))
+        self.refresh()
+        if hint:
+            # refresh() -> _attach_controllers just set the step's default hint text; the
+            # reset's own failure feedback must win, same pattern as _on_scenario above.
+            self.hint_lbl.config(text=hint)
 
     # ---- interpretation guide window --------------------------------------------------------------
     def _open_guide(self, key: str):
@@ -682,10 +696,17 @@ class DfitApp:
         self.ax.set_ylim(view.ylim)
         if twin is not None and view.y2lim is not None:
             twin.set_ylim(view.y2lim)
+        # The d2P/dG2 axis gets no slider and no persisted view (decision D3) -- apply the
+        # renderer's fresh default every refresh instead of folding it into ``view``/``_views``.
+        d2_axes = self._d2_axes()
+        if d2_axes is not None and defaults.y3lim is not None:
+            d2_axes.set_ylim(defaults.y3lim)
 
         self._build_sliders(full_x, full_y, full_y2, view, twin)
-        # tight_layout would fight the manually placed slider axes reserved on the right margin.
-        self.fig.subplots_adjust(left=0.10, right=0.84, bottom=0.16, top=0.90)
+        # tight_layout would fight the manually placed slider axes reserved on the right margin;
+        # the d2 axis's offset third spine needs a wider right margin than usual when it's on.
+        right = 0.70 if (self.step == "gfunction" and self.state.show_d2pdg2) else 0.84
+        self.fig.subplots_adjust(left=0.10, right=right, bottom=0.16, top=0.90)
         self._attach_controllers()
         self.canvas.draw_idle()
         self._update_stepbar()
@@ -717,6 +738,8 @@ class DfitApp:
         self.frm_pcscen.pack_forget()
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
+            self.btn_gfunction_reset.configure(
+                text=picks.gfunction_reset_button_label(self.state.closure_scenario))
         if self.step in ("loglog", "porepressure"):
             self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
@@ -728,10 +751,19 @@ class DfitApp:
 
         Excludes the slider Axes _build_sliders adds to the right margin -- those are tagged
         with gid ``_SLIDER_GID`` precisely so this scan doesn't mistake one of them for the
-        step's twin.
+        step's twin -- and excludes the gfunction step's optional d2P/dG2 axis
+        (``D2_AXIS_GID``, decision D3), which gets no slider/persisted view of its own and must
+        not be grabbed here in its place.
         """
         for a in self.fig.axes:
-            if a is not self.ax and a.get_gid() != _SLIDER_GID:
+            if a is not self.ax and a.get_gid() not in (_SLIDER_GID, D2_AXIS_GID):
+                return a
+        return None
+
+    def _d2_axes(self):
+        """The gfunction step's optional d2P/dG2 twin Axes (``D2_AXIS_GID``), if present."""
+        for a in self.fig.axes:
+            if a.get_gid() == D2_AXIS_GID:
                 return a
         return None
 
@@ -870,30 +902,43 @@ class DfitApp:
             res = self.res
             ax2 = self._twin_axes()
             step_ctrls = []
+            scenario = self.state.closure_scenario
             if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
                 G, p, dPdG = res.diagnostics.G, res.resampled.p, res.diagnostics.dPdG
                 gate = picks._CaptureGate()
 
                 def commit_min_dpdg(x):
+                    # The triangle is the analyst's control point (decision D4): committing its
+                    # drag re-derives the contact from the new anchor under the active scenario
+                    # before refreshing, same re-assert-hint-after-refresh pattern as
+                    # _on_scenario (ui.py:438-464) -- refresh() resets hint_lbl to the step's
+                    # default text, so a re-derive failure hint must be applied after it.
                     picks.commit_min_dpdg_point(self.state, x)
+                    hint = picks.re_derive_contact_from_min(self.state, res)
                     self.refresh()
+                    if hint:
+                        self.hint_lbl.config(text=hint)
 
                 def commit_point(x):
                     picks.commit_contact_point(self.state, x)
                     self.refresh()
 
-                step_ctrls.append(picks.DraggablePointController(
-                    self.canvas, ax2, "min_dpdg_point", G, dPdG, commit_fn=commit_min_dpdg,
-                    gate=gate))
-                step_ctrls.append(picks.DraggablePointController(
-                    self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
-                    gate=gate))
+                # min-dP/dG-first ordering preserved (tests unpack step_ctrls by position) --
+                # the triangle only applies to C-A (rel-min anchor) / C-B (inflection seed); the
+                # contact marker applies to every scenario except C-C/C-D, which have no contact
+                # rule at all (decision 4 / the CLAUDE.md closure-scenario table).
+                if scenario.startswith(("C-A", "C-B")):
+                    step_ctrls.append(picks.DraggablePointController(
+                        self.canvas, ax2, "min_dpdg_point", G, dPdG, commit_fn=commit_min_dpdg,
+                        gate=gate))
+                if not scenario.startswith(("C-C", "C-D")):
+                    step_ctrls.append(picks.DraggablePointController(
+                        self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
+                        gate=gate))
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(
-                text="Drag the contact marker (the effective-ISIP tangent follows it) or "
-                     "the min-dP/dG marker.")
+            self.hint_lbl.config(text=picks.gfunction_hint_text(scenario))
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()
@@ -960,6 +1005,8 @@ class DfitApp:
             "Shmin compliance": s(r.shmin_compliance),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
+            "Shmin rapid": (interpret.format_shmin_rapid(r.shmin_rapid)
+                            if r.shmin_rapid is not None else "-"),
             "tc compliance (min)": s(r.closure_time_compliance_s / 60
                                       if r.closure_time_compliance_s is not None else None, "{:.2f}"),
             "tc tangent (min)": s(r.closure_time_tangent_s / 60

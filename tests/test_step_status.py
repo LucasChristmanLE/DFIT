@@ -109,6 +109,7 @@ def test_field_step_mapping_matches_spec():
         "eff ISIP (compliance)": "gfunction",
         "contact P": "gfunction",
         "Shmin compliance": "gfunction",
+        "Shmin rapid": "gfunction",
         "tc compliance (min)": "gfunction",
         "net (compliance)": "gfunction",
         "eff ISIP (tangent)": "tangent",

@@ -73,7 +73,7 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
 
 Import graph:
 
-    app → ui → {io_load, picks, plots, sliders, model, questionnaire}
+    app → ui → {io_load, picks, plots, sliders, model, interpret, questionnaire}
     picks, plots → model, io_load, interpret
     model → interpret, resample, io_load
     resample → gfunction
@@ -174,11 +174,12 @@ Closure scenarios drive the contact pick and effective ISIP:
 | C-C no-contact | monotonic, no inflection | none (no Shmin) |
 | C-D rapid | monotonic, concave-up, no tortuosity | apparent ISIP − 100–250 psi (methodology; see note) |
 
-Note: in the current code (`picks.apply_closure_scenario`) C-C and C-D behave identically —
-both clear the contact pick, so `compute_all` produces no compliance Shmin and no effective
-ISIP for either. The C-D "apparent ISIP − 100–250 psi" rule is documented methodology that
-the tool does not yet automate; it is not an implemented offset the way the 75 psi compliance
-offset (`interpret.COMPLIANCE_OFFSET_PSI`) is.
+Note: in the current code (`picks.apply_closure_scenario`) C-C and C-D both clear the contact
+pick, so `compute_all` produces no compliance Shmin and no effective ISIP for either. C-D
+additionally reports `shmin_rapid` = apparent ISIP − 175 psi (the midpoint of the 100–250 psi
+range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown as its own "Shmin rapid" panel row and in
+the G-function title (`interpret.format_shmin_rapid`). Net pressure is deliberately not
+derived from it -- there is no `net_pressure_rapid`.
 
 Postclosure scenarios drive the pore-pressure axis:
 

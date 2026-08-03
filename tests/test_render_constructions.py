@@ -15,8 +15,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backend_bases import MouseEvent
 
-from dfit_tool import picks, plots, ui
-from dfit_tool.model import TangentPick, compute_all
+from dfit_tool import picks, plots, resample, ui
+from dfit_tool.model import DerivedResults, PickState, TangentPick, compute_all
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, overview_state
 
@@ -32,6 +32,7 @@ def _seeded():
     res = compute_all(st, td)
     picks.seed_gfunction(st, res)
     picks.seed_tangent(st, res)
+    st.closure_scenario = "C-A clear"  # the triangle is only drawn for C-A/C-B (decision 4)
     res = compute_all(st, td)
     assert st.isip_tangent is not None
     assert st.min_dpdg_G is not None and st.contact_G is not None
@@ -402,6 +403,78 @@ def test_gfunction_wiring_no_op_when_diagnostics_missing():
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
     assert stub._controllers == []
+
+
+def test_gfunction_wiring_blank_scenario_contact_and_hover_only():
+    """No closure scenario chosen yet: the triangle is gated on C-A/C-B (decision 4), so a
+    blank scenario wires only the contact-point controller (+ hover)."""
+    td, st, res = _seeded()
+    st.closure_scenario = ""
+    res = compute_all(st, td)
+    stub = _stub(td, st, res, "gfunction")
+    DfitApp._attach_controllers(stub)
+    assert len(stub._controllers) == 2
+    contact_ctrl, hover_ctrl = stub._controllers
+    assert isinstance(contact_ctrl, picks.DraggablePointController)
+    assert contact_ctrl.ax is stub.ax
+    assert isinstance(hover_ctrl, picks.HoverCursorController)
+
+
+def test_gfunction_wiring_cc_cd_zero_controllers():
+    """C-C/C-D have no contact rule at all -- neither the triangle nor the contact marker is
+    wired, so the step is entirely non-interactive."""
+    td, st, res = _seeded()
+    for scen in ("C-C no-contact", "C-D rapid"):
+        st.closure_scenario = scen
+        res = compute_all(st, td)
+        stub = _stub(td, st, res, "gfunction")
+        DfitApp._attach_controllers(stub)
+        assert stub._controllers == [], scen
+
+
+def _synthetic_gfunction_res(G, dPdG):
+    """A minimal DerivedResults good enough for render_gfunction + controller wiring, built from
+    a hand-shaped G/dP-dG curve (make_testdata's real falloff has no clean C-A/C-B shape, so the
+    scenario rules below need a curve that actually exercises them, same synthetic-curve
+    approach as tests/test_scenario_contact.py)."""
+    z = np.zeros_like(G)
+    dg = resample.Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                              t=G, p=z, dp=z, tdpdt=z)
+    return DerivedResults(diagnostics=dg, resampled=resample.Resampled(dt=G, p=z, n_raw=len(G)))
+
+
+def test_gfunction_triangle_drag_rederives_contact_for_ca():
+    # C-A "S"-curve shape: dP/dG dips to a min at G=5 then rises.
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 50.0 + (G - 5.0) ** 2
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0)
+    stub = _stub(None, st, res, "gfunction")
+    DfitApp._attach_controllers(stub)
+    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+
+    new_min = 6.0  # drag the triangle off the true min (5.0)
+    min_dpdg_ctrl.commit_fn(new_min)
+    assert st.min_dpdg_G == pytest.approx(new_min)
+    # +10% rule from the dragged min: (dPdG(6)=51)*1.1=56.1 -> (G-5)^2>=6.1 -> G=5+sqrt(6.1)
+    assert st.contact_G == pytest.approx(5.0 + np.sqrt(6.1), abs=0.1)
+    assert st.contact_G > new_min
+
+
+def test_gfunction_triangle_drag_rederives_contact_for_cb():
+    # C-B shape: monotonic decline, steep -> flat (inflection at G=6) -> steep.
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 300.0 - (G + (G - 6.0) ** 3 / 3.0)
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-B adequate", min_dpdg_G=11.0)  # seeded far from G=6
+    stub = _stub(None, st, res, "gfunction")
+    DfitApp._attach_controllers(stub)
+    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+
+    new_seed = 6.5  # drag the seed near the true inflection at G=6
+    min_dpdg_ctrl.commit_fn(new_seed)
+    assert st.min_dpdg_G == pytest.approx(new_seed)
+    assert st.contact_G == pytest.approx(6.0, abs=0.2)
 
 
 def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():

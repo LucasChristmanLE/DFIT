@@ -759,7 +759,9 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
       - C-A clear: contact = first sample right of the min-dP/dG pick where dP/dG >= 110% of
         the value at that pick. Anchors at ``state.min_dpdg_G`` (suggesting it first if unset)
         so a dragged min pick drives the rule.
-      - C-B adequate: contact = the dP/dG inflection (flattest point of the decline).
+      - C-B adequate: contact = the dP/dG inflection (flattest point of the decline). Also seeds
+        ``state.min_dpdg_G`` if unset -- for this scenario the triangle is the inflection *seed*,
+        not a rel-min pick (decision 4), and it must exist for the marker to be drawn/draggable.
       - C-C no-contact / C-D rapid: no contact pick -> Shmin(compliance) and the effective
         ISIP become None downstream (model.compute_all).
 
@@ -775,10 +777,35 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
     dg = res.diagnostics
     if dg is None or len(dg.G) < 3:
         return None
+    if scen.startswith(("C-A", "C-B")) and state.min_dpdg_G is None:
+        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        state.min_dpdg_G = float(dg.G[idx])
+    return re_derive_contact_from_min(state, res)
+
+
+def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optional[str]:
+    """Re-derive the contact pick from the current ``state.min_dpdg_G`` under the active closure
+    scenario, without moving the min-dP/dG marker itself.
+
+    This is the shared rule engine behind both ``apply_closure_scenario`` (scenario just picked)
+    and the triangle-drag commit path (ui.py's gfunction wiring, decision D4): dragging the
+    triangle re-runs the same rule from its new position so the contact pick always matches the
+    scenario's answer for wherever the analyst has put the anchor.
+
+      - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there.
+      - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed.
+      - blank / C-C / C-D / missing min pick or diagnostics: no-op (nothing to re-derive).
+
+    Returns a user-facing hint string on failure (same convention as ``apply_closure_scenario``),
+    else None.
+    """
+    scen = state.closure_scenario
+    if not scen or scen.startswith(("C-C", "C-D")) or state.min_dpdg_G is None:
+        return None
+    dg = res.diagnostics
+    if dg is None or len(dg.G) < 3:
+        return None
     if scen.startswith("C-A"):
-        if state.min_dpdg_G is None:
-            idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
-            state.min_dpdg_G = float(dg.G[idx])
         min_idx = _nearest(dg.G, state.min_dpdg_G)
         idx = interpret.suggest_contact_clear_index(dg.dPdG, min_idx)
         if idx is None:
@@ -787,12 +814,75 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
         state.contact_G = float(dg.G[idx])
         return None
     if scen.startswith("C-B"):
-        idx = interpret.suggest_contact_inflection_index(dg.G, dg.dPdG)
+        idx = interpret.suggest_contact_inflection_index(
+            dg.G, dg.dPdG, seed=state.min_dpdg_G, d2=dg.d2PdG2)
         if idx is None:
             return "No inflection found on dP/dG -- drag the contact marker manually."
         state.contact_G = float(dg.G[idx])
         return None
     return None
+
+
+def reset_gfunction_picks(state: PickState, res: DerivedResults) -> Optional[str]:
+    """The G-function step's "Reset picks" button: re-run the current scenario's auto-pick,
+    discarding any manual drags (decision 3) -- as opposed to ``apply_closure_scenario``, which
+    only fills in picks that are still unset.
+
+      - blank: reseed both the min-dP/dG and contact picks, same defaults as ``seed_gfunction``
+        (unconditionally here, not only when unset).
+      - C-A clear: re-suggest ``min_dpdg_G`` fresh (discarding a dragged min), then re-derive
+        contact from it.
+      - C-B adequate: keep a dragged ``min_dpdg_G`` (it is the inflection seed, not a rel-min, so
+        a drag is not something to discard) if one is set, else seed it fresh; then re-derive
+        contact from it.
+      - C-C no-contact / C-D rapid: clear ``contact_G`` only -- no min/contact rule applies.
+
+    Returns a hint string on failure, same convention as ``apply_closure_scenario``.
+    """
+    scen = state.closure_scenario
+    dg = res.diagnostics
+    if not scen:
+        if dg is None or res.resampled is None or len(dg.G) <= 5:
+            return None
+        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        state.min_dpdg_G = float(dg.G[idx])
+        hump = int(np.nanargmax(dg.dPdG))
+        state.contact_G = float(dg.G[hump])
+        return None
+    if scen.startswith(("C-C", "C-D")):
+        state.contact_G = None
+        return None
+    if dg is None or len(dg.G) < 3:
+        return None
+    if scen.startswith("C-A") or (scen.startswith("C-B") and state.min_dpdg_G is None):
+        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        state.min_dpdg_G = float(dg.G[idx])
+    return re_derive_contact_from_min(state, res)
+
+
+def gfunction_reset_button_label(scenario: str) -> str:
+    """Label for the G-function step's adaptive "Reset picks" button (decision D1): one button
+    whose text names the operation it performs for the active closure scenario."""
+    if scenario.startswith("C-A"):
+        return "Reset picks (find rel min + contact)"
+    if scenario.startswith("C-B"):
+        return "Reset picks (find inflection)"
+    return "Reset picks"
+
+
+_GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent follows it) or "
+                           "the min-dP/dG marker.")
+
+
+def gfunction_hint_text(scenario: str) -> str:
+    """Scenario-aware hint-label text for the G-function step."""
+    if scenario.startswith("C-A"):
+        return "Contact auto-positioned at rel-min +10%; drag the triangle to move the anchor."
+    if scenario.startswith("C-B"):
+        return "The triangle is the inflection seed; drag it to re-find the nearest inflection."
+    if scenario.startswith(("C-C", "C-D")):
+        return "No contact pick applies for this closure scenario."
+    return _GFUNCTION_HINT_DEFAULT
 
 
 _PP_AXIS_BY_SCENARIO = {"PC-A": "tm12", "PC-B": "tm1", "PC-C": "tm12", "PC-E": "tm12"}
