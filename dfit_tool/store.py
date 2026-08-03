@@ -279,7 +279,9 @@ def load_log(root: str) -> pd.DataFrame:
         return pd.DataFrame(columns=LOG_COLUMNS)
     try:
         df = pd.read_csv(path, dtype={"test_id": str})
-    except (pd.errors.EmptyDataError, pd.errors.ParserError):
+    except Exception:
+        # Bare except like load_picks_for: encoding corruption (UnicodeDecodeError) and OS-level
+        # read errors must not make the folder unopenable any more than a parse error does.
         return pd.DataFrame(columns=LOG_COLUMNS)
     for col in LOG_COLUMNS:
         if col not in df.columns:
