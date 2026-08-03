@@ -53,20 +53,24 @@ def _hours(t_s: np.ndarray, t0: float = 0.0) -> np.ndarray:
 def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: float, *,
                                ref_x: float, half: float, color: str, gids: dict,
                                tick_half_y: float, label: Optional[str] = None,
-                               lw: float = 1.6) -> None:
+                               lw: float = 1.6, draw_tick: bool = True) -> None:
     """Draw one gid-tagged tangent construction (see the workflow steps in ../CLAUDE.md): a finite ``segment`` through
     the anchor, a short vertical ``tick`` at the anchor, and a dashed ``extension`` running from
     the segment's near end back to the reference vertical ``ref_x`` (the shut-in line for the
     apparent-ISIP construction, G=0 for the effective-ISIP construction) -- the ISIP marker sits
     where the extension crosses ``ref_x``. ``gids`` maps "segment"/"tick"/"extension" to the exact
-    gid string each piece is drawn with, matched by ``picks.AnchorLineController``.
+    gid string each piece is drawn with, matched by ``picks.AnchorLineController``. ``draw_tick``
+    suppresses the vertical anchor tick where the construction is not user-draggable (the
+    G-function effective-ISIP line, which follows the contact marker) and the tick would just be a
+    fixed vertical mark.
     """
     x0, x1 = anchor_x - half, anchor_x + half
     xs = np.array([x0, x1])
     ys = anchor_y + slope * (xs - anchor_x)
     ax.plot(xs, ys, color=color, lw=lw, label=label, gid=gids["segment"])
-    ax.plot([anchor_x, anchor_x], [anchor_y - tick_half_y, anchor_y + tick_half_y],
-            color=color, lw=lw, gid=gids["tick"])
+    if draw_tick:
+        ax.plot([anchor_x, anchor_x], [anchor_y - tick_half_y, anchor_y + tick_half_y],
+                color=color, lw=lw, gid=gids["tick"])
     near_x = x0 if abs(x0 - ref_x) <= abs(x1 - ref_x) else x1
     ext_x = np.array([ref_x, near_x])
     ext_y = anchor_y + slope * (ext_x - anchor_x)
@@ -229,7 +233,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
             color="tab:green",
             gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
                   "extension": "eff_isip_extension"},
-            tick_half_y=0.04 * y_span, label="effective-ISIP line")
+            tick_half_y=0.04 * y_span, label="effective-ISIP line", draw_tick=False)
         ax.plot(0.0, res.effective_isip_compliance, "o", color="tab:green")
     if state.min_dpdg_G is not None:
         y = float(np.interp(state.min_dpdg_G, dg.G, dg.dPdG))
@@ -246,6 +250,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         title += f"   eff.ISIP={res.effective_isip_compliance:.0f}"
     if res.shmin_compliance is not None:
         title += f"   Shmin(compl)={res.shmin_compliance:.0f}"
+    title += f"   ({state.closure_scenario or '?'})"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
     return ViewDefaults(ylim=ylim, y2lim=y2lim)

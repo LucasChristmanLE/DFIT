@@ -78,11 +78,11 @@ def test_porepressure_does_not_force_axes_xlim_to_zero():
     state = overview_state(td)
     res = compute_all(state, td)
     fig, ax, defaults = _render(plots.render_porepressure, td, state, res)
-    dg = res.diagnostics
-    x = dg.t ** -0.5
-    xmax = float(np.nanmax(x))
 
-    assert defaults.xlim == pytest.approx((0.0, xmax))
+    # The default view is the fixed per-axis early-time zoom (tm12: 0..0.05, tm1: 0..0.0025),
+    # returned via ViewDefaults for ui.py to apply -- not written onto the Axes here.
+    expected_hi = 0.05 if state.pp_axis == "tm12" else 0.0025
+    assert defaults.xlim == pytest.approx((0.0, expected_hi))
     # Autoscaled (not forced to start at 0 by the renderer).
     assert ax.get_xlim()[0] != 0.0
 

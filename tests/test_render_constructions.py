@@ -193,14 +193,16 @@ def test_render_gfunction_eff_isip_construction_gids_and_extension_reaches_g_zer
     plots.render_gfunction(ax, td, st, res)
 
     seg = _gid(ax, "eff_isip_segment")
-    tick = _gid(ax, "eff_isip_tick")
     ext = _gid(ax, "eff_isip_extension")
     contact = _gid(ax, "contact_point")
-    for line in (seg, tick, ext):
+    for line in (seg, ext):
         assert line.get_color() == "tab:green"
     assert ext.get_linestyle() == "--"
     assert 0.0 in ext.get_xdata()
     assert contact.get_xdata()[0] == pytest.approx(st.contact_G)
+    # The effective-ISIP line follows the contact marker and is not user-draggable, so its
+    # fixed vertical anchor tick is suppressed (unlike the draggable apparent-ISIP construction).
+    assert not any(l.get_gid() == "eff_isip_tick" for l in ax.get_lines())
 
 
 def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
