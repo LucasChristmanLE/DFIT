@@ -78,6 +78,12 @@ class PickState:
     # from_json like everything else in this dataclass. ---
     step_status: dict[str, str] = field(default_factory=dict)
 
+    # --- folder mode (store.py): which data file this test's picks were made against, and a
+    # user override of the recomputed status (store.status_for). Old saves lack both keys and
+    # take these defaults via _decode's known-field filter, no migration needed. ---
+    active_source: str = "csv"  # "csv" or "dbs"
+    explicit_status: Optional[str] = None  # "done"/"skipped"/None
+
     def channel_config(self) -> ChannelConfig:
         return ChannelConfig(
             pressure_col=self.pressure_col,
