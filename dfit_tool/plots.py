@@ -23,7 +23,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from . import interpret
-from .model import DerivedResults, PickState
+from .model import DerivedResults, PickState, porepressure_skipped
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -466,10 +466,16 @@ def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: Derive
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
     """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
     order: overview -> isip -> gfunction -> tangent -> loglog -> porepressure). Returns the
-    written paths in that order. Used by ``ui._finish``, but headless/Tkinter-free like the
-    rest of this module."""
+    written paths in that order. Skips "porepressure" when ``porepressure_skipped(state)``
+    (PC-F: no postclosure line, nothing to render) -- the numbering from ``enumerate`` still
+    runs over all of RENDERERS so the other five filenames are unaffected; the pore-pressure
+    file is simply absent. Used by ``ui._finish``, but headless/Tkinter-free like the rest of
+    this module."""
     paths = []
+    skip_pp = porepressure_skipped(state)
     for i, key in enumerate(RENDERERS, start=1):
+        if key == "porepressure" and skip_pp:
+            continue
         fig = render_step_figure(key, td, state, res, views.get(key))
         path = os.path.join(out_dir, f"{i}_{key}.png")
         fig.savefig(path, dpi=dpi)

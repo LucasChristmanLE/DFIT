@@ -23,7 +23,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, interpret, io_load, picks, plots, sliders
-from .model import PickState, TangentPick, compute_all, infer_step_status, step_gate_error
+from .model import (PickState, TangentPick, compute_all, infer_step_status,
+                    porepressure_skipped, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -38,8 +39,10 @@ STEPS = [
     ("porepressure", "Pore pressure"),
 ]
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid"]
-POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
-                         "PC-D mixed", "PC-E none", "PC-F none"]
+POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
+                         "PC-C false radial to genuine linear",
+                         "PC-D genuine linear to genuine radial",
+                         "PC-E no trend", "PC-F no peak"]
 
 # Advisory hints for the postclosure scenarios that don't fully dictate the pore-pressure axis
 # (picks.suggest_pp_axis). Full explanatory text + figures live in the interpretation guide
@@ -47,7 +50,8 @@ POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
 _PC_HINTS = {
     "PC-D": "either axis valid -- choose t^(-1/2) or t^(-1) manually",
     "PC-E": "no clear slope -- t^(-1/2) set; treat pore pressure as low-confidence",
-    "PC-F": "derivative still rising -- no reliable postclosure line; pore pressure not determinable",
+    "PC-F": "derivative still rising -- no reliable postclosure line; pore pressure step is "
+            "skipped, Finish is available on this (log-log) step",
 }
 
 # Tabs for the single "Interpretation guide..." window (_open_guide), in display order.
@@ -458,10 +462,17 @@ class DfitApp:
             self.var_ppaxis.set(self.state.pp_axis)
             hint = _PC_HINTS.get(pcscen[:4]) or hint
         self._update_ppaxis_enabled()
-        self.refresh()
+        if pcscen_changed and self.step == "porepressure" and porepressure_skipped(self.state):
+            # PC-F just got selected while sitting on the now-skipped pore-pressure step -- the
+            # scenario combobox is visible on both loglog and porepressure, so this can happen
+            # without ever leaving porepressure. _goto redirects to "loglog" and calls refresh()
+            # itself; calling refresh() again here would just redo the same work.
+            self._goto("loglog")
+        else:
+            self.refresh()
         if hint:
-            # After refresh(): _attach_controllers just set the step's default hint text,
-            # and the scenario feedback must win.
+            # After refresh()/_goto(): _attach_controllers just set the step's default hint
+            # text, and the scenario feedback must win.
             self.hint_lbl.config(text=hint)
 
     def _on_showd2(self):
@@ -598,9 +609,15 @@ class DfitApp:
         _update_stepbar, so reaching one here means either it was already reached, or this is
         the programmatic first jump onto a step (initial load, or Next/Skip/Back stepping one
         further than the user has been). First-visit seeding lives here, not in Next/Skip/Back,
-        so the seed always runs regardless of which control got the user there."""
+        so the seed always runs regardless of which control got the user there.
+
+        A "porepressure" destination redirects to "loglog" whenever PC-F skips the pore-pressure
+        step -- this one place covers the log-log Skip button, resume-on-load
+        (first_not_visited_step), and any other programmatic jump."""
         if self.td is None:
             return
+        if step == "porepressure" and porepressure_skipped(self.state):
+            step = "loglog"
         if self.state.step_status.get(step, "not_visited") == "not_visited":
             self._seed_step(step)
             self.state.step_status[step] = "visited"
@@ -638,14 +655,24 @@ class DfitApp:
         self.state.step_status[self.step] = "skipped"
         self._goto(next_step(self.step))
 
+    def _last_step(self) -> str:
+        """The effective last step of the workflow: "loglog" when the postclosure scenario is
+        PC-F (no peak, so there is no postclosure line and the pore-pressure step is skipped),
+        else the actual last entry in STEPS ("porepressure")."""
+        if porepressure_skipped(self.state):
+            return "loglog"
+        return STEPS[-1][0]
+
     def _advance(self):
-        """Bound to the Next/Finish stepbar button. On the last step the button reads "Finish"
-        and exports (_finish). Otherwise it advances (_next) -- but only once the current step's
-        required scenario pick is present; step_gate_error gates the forward jump and the inline
-        gate_lbl says what is missing. Back/Skip/breadcrumb navigation are NOT gated."""
+        """Bound to the Next/Finish stepbar button. On the effective last step (_last_step(),
+        normally "porepressure" but "loglog" when PC-F skips pore pressure) the button reads
+        "Finish" and exports (_finish). Otherwise it advances (_next) -- but only once the
+        current step's required scenario pick is present; step_gate_error gates the forward
+        jump and the inline gate_lbl says what is missing. Back/Skip/breadcrumb navigation are
+        NOT gated."""
         if self.td is None:
             return
-        if self.step == STEPS[-1][0]:
+        if self.step == self._last_step():
             self._finish()
             return
         msg = step_gate_error(self.state, self.step)
@@ -716,16 +743,23 @@ class DfitApp:
     def _update_stepbar(self):
         """Disable breadcrumb buttons for steps still ``not_visited`` (so a click is only ever
         honored for a reached step) and highlight the current step. Bold text rather than an
-        Accent.TButton style -- that style name is theme-specific and not guaranteed to exist."""
+        Accent.TButton style -- that style name is theme-specific and not guaranteed to exist.
+
+        The "porepressure" breadcrumb is force-disabled whenever PC-F skips that step, even if
+        it was visited earlier in the session (e.g. the analyst picked PC-F after already
+        reaching pore pressure) -- _goto redirects that destination to "loglog" regardless, so
+        the button must not look reachable."""
         style = ttk.Style()
         style.configure("StepCurrent.TButton", font=("TkDefaultFont", 9, "bold"))
+        skip_pp = porepressure_skipped(self.state)
         for key, btn in self.step_buttons.items():
             status = self.state.step_status.get(key, "not_visited")
-            btn.state(["!disabled"] if status != "not_visited" else ["disabled"])
+            reachable = status != "not_visited" and not (key == "porepressure" and skip_pp)
+            btn.state(["!disabled"] if reachable else ["disabled"])
             btn.configure(style="StepCurrent.TButton" if key == self.step else "TButton")
-        # On the last step the Next button becomes Finish (bold, like the current-step
+        # On the effective last step the Next button becomes Finish (bold, like the current-step
         # breadcrumb) -- _advance dispatches to _finish() instead of _next() in that case.
-        if self.step == STEPS[-1][0]:
+        if self.step == self._last_step():
             self.next_btn.configure(text="Finish", style="StepCurrent.TButton")
         else:
             self.next_btn.configure(text="Next >", style="TButton")

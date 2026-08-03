@@ -186,18 +186,32 @@ Postclosure scenarios drive the pore-pressure axis:
 | Scenario | log-log signature | Pore-pressure axis |
 |---|---|---|
 | PC-A linear | bends to −1/2 | t^(−1/2) |
-| PC-B false radial | −1 after peak | t^(−1) |
-| PC-C mixed | −1 then −1/2 | t^(−1/2) |
-| PC-D mixed | −1/2 then −1 | either |
-| PC-E none | peak, no clear slope | t^(−1/2), low confidence |
-| PC-F none | derivative still rising | none |
+| PC-B false-radial | −1 after peak | t^(−1) |
+| PC-C false radial to genuine linear | −1 then −1/2 | t^(−1/2) |
+| PC-D genuine linear to genuine radial | −1/2 then −1 | either |
+| PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
+| PC-F no peak | derivative still rising | pore-pressure step skipped |
 
 This linkage is implemented: `picks.suggest_pp_axis` maps a postclosure scenario string to
-`pp_axis` ("tm12"/"tm1"), and `ui._on_scenario` applies it whenever the postclosure-scenario
-combobox changes, also re-syncing on step entry/load via `_update_panel_visibility`. The
-side panel's pore-pressure-axis radios lock (disabled) whenever a scenario dictates the axis.
-PC-D ("either") and PC-F ("none") are intentionally absent from the mapping, so the radios
-stay enabled and the axis is left to the analyst.
+`pp_axis` ("tm12"/"tm1") by its `scenario[:4]` prefix, so the mapping is label-independent, and
+`ui._on_scenario` applies it whenever the postclosure-scenario combobox changes, also
+re-syncing on step entry/load via `_update_panel_visibility`. The side panel's pore-pressure-
+axis radios lock (disabled) whenever a scenario dictates the axis. PC-D ("either") and PC-F
+("no peak") are intentionally absent from the mapping, so the radios stay enabled and the axis
+is left to the analyst -- moot for PC-F, since that scenario skips the axis-picking step
+entirely (below). `model._decode` normalizes the four old pre-rename labels (`"PC-C mixed"`,
+`"PC-D mixed"`, `"PC-E none"`, `"PC-F none"`) found in older saved picks JSON to their current
+form; unrecognized strings pass through untouched.
+
+**PC-F skip.** `model.porepressure_skipped(state)` is true whenever `postclosure_scenario`
+starts with `"PC-F"`: the derivative never peaks, so no postclosure line exists and
+`compute_all` leaves `pore_pressure` `None` even if a stale `pp_window` pick exists. When it's
+true, the pore-pressure step is skipped end to end: `ui._last_step()` reports `"loglog"` so
+`_advance`'s Next button becomes "Finish" there instead of on pore pressure; `_goto` redirects
+any `"porepressure"` destination (the log-log Skip button, resume-on-load, a breadcrumb click)
+to `"loglog"`; `_update_stepbar` force-disables the porepressure breadcrumb even if that step
+was visited earlier in the session; and `plots.save_all_step_pngs` omits the porepressure PNG
+(the other five keep their `RENDERERS`-order numbering).
 
 An in-app "Interpretation guide" window (opened from the "Interpretation guide..." buttons on
 the G-function step's closure-scenario panel and the log-log/pore-pressure steps'

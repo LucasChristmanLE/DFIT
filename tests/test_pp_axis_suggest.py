@@ -4,7 +4,7 @@ from dfit_tool import picks
 
 
 def test_tm12_scenarios():
-    for scen in ("PC-A linear", "PC-C mixed", "PC-E none"):
+    for scen in ("PC-A linear", "PC-C false radial to genuine linear", "PC-E no trend"):
         assert picks.suggest_pp_axis(scen) == "tm12"
 
 
@@ -13,5 +13,5 @@ def test_tm1_scenario():
 
 
 def test_no_dictated_axis():
-    for scen in ("", "PC-D mixed", "PC-F none"):
+    for scen in ("", "PC-D genuine linear to genuine radial", "PC-F no peak"):
         assert picks.suggest_pp_axis(scen) is None

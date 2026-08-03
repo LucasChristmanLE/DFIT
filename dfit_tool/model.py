@@ -122,6 +122,19 @@ def _decode(d: dict) -> PickState:
     for key in ("closure_scenario", "postclosure_scenario"):
         if key in d and d[key] is None:
             d[key] = ""
+    # Old saves store the postclosure scenario's pre-rename label (the combobox values in
+    # ui.py:POSTCLOSURE_SCENARIOS changed to the descriptive ResFrac guide titles); map the four
+    # renamed labels to their current form so a loaded save matches the combobox. Unrecognized
+    # strings (a current label, or a foreign value) pass through untouched -- same "old or
+    # foreign JSON never raises" contract as the coercion above.
+    pc_label_migrations = {
+        "PC-C mixed": "PC-C false radial to genuine linear",
+        "PC-D mixed": "PC-D genuine linear to genuine radial",
+        "PC-E none": "PC-E no trend",
+        "PC-F none": "PC-F no peak",
+    }
+    if d.get("postclosure_scenario") in pc_label_migrations:
+        d["postclosure_scenario"] = pc_label_migrations[d["postclosure_scenario"]]
     # Filter to known field names so an old save (missing step_status -> falls to its default)
     # or a foreign/future save (extra keys we don't understand yet) never raises a TypeError
     # from an unexpected/missing keyword argument.
@@ -166,6 +179,12 @@ def step_gate_error(state: PickState, step: str) -> Optional[str]:
     if step == "loglog" and not state.postclosure_scenario:
         return "Select a postclosure scenario before continuing to Pore pressure."
     return None
+
+
+def porepressure_skipped(state: PickState) -> bool:
+    """PC-F (no peak): the derivative never peaks, so no postclosure line exists and
+    the pore-pressure step is skipped entirely."""
+    return state.postclosure_scenario.startswith("PC-F")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -344,8 +363,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if res.shmin_compliance is not None and res.shmin_tangent is not None:
         res.delta_closure = res.shmin_compliance - res.shmin_tangent
 
-    # Pore pressure (postclosure)
-    if state.pp_window and res.diagnostics is not None:
+    # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
+    # postclosure line exists -- suppress the fit even if a stale pp_window pick is present.
+    if state.pp_window and res.diagnostics is not None and not porepressure_skipped(state):
         dg = res.diagnostics
         lo, hi = state.pp_window
         m = (dg.t >= lo) & (dg.t <= hi) & (dg.t > 0)

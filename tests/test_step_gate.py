@@ -58,6 +58,7 @@ def _nav_stub(step):
     stub._goto = lambda dest: stub._goto_calls.append(dest)
     stub._finish_calls = []
     stub._finish = lambda: stub._finish_calls.append(True)
+    stub._last_step = types.MethodType(DfitApp._last_step, stub)
     stub._advance = types.MethodType(DfitApp._advance, stub)
     stub._next = types.MethodType(DfitApp._next, stub)
     stub._skip = types.MethodType(DfitApp._skip, stub)
