@@ -22,7 +22,7 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import guide_content, interpret, io_load, picks, plots, sliders
+from . import guide_content, interpret, io_load, picks, plots, sliders, store
 from .model import (PickState, TangentPick, compute_all, infer_step_status,
                     porepressure_skipped, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults
@@ -128,6 +128,18 @@ def first_not_visited_step(step_status: dict[str, str]) -> str:
     return "overview"
 
 
+def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> str:
+    """Which of ``entry.available_sources`` ``_load_test`` should open, absent an explicit
+    ``source=`` override: the saved picks' ``active_source`` when there is a saved PickState
+    naming a source that's actually available for this entry, else the first available source
+    (``TestEntry.available_sources`` orders CSV before DBS when both exist)."""
+    if saved is not None:
+        for candidate in entry.available_sources:
+            if candidate.lower() == saved.active_source:
+                return candidate
+    return entry.available_sources[0]
+
+
 @dataclass
 class ViewState:
     """The resolved (non-optional) view actually applied to a step's Axes: primary xlim/ylim,
@@ -191,6 +203,14 @@ class DfitApp:
         self._guide_win: Optional[tk.Toplevel] = None
         self._guide_tab_index: dict[str, int] = {}
 
+        # Folder mode: self.current_entry is the single mode flag -- None means single-file
+        # mode (today's behavior, sidebar never packed). Task C adds dfit_log.csv writing on
+        # top of log_df; this task only keeps it loaded.
+        self.current_entry: store.TestEntry | None = None
+        self.folder_root: str | None = None
+        self.queue_entries: list[store.TestEntry] = []
+        self.log_df = None
+
         self._build_top()
         self._build_body()
         self._build_stepbar()
@@ -203,6 +223,7 @@ class DfitApp:
         top = ttk.Frame(self.root, padding=6)
         top.pack(side="top", fill="x")
         ttk.Button(top, text="Open CSV…", command=self._open).pack(side="left")
+        ttk.Button(top, text="Open Folder…", command=self._open_folder).pack(side="left")
         self.file_lbl = ttk.Label(top, text="(no file)")
         self.file_lbl.pack(side="left", padx=8)
 
@@ -254,9 +275,38 @@ class DfitApp:
         body = ttk.Frame(self.root)
         body.pack(side="top", fill="both", expand=True)
 
+        # left: folder-mode test queue -- built but never packed here. _show_queue()/_hide_queue()
+        # (folder open / _load's exit-folder-mode path) own its visibility; single-file mode must
+        # stay pixel-identical to today, so this frame starts hidden.
+        self.queue_frame = ttk.Frame(body, width=240)
+        self.queue_frame.pack_propagate(False)  # same fixed-width pattern as the right panel
+
+        self.progress_lbl = ttk.Label(self.queue_frame, text="0/0", padding=(4, 4))
+        self.progress_lbl.pack(side="top", fill="x")
+
+        tree_frame = ttk.Frame(self.queue_frame)
+        tree_frame.pack(side="top", fill="both", expand=True)
+        self.queue_tree = ttk.Treeview(tree_frame, columns=("status",), show="tree headings")
+        self.queue_tree.heading("#0", text="Test")
+        self.queue_tree.heading("status", text="Status")
+        self.queue_tree.column("#0", width=140)
+        self.queue_tree.column("status", width=90, anchor="w")
+        queue_vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.queue_tree.yview)
+        self.queue_tree.configure(yscrollcommand=queue_vsb.set)
+        self.queue_tree.pack(side="left", fill="both", expand=True)
+        queue_vsb.pack(side="right", fill="y")
+        self.queue_tree.bind("<<TreeviewSelect>>", self._on_queue_select)
+        # Status is always readable as text (the "status" column); these tags are a secondary
+        # color cue only, never the sole signal.
+        self.queue_tree.tag_configure("done", foreground="#137333")
+        self.queue_tree.tag_configure("skipped", foreground="gray")
+        self.queue_tree.tag_configure("in_progress", foreground="#b35c00")
+        self.queue_tree.tag_configure("new", foreground="black")
+
         # center: canvas
         center = ttk.Frame(body)
         center.pack(side="left", fill="both", expand=True)
+        self._center_frame = center  # so _show_queue can pack the sidebar before= it
         self.fig = Figure(figsize=(9, 6))
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=center)
@@ -326,6 +376,14 @@ class DfitApp:
         self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
         self.hint_lbl.pack(anchor="w", pady=(6, 0))
 
+    def _show_queue(self):
+        """Pack the folder-mode sidebar leftmost, even though the center frame was already
+        packed -- `before=` re-slots it ahead regardless of pack order."""
+        self.queue_frame.pack(side="left", fill="y", before=self._center_frame)
+
+    def _hide_queue(self):
+        self.queue_frame.pack_forget()
+
     def _build_stepbar(self):
         bar = ttk.Frame(self.root, padding=6)
         bar.pack(side="bottom", fill="x")
@@ -363,12 +421,15 @@ class DfitApp:
         if path:
             self._load(path)
 
-    def _load(self, path: str):
+    def _load_common(self, path: str) -> bool:
+        """Load `path` into a fresh PickState and land on "overview" -- shared by single-file
+        _load and folder-mode _load_test. Returns False (leaving the previous self.td/state
+        untouched) if the load failed, True on success."""
         try:
             self.td = io_load.load(path)
         except Exception as e:
             messagebox.showerror("Load failed", str(e))
-            return
+            return False
         self.file_lbl.config(text=os.path.basename(path))
         cols = self.td.columns
         for cmb in (self.cmb_pressure, self.cmb_rate, self.cmb_volume):
@@ -392,6 +453,115 @@ class DfitApp:
         self._load_questionnaire(path)
         self._sync_state_from_widgets()
         self._goto("overview")
+        return True
+
+    def _load(self, path: str):
+        """Single-file open: exit folder mode (saving any outgoing queue test's picks first),
+        then load `path` via _load_common. The manual Save picks…/Load picks… buttons and every
+        existing caller (__init__, _open) keep working unchanged through this wrapper."""
+        self._save_current_queue_picks()
+        self.current_entry = None
+        self.folder_root = None
+        self.queue_entries = []
+        self._hide_queue()
+        self.queue_tree.delete(*self.queue_tree.get_children())
+        self.root.title("DFIT interpretation (first build)")
+        self._load_common(path)
+
+    # ---- folder mode ----------------------------------------------------------------------------
+    def _open_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self._open_folder_path(path)
+
+    def _open_folder_path(self, path: str):
+        entries, log_df = store.list_tests(path)
+        if not entries:
+            messagebox.showinfo("Open Folder", "No DFIT tests found in this folder.")
+            return
+        self._save_current_queue_picks()  # never lose the outgoing test's work
+        self.folder_root = path
+        self.queue_entries = entries
+        self.log_df = log_df
+        self._populate_queue()
+        self._show_queue()
+        target = next((e for e in entries if e.status == "new"), entries[0])
+        self._load_test(target)
+
+        # Surface scan warnings as a one-line summary rather than dialog-spamming per test.
+        warn_count = sum(len(e.scan_warnings) for e in entries)
+        entry_ids = {e.test_id for e in entries}
+        orphan_ids = [tid for tid in log_df["test_id"].tolist() if tid not in entry_ids]
+        parts = []
+        if warn_count:
+            parts.append(f"{warn_count} scan warning(s) -- see individual test folders")
+        if orphan_ids:
+            parts.append(f"{len(orphan_ids)} orphaned log row(s) with no matching test")
+        if parts:
+            self.warn_lbl.config(text=" | ".join(parts))
+
+    def _populate_queue(self):
+        self.queue_tree.delete(*self.queue_tree.get_children())
+        for entry in self.queue_entries:
+            self.queue_tree.insert("", "end", iid=entry.test_id, text=entry.test_id,
+                                   values=(entry.status,), tags=(entry.status,))
+        self._update_progress_label()
+
+    def _refresh_queue_row(self, entry: store.TestEntry):
+        if self.queue_tree.exists(entry.test_id):
+            self.queue_tree.item(entry.test_id, values=(entry.status,), tags=(entry.status,))
+        self._update_progress_label()
+
+    def _update_progress_label(self):
+        total = len(self.queue_entries)
+        n = sum(1 for e in self.queue_entries if e.status in ("done", "skipped"))
+        self.progress_lbl.config(text=f"{n}/{total}")
+
+    def _save_current_queue_picks(self):
+        """The only persistence on queue navigation -- no dfit_log.csv writes here (Task C).
+        No-op in single-file mode (current_entry is None) or before any file is loaded."""
+        if self.current_entry is None or self.td is None:
+            return
+        self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        store.save_picks_for(self.current_entry, self.state)
+        self.current_entry.status = store.status_for(self.state)
+        self._refresh_queue_row(self.current_entry)
+
+    def _load_test(self, entry: store.TestEntry, source: Optional[str] = None,
+                   force_reset: bool = False):
+        """Load `entry` into the workspace: resolve which data file to open, load it fresh via
+        _load_common, then (unless force_reset) resume any saved picks. force_reset=True is for
+        Task C's source switching -- it skips the saved-picks resume, keeping the fresh state
+        _load_common already made."""
+        if source is None:
+            probe = store.load_picks_for(entry)
+            source = _resolve_load_source(entry, probe)
+        path = entry.data_path(source)
+        if not self._load_common(path):
+            return
+        saved = None
+        if not force_reset:
+            saved = store.load_picks_for(entry)
+            if saved is not None:
+                self._apply_loaded_state(saved)
+        self.state.active_source = source.lower()
+        self.current_entry = entry
+        self.root.title(f"DFIT interpretation — {entry.test_id}")
+        entry.status = store.status_for(self.state if saved else None)
+        self._refresh_queue_row(entry)
+
+    def _on_queue_select(self, event=None):
+        sel = self.queue_tree.selection()
+        if not sel:
+            return
+        test_id = sel[0]
+        if self.current_entry is not None and test_id == self.current_entry.test_id:
+            return
+        entry = next((e for e in self.queue_entries if e.test_id == test_id), None)
+        if entry is None:
+            return
+        self._save_current_queue_picks()
+        self._load_test(entry)
 
     def _load_questionnaire(self, csv_path: str):
         """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill density/TVD.
@@ -1092,11 +1262,11 @@ class DfitApp:
             return
         # (future) append a row to the CSV results log here
 
-    def _load_picks(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
-        if not path:
-            return
-        self.state = PickState.from_json(path)
+    def _apply_loaded_state(self, state: PickState):
+        """Adopt `state` as the current PickState and reflect it into every widget -- shared by
+        single-file _load_picks (state fresh off a file dialog) and folder-mode _load_test
+        (state fresh off store.load_picks_for)."""
+        self.state = state
         self._views = {k: None for k, _ in STEPS}
         if not self.state.step_status:
             # An old save has real picks but no breadcrumb history -- infer it so the
@@ -1125,6 +1295,12 @@ class DfitApp:
         # workflow left off; if every step already has some status, there is no natural resume
         # point, so land on "overview" (first_not_visited_step's fallback).
         self._goto(first_not_visited_step(self.state.step_status))
+
+    def _load_picks(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        self._apply_loaded_state(PickState.from_json(path))
 
 
 def _to_float(s: str):
