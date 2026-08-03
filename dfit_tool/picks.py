@@ -755,7 +755,7 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
     """Re-suggest the contact pick from the just-selected closure scenario (an explicit user
     action, so it may overwrite a previous contact pick). Pure state mutation -- no matplotlib.
 
-    Rules (URTeC-2019-123 / plan.md scenario table):
+    Rules (URTeC-2019-123 / ../CLAUDE.md scenario table):
       - C-A clear: contact = first sample right of the min-dP/dG pick where dP/dG >= 110% of
         the value at that pick. Anchors at ``state.min_dpdg_G`` (suggesting it first if unset)
         so a dragged min pick drives the rule.
@@ -793,6 +793,18 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
         state.contact_G = float(dg.G[idx])
         return None
     return None
+
+
+_PP_AXIS_BY_SCENARIO = {"PC-A": "tm12", "PC-B": "tm1", "PC-C": "tm12", "PC-E": "tm12"}
+# PC-D "either" and PC-F "none" are intentionally absent -> axis left to the analyst.
+
+
+def suggest_pp_axis(scenario: str) -> Optional[str]:
+    """Pore-pressure axis dictated by a postclosure scenario ("tm12"/"tm1"), or None when
+    the scenario leaves the axis to the analyst (unset, PC-D 'either', PC-F 'none')."""
+    if not scenario:
+        return None
+    return _PP_AXIS_BY_SCENARIO.get(scenario[:4])
 
 
 # --------------------------------------------------------------------------------------------------

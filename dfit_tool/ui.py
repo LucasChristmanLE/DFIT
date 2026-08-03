@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import pathlib
 from dataclasses import dataclass
 from typing import Optional
 import tkinter as tk
@@ -21,7 +22,7 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import io_load, picks, plots, sliders
+from . import guide_content, io_load, picks, plots, sliders
 from .model import PickState, TangentPick, compute_all, infer_step_status
 from .plots import ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
@@ -39,6 +40,19 @@ STEPS = [
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid"]
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial", "PC-C mixed",
                          "PC-D mixed", "PC-E none", "PC-F none"]
+
+# Advisory hints for the postclosure scenarios that don't fully dictate the pore-pressure axis
+# (picks.suggest_pp_axis). Full explanatory text + figures live in the interpretation guide
+# window (guide_content.py / _open_guide below); this dict is still consulted by _on_scenario.
+_PC_HINTS = {
+    "PC-D": "either axis valid -- choose t^(-1/2) or t^(-1) manually",
+    "PC-E": "no clear slope -- t^(-1/2) set; treat pore pressure as low-confidence",
+    "PC-F": "derivative still rising -- no reliable postclosure line; pore pressure not determinable",
+}
+
+# Tabs for the single "Interpretation guide..." window (_open_guide), in display order.
+GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
+_GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
 # The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
@@ -169,6 +183,8 @@ class DfitApp:
         self._x_slider: Optional[sliders.PanRangeSlider] = None
         self._y_slider: Optional[sliders.PanRangeSlider] = None
         self._y2_slider: Optional[sliders.PanRangeSlider] = None
+        self._guide_win: Optional[tk.Toplevel] = None
+        self._guide_tab_index: dict[str, int] = {}
 
         self._build_top()
         self._build_body()
@@ -271,6 +287,8 @@ class DfitApp:
         self.var_showd2 = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.frm_cscen, text="show d²P/dG²", variable=self.var_showd2,
                         command=self._on_showd2).pack(anchor="w", pady=(4, 0))
+        ttk.Button(self.frm_cscen, text="Interpretation guide...",
+                   command=lambda: self._open_guide("closure")).pack(anchor="w", pady=(6, 0))
 
         self.frm_pcscen = ttk.Frame(panel)
         ttk.Label(self.frm_pcscen, text="Postclosure scenario").pack(anchor="w")
@@ -282,9 +300,15 @@ class DfitApp:
 
         ttk.Label(self.frm_pcscen, text="Pore-pressure axis").pack(anchor="w", pady=(6, 0))
         self.var_ppaxis = tk.StringVar(value="tm12")
+        self.rb_ppaxis = []
         for txt, val in [("t^(-1/2)", "tm12"), ("t^(-1)", "tm1")]:
-            ttk.Radiobutton(self.frm_pcscen, text=txt, variable=self.var_ppaxis, value=val,
-                            command=self._on_scenario).pack(anchor="w")
+            rb = ttk.Radiobutton(self.frm_pcscen, text=txt, variable=self.var_ppaxis, value=val,
+                                 command=self._on_scenario)
+            rb.pack(anchor="w")
+            self.rb_ppaxis.append(rb)
+
+        ttk.Button(self.frm_pcscen, text="Interpretation guide...",
+                   command=lambda: self._open_guide("postclosure")).pack(anchor="w", pady=(6, 0))
 
         self.sep_before_notes = ttk.Separator(panel)
         self.sep_before_notes.pack(fill="x", pady=6)
@@ -409,13 +433,24 @@ class DfitApp:
         cscen = self.var_cscen.get()
         cscen_changed = cscen != self.state.closure_scenario
         self.state.closure_scenario = cscen
-        self.state.postclosure_scenario = self.var_pcscen.get()
+        pcscen = self.var_pcscen.get()
+        pcscen_changed = pcscen != self.state.postclosure_scenario
+        self.state.postclosure_scenario = pcscen
         self.state.pp_axis = self.var_ppaxis.get()
         hint = None
         if cscen_changed and self.td is not None:
             # Selecting a closure scenario is an explicit request to re-derive the contact
             # pick from that scenario's rule (it may overwrite a previous pick).
             hint = picks.apply_closure_scenario(self.state, compute_all(self.state, self.td))
+        if pcscen_changed:
+            # Selecting a postclosure scenario drives the pore-pressure axis (see
+            # picks.suggest_pp_axis); PC-D/PC-F leave the axis to the analyst.
+            axis = picks.suggest_pp_axis(pcscen)
+            if axis is not None:
+                self.state.pp_axis = axis
+            self.var_ppaxis.set(self.state.pp_axis)
+            hint = _PC_HINTS.get(pcscen[:4]) or hint
+        self._update_ppaxis_enabled()
         self.refresh()
         if hint:
             # After refresh(): _attach_controllers just set the step's default hint text,
@@ -425,6 +460,120 @@ class DfitApp:
     def _on_showd2(self):
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
+
+    # ---- interpretation guide window --------------------------------------------------------------
+    def _open_guide(self, key: str):
+        """Open the single interpretation-guide window (or refocus it) on the tab for `key`
+        ("closure" or "postclosure"). Reused across both side-panel buttons so there is never
+        more than one guide window."""
+        if self._guide_win is not None and self._guide_win.winfo_exists():
+            self._guide_win.deiconify()
+            self._guide_win.lift()
+            self._guide_win.focus_set()
+        else:
+            self._build_guide_window()
+        self._guide_notebook.select(self._guide_tab_index[key])
+
+    def _build_guide_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("DFIT interpretation guide")
+        win.state("zoomed")
+        win._guide_images = []  # keep PhotoImage refs alive; Tk GCs unreferenced images.
+
+        def _on_close():
+            self._guide_win = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True)
+        self._guide_notebook = notebook
+        self._guide_tab_index = {}
+
+        for tab_i, (key, guide) in enumerate(GUIDE_TABS):
+            container = ttk.Frame(notebook)
+            notebook.add(container, text=guide.title)
+            self._guide_tab_index[key] = tab_i
+
+            canvas = tk.Canvas(container, highlightthickness=0)
+            vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=vsb.set)
+            canvas.pack(side="left", fill="both", expand=True)
+            vsb.pack(side="right", fill="y")
+
+            inner = ttk.Frame(canvas)
+            canvas.create_window((0, 0), window=inner, anchor="nw")
+
+            def _on_inner_configure(event, canvas=canvas):
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            inner.bind("<Configure>", _on_inner_configure)
+
+            def _on_mousewheel(event, canvas=canvas):
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            canvas.bind("<MouseWheel>", _on_mousewheel)
+
+            self._render_guide(inner, guide, win)
+
+            # Tk delivers <MouseWheel> only to the widget under the pointer and does not bubble
+            # to parents, so the bare canvas binding never fires while the pointer is over the
+            # labels/images that cover most of the tab. Bind every rendered child too.
+            def _bind_wheel(widget):
+                widget.bind("<MouseWheel>", _on_mousewheel)
+                for child in widget.winfo_children():
+                    _bind_wheel(child)
+            _bind_wheel(inner)
+
+        self._guide_win = win
+
+    def _render_guide(self, inner: ttk.Frame, guide: guide_content.Guide, win: tk.Toplevel):
+        """Render one Guide, top-down, into `inner` (a scroll-region frame in `win`)."""
+        ttk.Label(inner, text=guide.title, font=("", 12, "bold"), wraplength=900,
+                  justify="left").pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(inner, text=guide.intro, wraplength=900, justify="left").pack(
+            anchor="w", padx=10, pady=(0, 10))
+
+        for section in guide.sections:
+            ttk.Separator(inner).pack(fill="x", padx=10, pady=6)
+            ttk.Label(inner, text=section.title, font=("", 10, "bold"), wraplength=900,
+                      justify="left").pack(anchor="w", padx=10, pady=(4, 2))
+            ttk.Label(inner, text=section.body, wraplength=900, justify="left").pack(
+                anchor="w", padx=10, pady=(0, 6))
+            for fig in section.figures:
+                img = self._load_guide_image(fig.image)
+                if img is not None:
+                    win._guide_images.append(img)
+                    ttk.Label(inner, image=img).pack(anchor="w", padx=10, pady=(0, 2))
+                else:
+                    ttk.Label(inner, text=f"[figure unavailable: {fig.image}]",
+                              foreground="red").pack(anchor="w", padx=10, pady=(0, 2))
+                ttk.Label(inner, text=fig.caption, wraplength=900, justify="left",
+                          font=("", 8, "italic"), foreground="gray").pack(
+                    anchor="w", padx=10, pady=(0, 10))
+
+        ttk.Label(inner, text=guide.source, wraplength=900, justify="left",
+                  foreground="gray").pack(anchor="w", padx=10, pady=(6, 10))
+
+    def _load_guide_image(self, name: str):
+        try:
+            return tk.PhotoImage(file=str(_GUIDE_ASSETS / name))
+        except Exception:
+            return None
+
+    def _reconcile_pp_axis(self):
+        """Force pp_axis to the value a postclosure scenario dictates (if any), so a locked
+        axis can't disagree with its scenario. pp_axis feeds compute_all, so refresh() calls
+        this before recomputing; PC-D/PC-F/unset return None and leave a manual choice intact."""
+        axis = picks.suggest_pp_axis(self.state.postclosure_scenario)
+        if axis is not None and axis != self.state.pp_axis:
+            self.state.pp_axis = axis
+            self.var_ppaxis.set(self.state.pp_axis)
+
+    def _update_ppaxis_enabled(self):
+        """Lock the pore-pressure axis radios whenever the postclosure scenario dictates the
+        axis (picks.suggest_pp_axis), so the scenario and the manual radios can't disagree."""
+        dictated = picks.suggest_pp_axis(self.state.postclosure_scenario) is not None
+        for rb in self.rb_ppaxis:
+            rb.state(["disabled"] if dictated else ["!disabled"])
 
     # ---- steps / render -------------------------------------------------------------------------
     def _goto(self, step: str):
@@ -482,6 +631,10 @@ class DfitApp:
         if self.td is None:
             return
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        # Reconcile a locked axis with its scenario before recomputing -- pp_axis feeds
+        # compute_all, so an older save (e.g. PC-B + tm12) must be corrected here or the first
+        # render (e.g. resuming directly onto porepressure) would show a stale pore pressure.
+        self._reconcile_pp_axis()
         self.res = compute_all(self.state, self.td)
 
         self.fig.clf()
@@ -540,6 +693,9 @@ class DfitApp:
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
         if self.step in ("loglog", "porepressure"):
             self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
+            # refresh() already reconciled pp_axis with the scenario before recomputing; here
+            # just lock/unlock the radios to match.
+            self._update_ppaxis_enabled()
 
     def _twin_axes(self):
         """The step's twin (secondary y) Axes if it has one, else None.

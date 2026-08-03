@@ -203,6 +203,7 @@ def _refresh_stub(td, state, step):
     stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
     stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
     stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
+    stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     return stub
 
