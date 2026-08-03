@@ -140,6 +140,21 @@ def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> 
     return entry.available_sources[0]
 
 
+def _next_new_index(statuses: list[str], current_index: int) -> Optional[int]:
+    """The index of the next ``"new"``-status entry in ``statuses``, scanning circularly
+    starting just after ``current_index`` -- the pure selection logic behind Save & Next's
+    auto-advance. Deliberately never revisits ``current_index`` itself even if its own status
+    is ``"new"`` (its work was just saved this call), so "the only new entry is the current
+    one" correctly reports no candidate. Returns None if ``statuses`` is empty or no other
+    entry is ``"new"``."""
+    n = len(statuses)
+    for offset in range(1, n):
+        i = (current_index + offset) % n
+        if statuses[i] == "new":
+            return i
+    return None
+
+
 @dataclass
 class ViewState:
     """The resolved (non-optional) view actually applied to a step's Axes: primary xlim/ylim,
@@ -186,7 +201,7 @@ def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
 
 
 class DfitApp:
-    def __init__(self, root: tk.Tk, csv_path: str | None = None):
+    def __init__(self, root: tk.Tk, path: str | None = None):
         self.root = root
         self.root.title("DFIT interpretation (first build)")
         self.root.geometry("1400x850")
@@ -215,8 +230,11 @@ class DfitApp:
         self._build_body()
         self._build_stepbar()
 
-        if csv_path:
-            self._load(csv_path)
+        if path:
+            if os.path.isdir(path):
+                self._open_folder_path(path)
+            else:
+                self._load(path)
 
     # ---- layout ---------------------------------------------------------------------------------
     def _build_top(self):
@@ -226,6 +244,16 @@ class DfitApp:
         ttk.Button(top, text="Open Folder…", command=self._open_folder).pack(side="left")
         self.file_lbl = ttk.Label(top, text="(no file)")
         self.file_lbl.pack(side="left", padx=8)
+
+        # Folder mode only: which of a test's CSV/DBS files is loaded. Disabled/cleared in
+        # single-file mode and whenever a test has only one source -- _update_folder_controls
+        # is the one sync point for this widget's state/values.
+        ttk.Label(top, text="Source:").pack(side="left", padx=(8, 2))
+        self.var_source = tk.StringVar()
+        self.cmb_source = ttk.Combobox(top, textvariable=self.var_source, width=6,
+                                       state="disabled")
+        self.cmb_source.pack(side="left")
+        self.cmb_source.bind("<<ComboboxSelected>>", lambda e: self._on_source_change())
 
         cfg = ttk.Frame(self.root, padding=(6, 0))
         cfg.pack(side="top", fill="x")
@@ -261,6 +289,21 @@ class DfitApp:
         ttk.Button(cfg2, text="Apply", command=self._apply_config).pack(side="left", padx=10)
         ttk.Button(cfg2, text="Save picks…", command=self._save_picks).pack(side="right", padx=4)
         ttk.Button(cfg2, text="Load picks…", command=self._load_picks).pack(side="right")
+
+        # Folder mode only: mark the current test's queue status and roll it (plus every
+        # computed value) into dfit_log.csv. Disabled/cleared in single-file mode --
+        # _update_folder_controls is the one sync point for both widgets' state/values. Packed
+        # right-to-left (each subsequent pack lands to the left of the one before it), so this
+        # order reads left-to-right as "Mark: [combo] [Save & Next]", just left of Load/Save.
+        self.btn_save_next = ttk.Button(cfg2, text="Save && Next", command=self._save_and_next,
+                                        state="disabled")
+        self.btn_save_next.pack(side="right", padx=4)
+        self.var_mark = tk.StringVar()
+        self.cmb_mark = ttk.Combobox(cfg2, textvariable=self.var_mark,
+                                     values=["", "done", "skipped"], width=8, state="disabled")
+        self.cmb_mark.pack(side="right")
+        self.cmb_mark.bind("<<ComboboxSelected>>", lambda e: self._on_mark_change())
+        ttk.Label(cfg2, text="Mark:").pack(side="right", padx=(8, 2))
 
         # Provenance for the density/TVD prefill above -- set by _load when a questionnaire xlsx
         # is auto-detected next to the CSV; empty when none was found. Density/TVD stay ordinary
@@ -466,6 +509,7 @@ class DfitApp:
         self._hide_queue()
         self.queue_tree.delete(*self.queue_tree.get_children())
         self.root.title("DFIT interpretation (first build)")
+        self._update_folder_controls()
         self._load_common(path)
 
     # ---- folder mode ----------------------------------------------------------------------------
@@ -494,6 +538,7 @@ class DfitApp:
         self.current_entry = None
         target = next((e for e in entries if e.status == "new"), entries[0])
         self._load_test(target)
+        self._update_folder_controls()  # covers _load_test's early return on a failed load too
 
         # Surface scan warnings as a one-line summary rather than dialog-spamming per test.
         warn_count = sum(len(e.scan_warnings) for e in entries)
@@ -560,6 +605,91 @@ class DfitApp:
         self.root.title(f"DFIT interpretation — {entry.test_id}")
         entry.status = store.status_for(self.state if saved else None)
         self._refresh_queue_row(entry)
+        self._update_folder_controls()
+
+    def _update_folder_controls(self):
+        """One sync point for the Source/Mark/Save & Next controls -- called from _load_test
+        (after current_entry is set), the single-file _load wrapper (after clearing folder
+        state), and _open_folder_path (which also covers _load_test's early return on a failed
+        load, since that return happens before this call runs inside _load_test itself).
+
+        Single-file mode (current_entry is None): all three cleared and disabled. Folder mode:
+        cmb_source lists the entry's available sources (readonly only if there's more than
+        one -- a single-source test has nothing to switch to), cmb_mark is readonly, and
+        btn_save_next is enabled."""
+        if self.current_entry is None:
+            self.var_source.set("")
+            self.cmb_source["values"] = []
+            self.cmb_source.config(state="disabled")
+            self.var_mark.set("")
+            self.cmb_mark.config(state="disabled")
+            self.btn_save_next.config(state="disabled")
+            return
+        entry = self.current_entry
+        self.cmb_source["values"] = entry.available_sources
+        self.var_source.set(self.state.active_source.upper())
+        self.cmb_source.config(
+            state="readonly" if len(entry.available_sources) > 1 else "disabled")
+        self.cmb_mark.config(state="readonly")
+        self.var_mark.set(self.state.explicit_status or "")
+        self.btn_save_next.config(state="normal")
+
+    def _on_source_change(self):
+        """The Source combobox: switching CSV<->DBS resets all picks for this test (a fresh
+        _load_test, not a resume), so confirm first -- reverting the combobox on decline."""
+        new = self.var_source.get()
+        current = self.state.active_source.upper()
+        if new == current:
+            return
+        if not messagebox.askyesno(
+                "Switch data source",
+                "Switching the data source resets all picks for this test. Continue?"):
+            self.var_source.set(current)
+            return
+        self._load_test(self.current_entry, source=new, force_reset=True)
+
+    def _on_mark_change(self):
+        """The Mark combobox: an explicit done/skipped override on the current test's status.
+        Persists only via Save & Next / navigation's picks-save (no log write here)."""
+        self.state.explicit_status = self.var_mark.get() or None
+        self.current_entry.status = store.status_for(self.state)
+        self._refresh_queue_row(self.current_entry)
+
+    def _write_log_row(self, entry: store.TestEntry):
+        """Build and upsert one dfit_log.csv row for `entry` from the current state/res, then
+        persist the whole log -- shared by _save_and_next and _finish's folder branch, the only
+        two places dfit_log.csv is written. Callers wrap this in try/except (OneDrive file
+        locks happen); the picks JSON save must already have succeeded independently before
+        this runs."""
+        row = store.build_log_row(entry, entry.data_path(self.state.active_source.upper()),
+                                  self.folder_root, self.state, self.td, self.res)
+        self.log_df = store.upsert_log_row(self.log_df, row)
+        store.save_log(self.folder_root, self.log_df)
+
+    def _save_and_next(self):
+        """Bound to the Save & Next button -- only reachable in folder mode (the button is
+        disabled otherwise), guarded anyway. Saves picks + the master log row, then advances to
+        the next queue entry with status "new" (scanning circularly from just after the
+        current one), or reports the queue is exhausted."""
+        if self.current_entry is None or self.td is None:
+            return
+        entry = self.current_entry
+        self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        self.state.explicit_status = self.var_mark.get() or None
+        store.save_picks_for(entry, self.state)
+        entry.status = store.status_for(self.state)
+        try:
+            self._write_log_row(entry)
+        except Exception as e:
+            messagebox.showerror("Log write failed", str(e))
+        self._refresh_queue_row(entry)
+        statuses = [e.status for e in self.queue_entries]
+        current_index = self.queue_entries.index(entry)
+        next_index = _next_new_index(statuses, current_index)
+        if next_index is None:
+            messagebox.showinfo("Queue", "No new tests remain.")
+            return
+        self._load_test(self.queue_entries[next_index])
 
     def _on_queue_select(self, event=None):
         sel = self.queue_tree.selection()
@@ -1251,18 +1381,28 @@ class DfitApp:
             self.state.to_json(path)
 
     def _finish(self):
-        """Bound to the Finish button (_advance on the last step): a silent one-click export --
-        re-save the picks JSON next to the data file and write a PNG per step (current zoom) into
-        a sibling subfolder. No success popup; only a failure raises a dialog."""
+        """Bound to the Finish button (_advance on the last step): a silent one-click export.
+
+        Single-file mode (current_entry is None): byte-for-byte today's behavior -- re-save the
+        picks JSON next to the data file and write a PNG per step (current zoom) into a sibling
+        subfolder; no log. Folder mode: save picks via store.save_picks_for (the store path is
+        the single ground truth in folder mode -- no <stem>_picks.json duplicate), same PNG
+        export, then the same dfit_log.csv row write as _save_and_next -- but no auto-advance.
+
+        No success popup; only a failure raises a dialog."""
         if self.td is None:
             return
         self.state.step_status[self.step] = "done"
         self.refresh()  # ensure current-step view stored in _views and self.res fresh
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        entry = self.current_entry
         parent = pathlib.Path(self.td.path).parent
         stem = pathlib.Path(self.td.path).stem
         try:
-            self.state.to_json(str(parent / f"{stem}_picks.json"))
+            if entry is None:
+                self.state.to_json(str(parent / f"{stem}_picks.json"))
+            else:
+                store.save_picks_for(entry, self.state)
             out_dir = parent / f"{stem} DFIT plots"
             out_dir.mkdir(exist_ok=True)
             views = {k: ((v.xlim, v.ylim, v.y2lim) if v is not None else None)
@@ -1271,7 +1411,14 @@ class DfitApp:
         except Exception as e:
             messagebox.showerror("Finish failed", str(e))
             return
-        # (future) append a row to the CSV results log here
+        if entry is None:
+            return
+        entry.status = store.status_for(self.state)
+        try:
+            self._write_log_row(entry)
+        except Exception as e:
+            messagebox.showerror("Log write failed", str(e))
+        self._refresh_queue_row(entry)
 
     def _apply_loaded_state(self, state: PickState):
         """Adopt `state` as the current PickState and reflect it into every widget -- shared by

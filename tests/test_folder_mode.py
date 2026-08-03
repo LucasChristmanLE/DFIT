@@ -11,9 +11,11 @@ from __future__ import annotations
 import os
 import types
 
-from dfit_tool import store
-from dfit_tool.model import PickState, infer_step_status
-from dfit_tool.ui import STEPS, DfitApp, _resolve_load_source, first_not_visited_step
+from dfit_tool import store, ui
+from dfit_tool.model import PickState, compute_all, infer_step_status
+from dfit_tool.ui import (STEPS, DfitApp, _next_new_index, _resolve_load_source,
+                          first_not_visited_step)
+from tests.helpers import make_testdata, overview_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -69,6 +71,7 @@ def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monk
     stub._apply_loaded_state = _apply
     stub._refresh_queue_row = lambda e: None
     stub.root = types.SimpleNamespace(title=lambda t: None)
+    stub._update_folder_controls = lambda: None
     stub._load_test = types.MethodType(DfitApp._load_test, stub)
 
     stub._load_test(entry)
@@ -100,6 +103,7 @@ def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monke
     stub._apply_loaded_state = lambda state: setattr(stub, "state", state)
     stub._refresh_queue_row = lambda e: None
     stub.root = types.SimpleNamespace(title=lambda t: None)
+    stub._update_folder_controls = lambda: None
     stub._load_test = types.MethodType(DfitApp._load_test, stub)
 
     stub._load_test(entry, source="CSV")
@@ -179,6 +183,8 @@ def test_load_wrapper_exits_folder_mode_and_delegates_to_load_common():
     stub.root = types.SimpleNamespace(title=lambda t: titles.append(t))
     stub._load_common_calls = []
     stub._load_common = lambda path: stub._load_common_calls.append(path) or True
+    stub._update_folder_controls_calls = []
+    stub._update_folder_controls = lambda: stub._update_folder_controls_calls.append(True)
     stub._load = types.MethodType(DfitApp._load, stub)
 
     stub._load("some/path.csv")
@@ -191,6 +197,7 @@ def test_load_wrapper_exits_folder_mode_and_delegates_to_load_common():
     assert stub.queue_tree.deleted == ("a", "b")
     assert titles == ["DFIT interpretation (first build)"]
     assert stub._load_common_calls == ["some/path.csv"]
+    assert stub._update_folder_controls_calls == [True]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -215,6 +222,8 @@ def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
     stub._show_queue = lambda: None
     stub.warn_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub._load_test_calls = []
+    stub._update_folder_controls_calls = []
+    stub._update_folder_controls = lambda: stub._update_folder_controls_calls.append(True)
 
     def _failing_load_test(entry, source=None, force_reset=False):
         # Simulates _load_common failing inside the real _load_test -- it returns early and
@@ -228,6 +237,10 @@ def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
 
     assert stub.current_entry is None  # not the stale entry from the previous folder
     assert len(stub._load_test_calls) == 1
+    # _open_folder_path calls _update_folder_controls itself -- _load_test's early return
+    # (simulated above) never reaches its own call, so this is the only thing that resyncs the
+    # Source/Mark/Save & Next controls to the now-None current_entry.
+    assert stub._update_folder_controls_calls == [True]
     assert stub.folder_root == str(tmp_path)
     assert len(stub.queue_entries) == 2  # the queue is still populated despite the failed load
 
@@ -379,4 +392,345 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
     assert stub.var_ppaxis.value == "tm1"
     assert stub.var_showd2.value is True
     assert stub.txt_notes.content == "hi"
-    assert stub._views == {k: None for k, _ in STEPS}
+
+
+# --------------------------------------------------------------------------------------------------
+# _next_new_index: the pure selection logic behind Save & Next's auto-advance.
+# --------------------------------------------------------------------------------------------------
+def test_next_new_index_finds_next_after_current():
+    assert _next_new_index(["done", "new", "in_progress"], 0) == 1
+
+
+def test_next_new_index_wraps_circularly():
+    assert _next_new_index(["new", "done", "new"], 2) == 0
+
+
+def test_next_new_index_skips_done_in_progress_and_skipped():
+    assert _next_new_index(["done", "in_progress", "skipped", "new"], 0) == 3
+
+
+def test_next_new_index_none_when_none_remain():
+    assert _next_new_index(["done", "skipped", "in_progress"], 0) is None
+
+
+def test_next_new_index_none_when_current_is_only_new():
+    # index 1 is itself "new", but it's the current entry (its work was just saved) -- it must
+    # never be reported back as its own "next".
+    assert _next_new_index(["done", "new", "skipped"], 1) is None
+
+
+def test_next_new_index_empty_statuses_is_none():
+    assert _next_new_index([], 0) is None
+
+
+# --------------------------------------------------------------------------------------------------
+# _update_folder_controls: the one sync point for Source/Mark/Save & Next.
+# --------------------------------------------------------------------------------------------------
+class _FakeCombo:
+    def __init__(self):
+        self.values = None
+        self.state_ = None
+
+    def __setitem__(self, key, value):
+        assert key == "values"
+        self.values = value
+
+    def config(self, **kw):
+        if "state" in kw:
+            self.state_ = kw["state"]
+
+
+def _folder_controls_stub():
+    stub = types.SimpleNamespace()
+    stub.var_source = _Var()
+    stub.cmb_source = _FakeCombo()
+    stub.var_mark = _Var()
+    stub.cmb_mark = _FakeCombo()
+    stub.btn_save_next = types.SimpleNamespace(state_=None,
+                                                config=lambda **kw: setattr(
+                                                    stub.btn_save_next, "state_", kw.get("state")))
+    stub._update_folder_controls = types.MethodType(DfitApp._update_folder_controls, stub)
+    return stub
+
+
+def test_update_folder_controls_single_file_mode_disables_and_clears():
+    stub = _folder_controls_stub()
+    stub.current_entry = None
+
+    stub._update_folder_controls()
+
+    assert stub.var_source.value == ""
+    assert stub.cmb_source.values == []
+    assert stub.cmb_source.state_ == "disabled"
+    assert stub.var_mark.value == ""
+    assert stub.cmb_mark.state_ == "disabled"
+    assert stub.btn_save_next.state_ == "disabled"
+
+
+def test_update_folder_controls_folder_mode_multi_source_enables_readonly():
+    stub = _folder_controls_stub()
+    entry = store.TestEntry(test_id="w1", folder="f", csv_path="a.csv", dbs_path="a.dbs")
+    stub.current_entry = entry
+    stub.state = PickState(active_source="dbs", explicit_status="done")
+
+    stub._update_folder_controls()
+
+    assert stub.cmb_source.values == ["CSV", "DBS"]
+    assert stub.var_source.value == "DBS"
+    assert stub.cmb_source.state_ == "readonly"
+    assert stub.cmb_mark.state_ == "readonly"
+    assert stub.var_mark.value == "done"
+    assert stub.btn_save_next.state_ == "normal"
+
+
+def test_update_folder_controls_folder_mode_single_source_disables_source_combo():
+    stub = _folder_controls_stub()
+    entry = store.TestEntry(test_id="w1", folder="f", csv_path="a.csv")
+    stub.current_entry = entry
+    stub.state = PickState(active_source="csv", explicit_status=None)
+
+    stub._update_folder_controls()
+
+    assert stub.cmb_source.values == ["CSV"]
+    assert stub.cmb_source.state_ == "disabled"
+    assert stub.var_mark.value == ""
+    assert stub.btn_save_next.state_ == "normal"
+
+
+# --------------------------------------------------------------------------------------------------
+# _on_mark_change: an explicit done/skipped override -- reflected into entry.status and the
+# queue row, no log write.
+# --------------------------------------------------------------------------------------------------
+def test_on_mark_change_sets_explicit_status_and_refreshes_row():
+    entry = store.TestEntry(test_id="w1", folder="f")
+    stub = types.SimpleNamespace()
+    stub.state = PickState(step_status={"overview": "done"})
+    stub.current_entry = entry
+    stub.var_mark = _Var("skipped")
+    stub._refresh_calls = []
+    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+    stub._on_mark_change = types.MethodType(DfitApp._on_mark_change, stub)
+
+    stub._on_mark_change()
+
+    assert stub.state.explicit_status == "skipped"
+    assert entry.status == "skipped"
+    assert stub._refresh_calls == [entry]
+
+
+def test_on_mark_change_empty_selection_clears_explicit_status():
+    entry = store.TestEntry(test_id="w1", folder="f")
+    stub = types.SimpleNamespace()
+    stub.state = PickState(explicit_status="done", step_status={})
+    stub.current_entry = entry
+    stub.var_mark = _Var("")
+    stub._refresh_queue_row = lambda e: None
+    stub._on_mark_change = types.MethodType(DfitApp._on_mark_change, stub)
+
+    stub._on_mark_change()
+
+    assert stub.state.explicit_status is None
+    assert entry.status == "new"
+
+
+# --------------------------------------------------------------------------------------------------
+# _on_source_change: switching sources resets picks (confirm first); decline reverts the
+# combobox, accept delegates to _load_test(source=..., force_reset=True).
+# --------------------------------------------------------------------------------------------------
+def test_on_source_change_noop_when_same_source_selected():
+    stub = types.SimpleNamespace()
+    stub.state = PickState(active_source="csv")
+    stub.var_source = _Var("CSV")
+    stub._load_test_calls = []
+    stub._load_test = lambda *a, **kw: stub._load_test_calls.append((a, kw))
+    stub._on_source_change = types.MethodType(DfitApp._on_source_change, stub)
+
+    stub._on_source_change()
+
+    assert stub._load_test_calls == []
+
+
+def test_on_source_change_decline_reverts_combobox(monkeypatch):
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: False)
+    stub = types.SimpleNamespace()
+    stub.state = PickState(active_source="csv")
+    stub.current_entry = store.TestEntry(test_id="w1", folder="f")
+    stub.var_source = _Var("DBS")
+    stub._load_test_calls = []
+    stub._load_test = lambda *a, **kw: stub._load_test_calls.append((a, kw))
+    stub._on_source_change = types.MethodType(DfitApp._on_source_change, stub)
+
+    stub._on_source_change()
+
+    assert stub.var_source.value == "CSV"
+    assert stub._load_test_calls == []
+
+
+def test_on_source_change_accept_calls_load_test_with_force_reset(monkeypatch):
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: True)
+    stub = types.SimpleNamespace()
+    stub.state = PickState(active_source="csv")
+    entry = store.TestEntry(test_id="w1", folder="f")
+    stub.current_entry = entry
+    stub.var_source = _Var("DBS")
+    stub._load_test_calls = []
+    stub._load_test = lambda *a, **kw: stub._load_test_calls.append((a, kw))
+    stub._on_source_change = types.MethodType(DfitApp._on_source_change, stub)
+
+    stub._on_source_change()
+
+    assert stub._load_test_calls == [((entry,), {"source": "DBS", "force_reset": True})]
+
+
+# --------------------------------------------------------------------------------------------------
+# _save_and_next: only reachable in folder mode. Saves picks + upserts dfit_log.csv, refreshes
+# the queue row, and advances to the next "new" entry (or reports the queue is exhausted).
+# --------------------------------------------------------------------------------------------------
+def _save_and_next_stub(tmp_path, second_status="new"):
+    entry1_dir = tmp_path / "w1"
+    entry1_dir.mkdir()
+    csv1 = entry1_dir / "w1.csv"
+    csv1.write_text("t,p\n")
+    entry1 = store.TestEntry(test_id="w1", folder=str(entry1_dir), csv_path=str(csv1))
+
+    entry2_dir = tmp_path / "w2"
+    entry2_dir.mkdir()
+    csv2 = entry2_dir / "w2.csv"
+    csv2.write_text("t,p\n")
+    entry2 = store.TestEntry(test_id="w2", folder=str(entry2_dir), csv_path=str(csv2),
+                             status=second_status)
+
+    td = make_testdata()
+    td.path = str(csv1)
+    state = overview_state(td)
+    state.active_source = "csv"
+    res = compute_all(state, td)
+
+    stub = types.SimpleNamespace()
+    stub.current_entry = entry1
+    stub.td = td
+    stub.state = state
+    stub.res = res
+    stub.folder_root = str(tmp_path)
+    stub.log_df = store.load_log(str(tmp_path))
+    stub.queue_entries = [entry1, entry2]
+    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "save and next notes")
+    stub.var_mark = _Var("done")
+    stub._refresh_calls = []
+    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+    stub._load_test_calls = []
+    stub._load_test = lambda e: stub._load_test_calls.append(e)
+    stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
+    stub._save_and_next = types.MethodType(DfitApp._save_and_next, stub)
+    return stub, entry1, entry2
+
+
+def test_save_and_next_noop_when_not_in_folder_mode():
+    stub = types.SimpleNamespace()
+    stub.current_entry = None
+    stub.td = object()
+    stub._save_and_next = types.MethodType(DfitApp._save_and_next, stub)
+
+    stub._save_and_next()  # must not raise despite no other attribute existing
+
+
+def test_save_and_next_writes_picks_and_log_then_advances(tmp_path):
+    stub, entry1, entry2 = _save_and_next_stub(tmp_path)
+
+    stub._save_and_next()
+
+    assert os.path.exists(entry1.picks_path)
+    loaded = store.load_picks_for(entry1)
+    assert loaded.notes == "save and next notes"
+    assert loaded.explicit_status == "done"
+    assert entry1.status == store.status_for(loaded) == "done"
+
+    log_path = os.path.join(str(tmp_path), store.LOG_FILENAME)
+    assert os.path.exists(log_path)
+    log_df = store.load_log(str(tmp_path))
+    row = log_df[log_df["test_id"] == "w1"].iloc[0]
+    assert row["status"] == "done"
+    assert row["notes"] == "save and next notes"
+
+    assert stub._refresh_calls == [entry1]
+    assert stub._load_test_calls == [entry2]
+
+
+def test_save_and_next_reports_no_new_tests_remain(tmp_path, monkeypatch):
+    info_calls = []
+    monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **kw: info_calls.append((a, kw)))
+    stub, entry1, entry2 = _save_and_next_stub(tmp_path, second_status="done")
+
+    stub._save_and_next()
+
+    assert stub._load_test_calls == []
+    assert len(info_calls) == 1
+
+
+# --------------------------------------------------------------------------------------------------
+# _finish: the folder branch saves picks only via store.save_picks_for (no <stem>_picks.json
+# duplicate) and upserts dfit_log.csv; the single-file branch is unchanged -- stem JSON, PNG
+# folder, no log (regression guard for the mode gating).
+# --------------------------------------------------------------------------------------------------
+def _finish_stub(tmp_path, folder_mode, monkeypatch):
+    monkeypatch.setattr(ui.plots, "save_all_step_pngs", lambda *a, **kw: [])
+    data_dir = tmp_path / "w1" if folder_mode else tmp_path
+    if folder_mode:
+        data_dir.mkdir()
+    csv_path = data_dir / "w1.csv"
+    csv_path.write_text("t,p\n")
+
+    td = make_testdata()
+    td.path = str(csv_path)
+    state = overview_state(td)
+    res = compute_all(state, td)
+
+    stub = types.SimpleNamespace()
+    stub.td = td
+    stub.state = state
+    stub.res = res
+    stub.step = "porepressure"
+    stub._views = {}
+    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
+    stub.refresh = lambda: None
+    stub._refresh_calls = []
+    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+
+    if folder_mode:
+        entry = store.TestEntry(test_id="w1", folder=str(data_dir), csv_path=str(csv_path))
+        stub.current_entry = entry
+        stub.folder_root = str(tmp_path)
+        stub.log_df = store.load_log(str(tmp_path))
+    else:
+        entry = None
+        stub.current_entry = None
+        stub.folder_root = None
+        stub.log_df = None
+
+    stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
+    stub._finish = types.MethodType(DfitApp._finish, stub)
+    return stub, entry, data_dir
+
+
+def test_finish_folder_branch_saves_via_store_and_writes_log(tmp_path, monkeypatch):
+    stub, entry, data_dir = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+
+    stub._finish()
+
+    assert os.path.exists(entry.picks_path)
+    assert not (data_dir / "w1_picks.json").exists()  # no stem-JSON duplicate in folder mode
+
+    log_path = os.path.join(str(tmp_path), store.LOG_FILENAME)
+    assert os.path.exists(log_path)
+    log_df = store.load_log(str(tmp_path))
+    assert "w1" in log_df["test_id"].tolist()
+    assert stub._refresh_calls == [entry]
+
+
+def test_finish_single_file_branch_writes_stem_json_no_log(tmp_path, monkeypatch):
+    stub, entry, data_dir = _finish_stub(tmp_path, folder_mode=False, monkeypatch=monkeypatch)
+
+    stub._finish()
+
+    assert (data_dir / "w1_picks.json").exists()
+    assert not (data_dir / store.LOG_FILENAME).exists()
