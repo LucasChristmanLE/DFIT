@@ -485,6 +485,13 @@ class DfitApp:
         self.log_df = log_df
         self._populate_queue()
         self._show_queue()
+        # Clear current_entry before the auto-open below -- if _load_test's _load_common fails
+        # (corrupt/unreadable first file), it returns early without ever assigning
+        # current_entry, and this folder's queue must not be left paired with either no test
+        # (fine) or, worse, a stale TestEntry from whatever folder/test was open before this
+        # call (current_entry is None is the mode invariant "no test loaded", not "no
+        # possibly-wrong test loaded").
+        self.current_entry = None
         target = next((e for e in entries if e.status == "new"), entries[0])
         self._load_test(target)
 
@@ -533,15 +540,19 @@ class DfitApp:
         _load_common, then (unless force_reset) resume any saved picks. force_reset=True is for
         Task C's source switching -- it skips the saved-picks resume, keeping the fresh state
         _load_common already made."""
-        if source is None:
-            probe = store.load_picks_for(entry)
-            source = _resolve_load_source(entry, probe)
+        source_was_none = source is None
+        probed_picks = None
+        if source_was_none:
+            probed_picks = store.load_picks_for(entry)
+            source = _resolve_load_source(entry, probed_picks)
         path = entry.data_path(source)
         if not self._load_common(path):
             return
         saved = None
         if not force_reset:
-            saved = store.load_picks_for(entry)
+            # Reuse the source-resolution probe above rather than reading the same picks JSON
+            # off disk twice -- only re-read when `source` was passed explicitly (no probe ran).
+            saved = probed_picks if source_was_none else store.load_picks_for(entry)
             if saved is not None:
                 self._apply_loaded_state(saved)
         self.state.active_source = source.lower()

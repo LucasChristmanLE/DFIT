@@ -42,6 +42,72 @@ def test_resolve_load_source_dbs_only_entry_defaults_to_dbs():
 
 
 # --------------------------------------------------------------------------------------------------
+# _load_test: when `source` is None (the common case), the source-resolution probe and the
+# resume read must not both hit disk -- one store.load_picks_for call, reused for both.
+# --------------------------------------------------------------------------------------------------
+def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monkeypatch):
+    entry = store.TestEntry(test_id="w1", folder=str(tmp_path), csv_path=str(tmp_path / "w1.csv"))
+    store.save_picks_for(entry, PickState(pressure_col="P", active_source="csv"))
+
+    calls = []
+    real_load_picks_for = store.load_picks_for
+
+    def counting_load_picks_for(e):
+        calls.append(e)
+        return real_load_picks_for(e)
+
+    monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
+
+    stub = types.SimpleNamespace()
+    stub._load_common = lambda path: True
+    stub.state = PickState()
+    stub._apply_loaded_state_calls = []
+
+    def _apply(state):
+        stub._apply_loaded_state_calls.append(state)
+        stub.state = state
+    stub._apply_loaded_state = _apply
+    stub._refresh_queue_row = lambda e: None
+    stub.root = types.SimpleNamespace(title=lambda t: None)
+    stub._load_test = types.MethodType(DfitApp._load_test, stub)
+
+    stub._load_test(entry)
+
+    assert len(calls) == 1
+    assert len(stub._apply_loaded_state_calls) == 1
+    assert stub._apply_loaded_state_calls[0].pressure_col == "P"
+
+
+def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monkeypatch):
+    """An explicit `source=` (Task C's source switching) skips the resolution probe entirely,
+    so the one resume read still happens (unless force_reset) -- also exactly once."""
+    entry = store.TestEntry(test_id="w1", folder=str(tmp_path), csv_path=str(tmp_path / "w1.csv"),
+                            dbs_path=str(tmp_path / "w1.dbs"))
+    store.save_picks_for(entry, PickState(pressure_col="P", active_source="csv"))
+
+    calls = []
+    real_load_picks_for = store.load_picks_for
+
+    def counting_load_picks_for(e):
+        calls.append(e)
+        return real_load_picks_for(e)
+
+    monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
+
+    stub = types.SimpleNamespace()
+    stub._load_common = lambda path: True
+    stub.state = PickState()
+    stub._apply_loaded_state = lambda state: setattr(stub, "state", state)
+    stub._refresh_queue_row = lambda e: None
+    stub.root = types.SimpleNamespace(title=lambda t: None)
+    stub._load_test = types.MethodType(DfitApp._load_test, stub)
+
+    stub._load_test(entry, source="CSV")
+
+    assert len(calls) == 1
+
+
+# --------------------------------------------------------------------------------------------------
 # _save_current_queue_picks: no-op in single-file mode / before a file is loaded; otherwise
 # writes the picks JSON via store and recomputes+refreshes the queue row.
 # --------------------------------------------------------------------------------------------------
@@ -125,6 +191,65 @@ def test_load_wrapper_exits_folder_mode_and_delegates_to_load_common():
     assert stub.queue_tree.deleted == ("a", "b")
     assert titles == ["DFIT interpretation (first build)"]
     assert stub._load_common_calls == ["some/path.csv"]
+
+
+# --------------------------------------------------------------------------------------------------
+# _open_folder_path: current_entry must never be left stale (from a previous folder/test) if the
+# auto-opened first entry's _load_test fails (e.g. _load_common's corrupt/unreadable file path,
+# which returns early without ever assigning current_entry). The mode invariant is
+# "current_entry is None => no test loaded", not "no *possibly wrong* test loaded".
+# --------------------------------------------------------------------------------------------------
+def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
+    (tmp_path / "well1.csv").write_text("a")
+    (tmp_path / "well2.csv").write_text("a")
+
+    stub = types.SimpleNamespace()
+    stale_entry = store.TestEntry(test_id="stale", folder=os.path.join("other", "folder"))
+    stub.current_entry = stale_entry  # a test from a DIFFERENT, previously-open folder
+    stub.td = None
+    stub.folder_root = os.path.join("other", "folder")
+    stub.queue_entries = []
+    stub.log_df = None
+    stub._save_current_queue_picks = lambda: None
+    stub._populate_queue = lambda: None
+    stub._show_queue = lambda: None
+    stub.warn_lbl = types.SimpleNamespace(config=lambda **kw: None)
+    stub._load_test_calls = []
+
+    def _failing_load_test(entry, source=None, force_reset=False):
+        # Simulates _load_common failing inside the real _load_test -- it returns early and
+        # never assigns self.current_entry.
+        stub._load_test_calls.append(entry)
+
+    stub._load_test = _failing_load_test
+    stub._open_folder_path = types.MethodType(DfitApp._open_folder_path, stub)
+
+    stub._open_folder_path(str(tmp_path))
+
+    assert stub.current_entry is None  # not the stale entry from the previous folder
+    assert len(stub._load_test_calls) == 1
+    assert stub.folder_root == str(tmp_path)
+    assert len(stub.queue_entries) == 2  # the queue is still populated despite the failed load
+
+
+def test_on_queue_select_tolerates_current_entry_none():
+    """After the scenario above (folder open, no test loaded), selecting a row must not crash
+    on a None current_entry -- _on_queue_select's guard only compares test_id when it isn't."""
+    entry = store.TestEntry(test_id="w1", folder="f")
+    stub = types.SimpleNamespace()
+    stub.current_entry = None
+    stub.queue_entries = [entry]
+    stub.queue_tree = types.SimpleNamespace(selection=lambda: ("w1",))
+    stub._save_calls = []
+    stub._save_current_queue_picks = lambda: stub._save_calls.append(True)
+    stub._load_calls = []
+    stub._load_test = lambda e: stub._load_calls.append(e)
+    stub._on_queue_select = types.MethodType(DfitApp._on_queue_select, stub)
+
+    stub._on_queue_select()
+
+    assert stub._save_calls == [True]
+    assert stub._load_calls == [entry]
 
 
 # --------------------------------------------------------------------------------------------------
