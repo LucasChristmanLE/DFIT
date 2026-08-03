@@ -15,10 +15,12 @@ Matplotlib only -- no Tkinter -- so figures can be produced headlessly (Agg) for
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+from matplotlib.figure import Figure
 
 from .model import DerivedResults, PickState
 from .io_load import TestData
@@ -376,3 +378,57 @@ RENDERERS = {
     "loglog": render_loglog,
     "porepressure": render_porepressure,
 }
+
+
+def render_step_figure(step_key: str, td: TestData, state: PickState, res: DerivedResults,
+                       stored_view: Optional[tuple] = None,
+                       figsize: tuple[float, float] = (9, 6)) -> Figure:
+    """Render one step onto an offscreen ``Figure`` with the same view-resolution logic
+    ``ui.refresh()``/``ui._resolve_view`` apply to the live canvas, so an exported PNG matches
+    what the analyst was looking at (stored_view) or the renderer's own default.
+
+    No Tkinter -- this and ``save_all_step_pngs`` are called by ``ui._finish`` but could equally
+    run headlessly for tests, per the module-level invariant.
+    """
+    fig = Figure(figsize=figsize)
+    ax = fig.add_subplot(111)
+    defaults = RENDERERS[step_key](ax, td, state, res)
+
+    full_x = ax.get_xlim()
+    full_y = ax.get_ylim()
+    if step_key == "gfunction" and defaults.ylim is not None:
+        full_y = defaults.ylim
+    twin = next((a for a in fig.axes if a is not ax), None)
+    full_y2 = twin.get_ylim() if twin is not None else None
+    if step_key == "gfunction" and full_y2 is not None:
+        full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], 500.0))
+
+    if stored_view is not None:
+        xlim, ylim, y2lim = stored_view
+    else:
+        xlim = defaults.xlim if defaults.xlim is not None else full_x
+        ylim = defaults.ylim if defaults.ylim is not None else full_y
+        y2lim = defaults.y2lim if defaults.y2lim is not None else full_y2
+
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    if twin is not None and y2lim is not None:
+        twin.set_ylim(y2lim)
+
+    fig.subplots_adjust(left=0.10, right=0.90, bottom=0.16, top=0.90)
+    return fig
+
+
+def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
+                       views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
+    """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
+    order: overview -> isip -> gfunction -> tangent -> loglog -> porepressure). Returns the
+    written paths in that order. Used by ``ui._finish``, but headless/Tkinter-free like the
+    rest of this module."""
+    paths = []
+    for i, key in enumerate(RENDERERS, start=1):
+        fig = render_step_figure(key, td, state, res, views.get(key))
+        path = os.path.join(out_dir, f"{i}_{key}.png")
+        fig.savefig(path, dpi=dpi)
+        paths.append(path)
+    return paths

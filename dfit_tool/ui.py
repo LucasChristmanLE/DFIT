@@ -336,7 +336,8 @@ class DfitApp:
             btn = ttk.Button(bar, text=label, command=lambda k=key: self._goto(k))
             btn.pack(side="left", padx=2)
             self.step_buttons[key] = btn
-        ttk.Button(bar, text="Next >", command=self._next).pack(side="left", padx=2)
+        self.next_btn = ttk.Button(bar, text="Next >", command=self._advance)
+        self.next_btn.pack(side="left", padx=2)
         ttk.Button(bar, text="Skip >", command=self._skip).pack(side="left", padx=2)
 
     # ---- data / config --------------------------------------------------------------------------
@@ -621,6 +622,17 @@ class DfitApp:
         self.state.step_status[self.step] = "skipped"
         self._goto(next_step(self.step))
 
+    def _advance(self):
+        """Bound to the Next/Finish stepbar button: on every step but the last this is exactly
+        _next(); on "porepressure" (the last step) the button reads "Finish" (_update_stepbar)
+        and this exports instead of navigating anywhere."""
+        if self.td is None:
+            return
+        if self.step == STEPS[-1][0]:
+            self._finish()
+        else:
+            self._next()
+
     def _back(self):
         """Go to the previous step. No status change -- prev_step() clamps at the first step."""
         if self.td is None:
@@ -682,6 +694,12 @@ class DfitApp:
             status = self.state.step_status.get(key, "not_visited")
             btn.state(["!disabled"] if status != "not_visited" else ["disabled"])
             btn.configure(style="StepCurrent.TButton" if key == self.step else "TButton")
+        # On the last step the Next button becomes Finish (bold, like the current-step
+        # breadcrumb) -- _advance dispatches to _finish() instead of _next() in that case.
+        if self.step == STEPS[-1][0]:
+            self.next_btn.configure(text="Finish", style="StepCurrent.TButton")
+        else:
+            self.next_btn.configure(text="Next >", style="TButton")
 
     def _update_panel_visibility(self):
         """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
@@ -961,6 +979,29 @@ class DfitApp:
         if path:
             self.state.notes = self.txt_notes.get("1.0", "end").strip()
             self.state.to_json(path)
+
+    def _finish(self):
+        """Bound to the Finish button (_advance on the last step): a silent one-click export --
+        re-save the picks JSON next to the data file and write a PNG per step (current zoom) into
+        a sibling subfolder. No success popup; only a failure raises a dialog."""
+        if self.td is None:
+            return
+        self.state.step_status[self.step] = "done"
+        self.refresh()  # ensure current-step view stored in _views and self.res fresh
+        self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        parent = pathlib.Path(self.td.path).parent
+        stem = pathlib.Path(self.td.path).stem
+        try:
+            self.state.to_json(str(parent / f"{stem}_picks.json"))
+            out_dir = parent / f"{stem} DFIT plots"
+            out_dir.mkdir(exist_ok=True)
+            views = {k: ((v.xlim, v.ylim, v.y2lim) if v is not None else None)
+                     for k, v in self._views.items()}
+            plots.save_all_step_pngs(str(out_dir), self.td, self.state, self.res, views)
+        except Exception as e:
+            messagebox.showerror("Finish failed", str(e))
+            return
+        # (future) append a row to the CSV results log here
 
     def _load_picks(self):
         path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])

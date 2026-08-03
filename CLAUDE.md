@@ -10,8 +10,8 @@ interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and 
 workflow steps, making draggable picks on each plot. Every reported number is derived from
 one pure function, `model.compute_all`.
 
-Scope is one well at a time. There is no batch queue, master results log, cross-test
-aggregation, or PNG export. Permeability is out of scope.
+Scope is one well at a time. There is no batch queue, master results log, or cross-test
+aggregation. Permeability is out of scope.
 
 The six steps (`ui.py:STEPS`): overview → isip → gfunction → tangent → loglog →
 porepressure.
@@ -88,6 +88,16 @@ serialized. `model._decode` migrates legacy saves: it maps the old `eff_isip_lin
 `min_dpdg_G`, rebuilds tuples and `TangentPick`, and filters unknown keys so old or foreign
 JSON never raises. `step_status` (the breadcrumb history) rides along in the same JSON;
 `infer_step_status` backfills it for saves made before it existed.
+
+On the last step (`porepressure`) the stepbar's "Next >" button becomes a bolded "Finish"
+button (`ui.py:_advance`/`_update_stepbar`). One click (`ui.py:_finish`) silently re-saves
+the picks JSON to `<stem>_picks.json` and writes a PNG of all six step plots, in their
+current zoom state, to a `<stem> DFIT plots/` subfolder -- both next to the loaded data
+file. The PNG export itself is headless: `plots.render_step_figure`/`save_all_step_pngs`
+take no Tkinter and replicate `ui.refresh`'s view-resolution logic (including the
+gfunction-specific clamps) against an offscreen `Figure`, so `ui._finish` just resolves
+`self._views` into the plain tuples that function expects. There is still no CSV results
+log across tests -- `_finish` has a placeholder comment for that.
 
 ## Conventions and invariants
 
@@ -198,7 +208,8 @@ select their tab (`ui.py:_open_guide`).
 
 ## Not built / notes
 
-- No master results log, batch queue/resume, or PNG export.
+- No master results log or batch queue/resume. PNG export exists (the Finish button, see
+  "Persistence" above) but there is still no CSV results log rolling up multiple tests.
 - `scipy` is pinned in `requirements.txt` and probed by `start-app.ps1` but is not currently
   imported anywhere in the package.
 - Sample data folders, `Refs/`, and `.superpowers/` are gitignored. Design specs and plans
