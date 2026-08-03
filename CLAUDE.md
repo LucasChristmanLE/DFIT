@@ -10,8 +10,12 @@ interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and 
 workflow steps, making draggable picks on each plot. Every reported number is derived from
 one pure function, `model.compute_all`.
 
-Scope is one well at a time. There is no batch queue, master results log, or cross-test
-aggregation. Permeability is out of scope.
+Interpretation is one well at a time. Two ways to get there: single-file mode (open one CSV
+or `.DBS` directly, today's original flow) or folder mode ("Open Folder…"), which scans a
+root folder into a queue of tests, shows that queue in a left sidebar, and rolls every test's
+results up into a per-root `dfit_log.csv` master log. The sidebar and the log exist only in
+folder mode; single-file mode is otherwise unchanged. There is still no cross-test
+aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
 The six steps (`ui.py:STEPS`): overview → isip → gfunction → tangent → loglog →
 porepressure.
@@ -28,7 +32,7 @@ thousands of package files.
 Run the app:
 
     start-app.cmd                                                   # double-click, no file loaded
-    C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m dfit_tool.app [path/to/file]
+    C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m dfit_tool.app [path/to/file|folder]
 
 Run the tests (from the repo root):
 
@@ -67,37 +71,72 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   pure `commit_*` functions that translate finished geometry into `PickState` changes, and
   the per-step `seed_*` functions. `plots.py` has the `render_*` renderers. `sliders.py`
   has `PanRangeSlider`.
+- **Folder-mode persistence.** `store.py` is Tk-free, like `model.py`, so it is unit-testable
+  headless. `scan_root` does the depth-1 scan of an opened root: one `TestEntry` per immediate
+  subdirectory holding data files (folder layout), plus one per loose data file or same-stem
+  csv+dbs pair directly in the root (flat layout); a loose-file entry whose test_id collides
+  with a subfolder entry is dropped in favor of the subfolder (with a warning attached) rather
+  than crashing the queue on a duplicate iid. Picks persist to a per-test
+  `<folder>/<test_id>.dfit_picks.json`, written atomically (temp file + `os.replace`), same
+  contract as `PickState.to_json`/`from_json`. `status_for` derives a test's queue status
+  ("new"/"in_progress"/"done"/"skipped") from its saved `PickState`, ground-truthing
+  `step_status` -- including the PC-F clause: `porepressure` counts as complete under PC-F even
+  though that scenario never gets a `step_status` entry for it, since the step is skipped end
+  to end (see the PC-F section below). `load_log`/`save_log` read and atomically write the
+  per-root `dfit_log.csv`; `build_log_row` maps one test's `PickState`/`DerivedResults` into a
+  `LOG_COLUMNS`-shaped row (it computes nothing itself), and `upsert_log_row` replaces-or-
+  appends by `test_id`.
 - **Shell.** `ui.py` (`DfitApp`) is the only Tkinter consumer. It wires the per-step
   pickers to a recompute-and-redraw loop and holds no interpretation logic. `app.py` just
-  launches it.
+  launches it, accepting either a file or a folder path on the command line.
 
 Import graph:
 
-    app → ui → {io_load, picks, plots, sliders, model, interpret, questionnaire}
+    app → ui → {io_load, picks, plots, sliders, model, interpret, questionnaire, store}
     picks, plots → model, io_load, interpret
     model → interpret, resample, io_load
     resample → gfunction
+    store → model, questionnaire
 
 `picks.py`, `plots.py`, and `sliders.py` never import Tkinter, so the whole interaction
 layer runs headless under the Agg backend and the shell could be ported off Tkinter without
 touching them.
 
-Persistence is per-test JSON only, via `PickState.to_json`/`from_json`, saved and loaded
-through a file dialog (`DfitApp._save_picks`/`_load_picks`). `DerivedResults` is never
-serialized. `model._decode` migrates legacy saves: it maps the old `eff_isip_line` pick to
+Persistence is per-test JSON, via `PickState.to_json`/`from_json`. In single-file mode it is
+saved and loaded through a file dialog (`DfitApp._save_picks`/`_load_picks`) to a path the
+analyst chooses. In folder mode there is no file dialog for picks: `ui.py` saves through
+`store.save_picks_for`/`store.load_picks_for` to the fixed per-test
+`<test_id>.dfit_picks.json` next to the test's data files -- on queue navigation
+(`_save_current_queue_picks`), Save & Next, and Finish. `DerivedResults` is never serialized
+either way. `model._decode` migrates legacy saves: it maps the old `eff_isip_line` pick to
 `min_dpdg_G`, rebuilds tuples and `TangentPick`, and filters unknown keys so old or foreign
 JSON never raises. `step_status` (the breadcrumb history) rides along in the same JSON;
 `infer_step_status` backfills it for saves made before it existed.
 
 On the last step (`porepressure`) the stepbar's "Next >" button becomes a bolded "Finish"
-button (`ui.py:_advance`/`_update_stepbar`). One click (`ui.py:_finish`) silently re-saves
-the picks JSON to `<stem>_picks.json` and writes a PNG of all six step plots, in their
-current zoom state, to a `<stem> DFIT plots/` subfolder -- both next to the loaded data
-file. The PNG export itself is headless: `plots.render_step_figure`/`save_all_step_pngs`
-take no Tkinter and replicate `ui.refresh`'s view-resolution logic (including the
-gfunction-specific clamps) against an offscreen `Figure`, so `ui._finish` just resolves
-`self._views` into the plain tuples that function expects. There is still no CSV results
-log across tests -- `_finish` has a placeholder comment for that.
+button (`ui.py:_advance`/`_update_stepbar`). One click (`ui.py:_finish`) saves picks and
+writes a PNG of all six step plots, in their current zoom state, to a `<stem> DFIT plots/`
+subfolder next to the loaded data file. In single-file mode (`current_entry` is None) that is
+byte-for-byte the original behavior: picks re-save to `<stem>_picks.json`, no log write. In
+folder mode, picks save through `store.save_picks_for` instead (no `<stem>_picks.json`
+duplicate), and Finish also upserts and writes the current test's `dfit_log.csv` row
+(`ui._write_log_row`, shared with Save & Next) -- but does not auto-advance the queue. The
+PNG export itself is headless: `plots.render_step_figure`/`save_all_step_pngs` take no
+Tkinter and replicate `ui.refresh`'s view-resolution logic (including the gfunction-specific
+clamps) against an offscreen `Figure`, so `ui._finish` just resolves `self._views` into the
+plain tuples that function expects.
+
+**Folder mode.** "Open Folder…" (`ui._open_folder_path`) scans the chosen root via
+`store.list_tests`, populates the sidebar queue Treeview (row iid = `test_id`), and
+auto-opens the first `"new"`-status test (or the first entry if none are new). Save & Next
+(`ui._save_and_next`) saves picks, writes the log row, and advances to the next queue entry
+with status `"new"`, scanning circularly from just after the current one; it reports when the
+queue is exhausted rather than looping forever. The Mark combobox sets
+`state.explicit_status` (`"done"`/`"skipped"`) as a user override -- `store.status_for`
+checks it before falling back to the `step_status` breadcrumb, so a test can be forced done or
+skipped regardless of how far its picks actually got. The Source dropdown (CSV/DBS) is enabled
+only when a test has both files available; switching sources is treated as a different data
+file, so it resets that test's picks after a confirm dialog (`ui._on_source_change`).
 
 ## Conventions and invariants
 
@@ -223,9 +262,20 @@ select their tab (`ui.py:_open_guide`).
 
 ## Not built / notes
 
-- No master results log or batch queue/resume. PNG export exists (the Finish button, see
-  "Persistence" above) but there is still no CSV results log rolling up multiple tests.
 - `scipy` is pinned in `requirements.txt` and probed by `start-app.ps1` but is not currently
   imported anywhere in the package.
 - Sample data folders, `Refs/`, and `.superpowers/` are gitignored. Design specs and plans
   from the build are under `docs/superpowers/`.
+- The master log is CSV only; a parquet mirror alongside `dfit_log.csv` is a deferred
+  extension point (`store.py`'s module docstring), not yet implemented.
+- Folder-mode scanning is depth-1 only: nested subfolders (depth 2+) are never scanned.
+- No concurrency control: folder mode assumes a single interpreter working a root at a time.
+  Two people (or two windows) open on the same root last-write-wins on both the picks JSON and
+  `dfit_log.csv` -- there is no lock file or merge.
+- Accepted known limitations in the folder-mode Source switch/resume logic: if a test's saved
+  picks name a source the resume logic silently falls back to applying those picks to whatever
+  source actually loads, with no warning; a source switch (`ui._on_source_change`) only
+  persists to disk on the next save (queue navigation, Save & Next, or Finish), not
+  immediately; and using the manual "Load picks…" file-dialog button while in folder mode
+  loads that JSON into the workspace but does not re-sync the Source/Mark/Save & Next
+  controls to it.
