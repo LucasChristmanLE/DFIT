@@ -196,6 +196,7 @@ def _refresh_stub(td, state, step):
     stub.step = step
     stub._views = {}
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
+    stub.gate_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub._attach_controllers = lambda: None
     stub._update_stepbar = lambda: None
     stub._update_panel_visibility = lambda: None

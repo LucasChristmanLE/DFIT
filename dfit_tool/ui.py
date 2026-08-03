@@ -23,7 +23,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, io_load, picks, plots, sliders
-from .model import PickState, TangentPick, compute_all, infer_step_status
+from .model import PickState, TangentPick, compute_all, infer_step_status, step_gate_error
 from .plots import ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -339,6 +339,8 @@ class DfitApp:
         self.next_btn = ttk.Button(bar, text="Next >", command=self._advance)
         self.next_btn.pack(side="left", padx=2)
         ttk.Button(bar, text="Skip >", command=self._skip).pack(side="left", padx=2)
+        self.gate_lbl = ttk.Label(bar, text="", foreground="red")
+        self.gate_lbl.pack(side="left", padx=8)
 
     # ---- data / config --------------------------------------------------------------------------
     def _open(self):
@@ -623,15 +625,20 @@ class DfitApp:
         self._goto(next_step(self.step))
 
     def _advance(self):
-        """Bound to the Next/Finish stepbar button: on every step but the last this is exactly
-        _next(); on "porepressure" (the last step) the button reads "Finish" (_update_stepbar)
-        and this exports instead of navigating anywhere."""
+        """Bound to the Next/Finish stepbar button. On the last step the button reads "Finish"
+        and exports (_finish). Otherwise it advances (_next) -- but only once the current step's
+        required scenario pick is present; step_gate_error gates the forward jump and the inline
+        gate_lbl says what is missing. Back/Skip/breadcrumb navigation are NOT gated."""
         if self.td is None:
             return
         if self.step == STEPS[-1][0]:
             self._finish()
-        else:
-            self._next()
+            return
+        msg = step_gate_error(self.state, self.step)
+        if msg:
+            self.gate_lbl.config(text=msg)
+            return
+        self._next()
 
     def _back(self):
         """Go to the previous step. No status change -- prev_step() clamps at the first step."""
@@ -642,6 +649,7 @@ class DfitApp:
     def refresh(self):
         if self.td is None:
             return
+        self.gate_lbl.config(text="")
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         # Reconcile a locked axis with its scenario before recomputing -- pp_axis feeds
         # compute_all, so an older save (e.g. PC-B + tm12) must be corrected here or the first

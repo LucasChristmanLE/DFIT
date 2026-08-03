@@ -147,6 +147,19 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     return status
 
 
+def step_gate_error(state: PickState, step: str) -> Optional[str]:
+    """Message describing what must be completed before advancing FORWARD from ``step``,
+    or ``None`` if forward navigation is allowed. Only the two scenario selections are
+    enforced -- every other step's picks are auto-seeded on first visit, so they are never
+    "incomplete". Gates only the "Next >" button (``DfitApp._advance``); Back, Skip, and
+    breadcrumb jumps are unaffected."""
+    if step == "gfunction" and not state.closure_scenario:
+        return "Select a closure scenario before continuing to Tangent."
+    if step == "loglog" and not state.postclosure_scenario:
+        return "Select a postclosure scenario before continuing to Pore pressure."
+    return None
+
+
 # --------------------------------------------------------------------------------------------------
 # derived results
 # --------------------------------------------------------------------------------------------------
