@@ -167,16 +167,35 @@ def scan_root(root: str) -> list[TestEntry]:
     holds data files, plus one per loose data file (or same-stem csv+dbs pair) directly in
     `root`. Everything else (other extensions, dfit_log.csv, empty subdirectories) is ignored.
     Attaches each entry's questionnaire (via ``find_questionnaire``) and returns entries sorted
-    by test_id."""
+    by test_id.
+
+    A loose root file can collide on test_id with a subfolder test of the same stem (e.g. a zip
+    extracted next to the csv it came from: `well1/well1.csv` and a stray loose `well1.csv`).
+    The directory entry wins -- it is the richer layout -- so the loose-file entry is dropped and
+    a warning is attached to the surviving directory entry instead. Duplicate iids would
+    otherwise crash the folder-mode queue Treeview (insert with a repeated iid)."""
     names = os.listdir(root)
-    entries: list[TestEntry] = []
+    dir_entries: list[TestEntry] = []
     for name in names:
         full = os.path.join(root, name)
         if os.path.isdir(full):
             entry = _scan_dir(name, full)
             if entry is not None:
-                entries.append(entry)
-    entries.extend(_scan_flat(root, names))
+                dir_entries.append(entry)
+
+    dir_ids = {e.test_id for e in dir_entries}
+    flat_entries = []
+    for entry in _scan_flat(root, names):
+        if entry.test_id in dir_ids:
+            dir_entry = next(e for e in dir_entries if e.test_id == entry.test_id)
+            dir_entry.scan_warnings.append(
+                f"loose file {os.path.basename(entry.csv_path or entry.dbs_path)!r} in root "
+                f"ignored: test folder {entry.test_id!r} has the same name"
+            )
+            continue
+        flat_entries.append(entry)
+
+    entries = dir_entries + flat_entries
 
     for entry in entries:
         data_path = entry.csv_path or entry.dbs_path
@@ -248,12 +267,20 @@ def status_for(state: Optional[PickState]) -> str:
 # --------------------------------------------------------------------------------------------------
 def load_log(root: str) -> pd.DataFrame:
     """The master log at `<root>/dfit_log.csv`, or an empty DataFrame shaped like LOG_COLUMNS if
-    it doesn't exist yet. An older log missing newer columns gets them appended (empty), with
-    existing row data preserved; the returned column order is always LOG_COLUMNS."""
+    it doesn't exist yet -- or exists but is empty/corrupt/unparseable. Never raises, same
+    contract as `load_picks_for`: a bad dfit_log.csv must never make a folder unopenable. An
+    older log missing newer columns gets them appended (empty), with existing row data
+    preserved; the returned column order is always LOG_COLUMNS. `test_id` is forced to a string
+    dtype -- otherwise a purely numeric test_id (e.g. a folder named "7170") round-trips as
+    int64, and `upsert_log_row`'s string-keyed comparison never matches, silently appending a
+    duplicate row on every save instead of updating."""
     path = os.path.join(root, LOG_FILENAME)
     if not os.path.exists(path):
         return pd.DataFrame(columns=LOG_COLUMNS)
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path, dtype={"test_id": str})
+    except (pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame(columns=LOG_COLUMNS)
     for col in LOG_COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA

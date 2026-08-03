@@ -198,6 +198,22 @@ def test_scan_root_case_insensitive_extension(tmp_path):
     assert entries[0].dbs_path == str(sub / "well8.DBS")
 
 
+def test_scan_root_loose_file_collides_with_dir_dropped_with_warning(tmp_path):
+    sub = tmp_path / "well1"
+    sub.mkdir()
+    (sub / "well1.csv").write_text("a")
+    (tmp_path / "well1.csv").write_text("b")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.test_id == "well1"
+    assert entry.folder == str(sub)
+    assert entry.csv_path == str(sub / "well1.csv")
+    assert any("well1" in w for w in entry.scan_warnings)
+
+
 def test_scan_root_sorted_by_test_id(tmp_path):
     for name in ("zeta", "alpha", "mid"):
         sub = tmp_path / name
@@ -340,6 +356,45 @@ def test_load_log_adds_missing_newer_columns(tmp_path):
     assert list(loaded.columns) == store.LOG_COLUMNS
     assert loaded.loc[0, "test_id"] == "well1"
     assert pd.isna(loaded.loc[0, "Shmin_rapid"])
+
+
+def test_load_log_zero_byte_file_returns_empty_with_columns(tmp_path):
+    (tmp_path / store.LOG_FILENAME).write_text("")
+
+    df = store.load_log(str(tmp_path))
+
+    assert list(df.columns) == store.LOG_COLUMNS
+    assert len(df) == 0
+
+
+def test_load_log_zero_byte_file_does_not_break_list_tests(tmp_path):
+    (tmp_path / store.LOG_FILENAME).write_text("")
+    (tmp_path / "well1.csv").write_text("a")
+
+    entries, df = store.list_tests(str(tmp_path))
+
+    assert [e.test_id for e in entries] == ["well1"]
+    assert list(df.columns) == store.LOG_COLUMNS
+
+
+def test_load_log_numeric_test_id_stays_string(tmp_path):
+    df = pd.DataFrame(columns=store.LOG_COLUMNS)
+    row = {c: None for c in store.LOG_COLUMNS}
+    row["test_id"] = "7170"
+    row["status"] = "new"
+    df = store.upsert_log_row(df, row)
+    store.save_log(str(tmp_path), df)
+
+    loaded = store.load_log(str(tmp_path))
+    row2 = dict(row)
+    row2["status"] = "done"
+    updated = store.upsert_log_row(loaded, row2)
+    store.save_log(str(tmp_path), updated)
+    reloaded = store.load_log(str(tmp_path))
+
+    matches = reloaded[reloaded["test_id"] == "7170"]
+    assert len(matches) == 1
+    assert matches.iloc[0]["status"] == "done"
 
 
 def test_upsert_log_row_insert(tmp_path):
