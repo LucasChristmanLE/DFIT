@@ -58,11 +58,11 @@ _PC_HINTS = {
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
-# The 18 result-panel rows, in display order -- module level (not just a literal inside
+# The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
-    "eff ISIP (compliance)",
+    "eff ISIP (compliance)", "NWB complexity",
     "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable", "Shmin rapid",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
@@ -81,6 +81,9 @@ FIELD_STEP = {
     "qmax (bpm)": "overview",
     "apparent ISIP": "isip",
     "eff ISIP (compliance)": "gfunction",
+    # Needs the isip pick (apparent ISIP) and the gfunction pick (the reference eff ISIP);
+    # gfunction is the later of the two, same precedent as "net (compliance)".
+    "NWB complexity": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
     "Shmin rapid": "gfunction",
@@ -1421,6 +1424,7 @@ class DfitApp:
             "qmax (bpm)": s(r.qmax_bpm, "{:.2f}"),
             "apparent ISIP": s(r.apparent_isip),
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
+            "NWB complexity": s(r.near_wellbore_complexity),
             "contact P": s(r.contact_pressure),
             "Shmin compliance": s(r.shmin_compliance),
             "Shmin tangent": s(r.shmin_tangent),

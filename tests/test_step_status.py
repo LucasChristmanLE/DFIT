@@ -107,6 +107,7 @@ def test_field_step_mapping_matches_spec():
         "qmax (bpm)": "overview",
         "apparent ISIP": "isip",
         "eff ISIP (compliance)": "gfunction",
+        "NWB complexity": "gfunction",
         "contact P": "gfunction",
         "Shmin compliance": "gfunction",
         "Shmin rapid": "gfunction",
