@@ -354,8 +354,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
                                                           res.resampled.dt))
 
-    # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, no effective ISIP --
-    # a separate field so this doesn't feed net_pressure_compliance/delta_closure, see
+    # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, so no *compliance*
+    # effective ISIP -- the tangent one still exists and still feeds the shared reference; this
+    # is a separate field so it doesn't feed net_pressure_compliance/delta_closure, see
     # ../CLAUDE.md and the plan's decision D2).
     if state.closure_scenario.startswith("C-D") and res.apparent_isip is not None:
         res.shmin_rapid = interpret.shmin_rapid(res.apparent_isip)

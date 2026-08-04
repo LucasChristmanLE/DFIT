@@ -194,8 +194,9 @@ def shmin_tangent(closure_pressure: float) -> float:
 
 def shmin_rapid(apparent_isip: float, offset: float = RAPID_CLOSURE_OFFSET_PSI) -> float:
     """C-D "rapid" Shmin = apparent (literal) ISIP - offset (default the 175 psi midpoint of
-    the 100-250 psi range the ResFrac guidelines give as an approximate range; no contact pick
-    or effective ISIP is constructed for this scenario)."""
+    the 100-250 psi range the ResFrac guidelines give as an approximate range; no contact pick,
+    so no compliance effective ISIP, is constructed for this scenario -- the tangent effective
+    ISIP still exists)."""
     return apparent_isip - offset
 
 
