@@ -114,4 +114,8 @@ Plus an identity test through real `compute_all` output on synthetic data from
 `tests/helpers.make_testdata`: for each method with a non-`None` Shmin, assert
 `shmin_method + net_method + complexity == apparent_isip` to floating-point tolerance.
 
-`tests/test_store.py` log-shape assertions update for the new column.
+`tests/test_step_status.py::test_field_step_mapping_matches_spec` asserts against a hardcoded
+`FIELD_STEP` dict, so it gains the new key. `tests/test_store.py` reads `store.LOG_COLUMNS`
+dynamically everywhere and so needs no edits, but gains two tests: the new column is last in
+`LOG_COLUMNS` and `build_log_row` maps it, and `load_log` backfills it for a `dfit_log.csv`
+written before this change.
