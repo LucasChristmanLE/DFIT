@@ -33,7 +33,7 @@ STEP_KEYS = ("overview", "isip", "gfunction", "tangent", "loglog", "porepressure
 # computes beyond that schema. CSV only for now; a parquet mirror alongside dfit_log.csv is a
 # future extension point (would need its own load_log/save_log pair, or a format arg on these).
 LOG_COLUMNS = [
-    "file", "test_id", "status", "interpreter", "review_date",
+    "file", "test_id", "well_name", "formation", "status", "interpreter", "review_date",
     "orientation", "fluid_type", "play", "pressure_source", "tvd", "fluid_density",
     "t_start_inj", "t_shutin", "te", "Vinj", "max_rate",
     "apparent_ISIP", "effective_ISIP",
@@ -347,6 +347,8 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
     return {
         "file": os.path.relpath(active_path, root),
         "test_id": entry.test_id,
+        "well_name": state.well_name,
+        "formation": state.formation,
         "status": status_for(state),
         "interpreter": getpass.getuser(),
         "review_date": datetime.date.today().isoformat(),

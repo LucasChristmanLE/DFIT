@@ -41,6 +41,8 @@ class PickState:
     pressure_is_bhp: bool = False
     density_ppg: Optional[float] = None
     tvd_ft: Optional[float] = None
+    well_name: str = ""
+    formation: str = ""
 
     # --- G-function / resampling ---
     alpha: float = 1.0

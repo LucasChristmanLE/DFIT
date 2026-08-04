@@ -358,6 +358,26 @@ def test_load_log_adds_missing_newer_columns(tmp_path):
     assert pd.isna(loaded.loc[0, "Shmin_rapid"])
 
 
+def test_load_log_backfills_well_name_and_formation(tmp_path):
+    # A dfit_log.csv from before this feature has neither column -- load_log must append both
+    # (empty) without disturbing existing row data (a pre-existing regression risk, since
+    # inserting columns ahead of others in LOG_COLUMNS could otherwise misalign a reindex).
+    old_columns = [c for c in store.LOG_COLUMNS if c not in ("well_name", "formation")]
+    old_df = pd.DataFrame([{c: "" for c in old_columns}])
+    old_df.loc[0, "test_id"] = "well1"
+    old_df.loc[0, "status"] = "done"
+    path = tmp_path / store.LOG_FILENAME
+    old_df.to_csv(path, index=False)
+
+    loaded = store.load_log(str(tmp_path))
+
+    assert list(loaded.columns) == store.LOG_COLUMNS
+    assert loaded.loc[0, "test_id"] == "well1"
+    assert loaded.loc[0, "status"] == "done"
+    assert pd.isna(loaded.loc[0, "well_name"])
+    assert pd.isna(loaded.loc[0, "formation"])
+
+
 def test_load_log_zero_byte_file_returns_empty_with_columns(tmp_path):
     (tmp_path / store.LOG_FILENAME).write_text("")
 
@@ -462,9 +482,20 @@ def _built_row(tmp_path, **state_kwargs):
     return row, state, res
 
 
+def test_log_columns_includes_well_name_and_formation():
+    assert "well_name" in store.LOG_COLUMNS
+    assert "formation" in store.LOG_COLUMNS
+
+
 def test_build_log_row_has_every_column_in_order(tmp_path):
     row, _, _ = _built_row(tmp_path)
     assert list(row.keys()) == store.LOG_COLUMNS
+
+
+def test_build_log_row_maps_well_name_and_formation(tmp_path):
+    row, _, _ = _built_row(tmp_path, well_name="Foo State 1H", formation="Eagle Ford")
+    assert row["well_name"] == "Foo State 1H"
+    assert row["formation"] == "Eagle Ford"
 
 
 def test_build_log_row_stamps_interpreter_and_review_date(tmp_path):

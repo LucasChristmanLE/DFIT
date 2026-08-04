@@ -11,6 +11,9 @@ from __future__ import annotations
 import os
 import types
 
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+
 from dfit_tool import store, ui
 from dfit_tool.model import PickState, compute_all, infer_step_status
 from dfit_tool.ui import (STEPS, DfitApp, _next_new_index, _resolve_load_source,
@@ -121,8 +124,21 @@ def _save_stub(current_entry, td, notes="some notes"):
     stub.td = td
     stub.state = PickState(step_status={"overview": "done"})
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: notes)
+    # Widget stand-ins for _sync_state_from_widgets, defaulted to match PickState's own
+    # defaults so existing assertions (which only look at notes/status) are unaffected.
+    stub.var_pressure = _Var("")
+    stub.var_rate = _Var(None)
+    stub.var_volume = _Var(None)
+    stub.var_isbhp = _Var(False)
+    stub.var_density = _Var(None)
+    stub.var_tvd = _Var(None)
+    stub.var_well = _Var("")
+    stub.var_formation = _Var("")
+    stub.var_alpha = _Var(1.0)
+    stub.var_step = _Var(30.0)
     stub._refresh_calls = []
     stub._refresh_queue_row = lambda entry: stub._refresh_calls.append(entry)
+    stub._sync_state_from_widgets = types.MethodType(DfitApp._sync_state_from_widgets, stub)
     stub._save_current_queue_picks = types.MethodType(DfitApp._save_current_queue_picks, stub)
     return stub
 
@@ -152,6 +168,54 @@ def test_save_current_queue_picks_writes_json_and_refreshes_row(tmp_path):
     assert loaded.notes == "hello"
     assert entry.status == store.status_for(loaded)
     assert stub._refresh_calls == [entry]
+
+
+def test_save_current_queue_picks_captures_unapplied_widget_edits(tmp_path):
+    """An entry-widget edit that was never Applied must still be captured on save (the bug this
+    task fixes) -- density/well/formation are typed as NEW values while self.state still holds
+    the OLD ones; _save_current_queue_picks must sync the widgets into state before saving."""
+    entry = store.TestEntry(test_id="w", folder=str(tmp_path))
+    stub = _save_stub(current_entry=entry, td=object(), notes="hello")
+    stub.state.density_ppg = 8.0
+    stub.state.well_name = "Old Well"
+    stub.state.formation = "Old Formation"
+    stub.var_density.set(9.3)
+    stub.var_well.set("New Well 1H")
+    stub.var_formation.set("Eagle Ford")
+
+    stub._save_current_queue_picks()
+
+    loaded = store.load_picks_for(entry)
+    assert loaded is not None
+    assert loaded.density_ppg == 9.3
+    assert loaded.well_name == "New Well 1H"
+    assert loaded.formation == "Eagle Ford"
+
+
+def test_sync_state_from_widgets_garbled_density_preserves_prior_value(tmp_path):
+    """This can fire mid-edit (e.g. on autosave while the analyst is still typing), so a
+    non-empty but unparseable Density/TVD entry ("8." or "8.x") must not null out a
+    previously-good value -- only an explicitly emptied box should clear it."""
+    entry = store.TestEntry(test_id="w", folder=str(tmp_path))
+    stub = _save_stub(current_entry=entry, td=object(), notes="hello")
+    stub.state.density_ppg = 8.0
+    stub.state.tvd_ft = 9000.0
+    stub.var_density.set("8.")  # garbled, mid-keystroke
+    stub.var_tvd.set("9000.x")  # garbled
+
+    stub._sync_state_from_widgets()
+
+    assert stub.state.density_ppg == 8.0
+    assert stub.state.tvd_ft == 9000.0
+
+    # An explicitly emptied box is a real, intentional clear -- that still zeroes it out.
+    stub.var_density.set("")
+    stub.var_tvd.set("")
+
+    stub._sync_state_from_widgets()
+
+    assert stub.state.density_ppg is None
+    assert stub.state.tvd_ft is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -336,6 +400,7 @@ class _Text:
 def _apply_stub():
     stub = types.SimpleNamespace()
     for name in ("var_pressure", "var_rate", "var_volume", "var_density", "var_tvd",
+                 "var_well", "var_formation",
                  "var_alpha", "var_step", "var_cscen", "var_pcscen", "var_ppaxis"):
         setattr(stub, name, _Var())
     stub.var_isbhp = _Var()
@@ -373,7 +438,8 @@ def test_apply_loaded_state_preserves_existing_step_status():
 def test_apply_loaded_state_reflects_widgets_and_resets_views():
     stub = _apply_stub()
     state = PickState(pressure_col="P", rate_col="R", volume_col=None, pressure_is_bhp=True,
-                      density_ppg=8.5, tvd_ft=9000.0, alpha=0.5, resample_step=15.0,
+                      density_ppg=8.5, tvd_ft=9000.0, well_name="Foo State 1H",
+                      formation="Eagle Ford", alpha=0.5, resample_step=15.0,
                       closure_scenario="C-A clear", postclosure_scenario="PC-A linear",
                       pp_axis="tm1", show_d2pdg2=True, notes="hi", step_status={"overview": "done"})
 
@@ -385,6 +451,8 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
     assert stub.var_isbhp.value is True
     assert stub.var_density.value == "8.5"
     assert stub.var_tvd.value == "9000.0"
+    assert stub.var_well.value == "Foo State 1H"
+    assert stub.var_formation.value == "Eagle Ford"
     assert stub.var_alpha.value == "0.5"
     assert stub.var_step.value == "15.0"
     assert stub.var_cscen.value == "C-A clear"
@@ -611,11 +679,43 @@ def _save_and_next_stub(tmp_path, second_status="new"):
     stub.td = td
     stub.state = state
     stub.res = res
+    stub.step = "overview"
     stub.folder_root = str(tmp_path)
     stub.log_df = store.load_log(str(tmp_path))
     stub.queue_entries = [entry1, entry2]
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "save and next notes")
     stub.var_mark = _Var("done")
+    # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
+    # (real _save_and_next now syncs these before refresh()/the log write).
+    stub.var_pressure = _Var(state.pressure_col)
+    stub.var_rate = _Var(state.rate_col)
+    stub.var_volume = _Var(state.volume_col)
+    stub.var_isbhp = _Var(state.pressure_is_bhp)
+    stub.var_density = _Var(state.density_ppg)
+    stub.var_tvd = _Var(state.tvd_ft)
+    stub.var_well = _Var(state.well_name)
+    stub.var_formation = _Var(state.formation)
+    stub.var_alpha = _Var(state.alpha)
+    stub.var_step = _Var(state.resample_step)
+    stub._sync_state_from_widgets = types.MethodType(DfitApp._sync_state_from_widgets, stub)
+    # Real refresh() plumbing (matplotlib only, no Tkinter needed) -- same headless approach as
+    # test_view_state.py's _refresh_stub -- so self.res comes out of a real recompute rather
+    # than being faked, which is the whole point of the regression guard below.
+    stub.fig = Figure()
+    stub.ax = stub.fig.add_subplot(111)
+    stub.canvas = FigureCanvasAgg(stub.fig)
+    stub._views = {}
+    stub.gate_lbl = types.SimpleNamespace(config=lambda **kw: None)
+    stub._attach_controllers = lambda: None
+    stub._update_stepbar = lambda: None
+    stub._update_panel_visibility = lambda: None
+    stub._update_panel = lambda: None
+    stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
+    stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
+    stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
+    stub._d2_axes = types.MethodType(DfitApp._d2_axes, stub)
+    stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
+    stub.refresh = types.MethodType(DfitApp.refresh, stub)
     stub._refresh_calls = []
     stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
     stub._load_test_calls = []
@@ -654,6 +754,40 @@ def test_save_and_next_writes_picks_and_log_then_advances(tmp_path):
 
     assert stub._refresh_calls == [entry1]
     assert stub._load_test_calls == [entry2]
+
+
+def test_save_and_next_captures_unapplied_widget_edits(tmp_path):
+    """Same regression guard as _save_current_queue_picks' version, but for Save & Next --
+    which also feeds the log row, so both the saved picks JSON and the dfit_log.csv row must
+    reflect the NEW widget values rather than the OLD ones still sitting in self.state."""
+    stub, entry1, entry2 = _save_and_next_stub(tmp_path)
+    stub.state.density_ppg = 8.0
+    stub.state.well_name = "Old Well"
+    stub.state.formation = "Old Formation"
+    stub.var_density.set(9.3)
+    stub.var_well.set("New Well 1H")
+    stub.var_formation.set("Eagle Ford")
+    # pressure_is_bhp alone flips ChannelConfig.bhp_inputs_ready() regardless of density/tvd,
+    # so this is a res-DERIVED column (build_log_row reads res.pressure_is_bhp, not
+    # state.pressure_is_bhp directly) -- it only reflects the new widget value if _save_and_next's
+    # refresh() actually recomputed self.res on the synced state, not just the sync itself.
+    assert stub.state.pressure_is_bhp is False
+    stub.var_isbhp.set(True)
+
+    stub._save_and_next()
+
+    loaded = store.load_picks_for(entry1)
+    assert loaded.density_ppg == 9.3
+    assert loaded.well_name == "New Well 1H"
+    assert loaded.formation == "Eagle Ford"
+    assert loaded.pressure_is_bhp is True
+
+    log_df = store.load_log(str(tmp_path))
+    row = log_df[log_df["test_id"] == "w1"].iloc[0]
+    assert row["well_name"] == "New Well 1H"
+    assert row["formation"] == "Eagle Ford"
+    assert row["fluid_density"] == 9.3
+    assert row["pressure_source"] == "BHP"
 
 
 def test_save_and_next_reports_no_new_tests_remain(tmp_path, monkeypatch):
@@ -695,6 +829,19 @@ def _finish_stub(tmp_path, folder_mode, monkeypatch):
     stub.refresh = lambda: None
     stub._refresh_calls = []
     stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+    # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
+    # (real _finish now syncs these before refresh()).
+    stub.var_pressure = _Var(state.pressure_col)
+    stub.var_rate = _Var(state.rate_col)
+    stub.var_volume = _Var(state.volume_col)
+    stub.var_isbhp = _Var(state.pressure_is_bhp)
+    stub.var_density = _Var(state.density_ppg)
+    stub.var_tvd = _Var(state.tvd_ft)
+    stub.var_well = _Var(state.well_name)
+    stub.var_formation = _Var(state.formation)
+    stub.var_alpha = _Var(state.alpha)
+    stub.var_step = _Var(state.resample_step)
+    stub._sync_state_from_widgets = types.MethodType(DfitApp._sync_state_from_widgets, stub)
 
     if folder_mode:
         entry = store.TestEntry(test_id="w1", folder=str(data_dir), csv_path=str(csv_path))

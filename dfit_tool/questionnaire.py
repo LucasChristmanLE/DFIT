@@ -10,6 +10,11 @@ on hand share this layout but disagree on where the numbers land -- density is s
 "fluid in the wellbore" line, sometimes only on the "fluid pumped" line; TVD is sometimes a labeled
 "TVD: ..." cell, sometimes the second of two bare footage numbers -- so each field is looked up in a
 priority order of answer blocks, falling through to the next block when a block yields nothing.
+
+Density is reported as `density_ppg` (ppg): ppg and specific-gravity cells are read directly (SG
+converted via `_SG_TO_PPG`), and pressure-gradient cells (psi/ft) are also accepted and converted
+to ppg via `_PSI_PER_PPG_FT` (`ppg = gradient / 0.052`), since downstream BHP conversion always
+expects ppg.
 """
 
 from __future__ import annotations
@@ -61,9 +66,12 @@ _WELLBORE_FLUID = "type and density of fluid in the wellbore"
 _PUMPED_FLUID = "what type of fluid was pumped"
 _ACTUAL_PERFS = "actual perforation depth"
 _PLANNED_PERFS = "planned perforations"
+_WELL_NAME = "well name"
+_FORMATION = "formation"
 
 _DENSITY_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(ppg|lbs?\s*/\s*gal|lbs?\s*per\s*gal|#\s*/\s*gal|specific\s*gravity|sg)\b",
+    r"(\d+(?:\.\d+)?)\s*(ppg|lbs?\s*/\s*gal|lbs?\s*per\s*gal|#\s*/\s*gal|specific\s*gravity|sg"
+    r"|psi\s*/\s*ft|psi\s*/\s*foot|psi\s*per\s*ft|psi\s*per\s*foot)\b",
     re.IGNORECASE,
 )
 _NUMBER_RE = re.compile(r"[\d,]+(?:\.\d+)?")
@@ -74,6 +82,7 @@ _BARE_FOOTAGE_RE = re.compile(r"\s*([\d,]+(?:\.\d+)?)\s*(?:ft\.?)?'?\s*", re.IGN
 _PPG_MIN, _PPG_MAX = 6.0, 22.0
 _SG_MIN, _SG_MAX = 0.8, 2.6
 _SG_TO_PPG = 8.345
+_PSI_PER_PPG_FT = 0.052  # mirrors io_load.PSI_PER_PPG_FT; gradient(psi/ft) = 0.052 * ppg
 _TVD_MIN, _TVD_MAX = 1000.0, 25000.0
 
 
@@ -84,6 +93,8 @@ class QuestionnaireResult:
     density_source: str | None = None  # raw cell text the number came from
     tvd_ft: float | None = None
     tvd_source: str | None = None
+    well_name: str | None = None
+    formation: str | None = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -176,9 +187,23 @@ def _is_sg_unit(unit: str) -> bool:
     return u == "sg" or "specific" in u
 
 
+def _is_gradient_unit(unit: str) -> bool:
+    return "psi" in unit.lower()
+
+
 def _interpret_density(value: float, unit: str) -> tuple[float | None, list[str]]:
-    """Apply the ppg/SG interpretation rule to a raw (value, unit) match. See module docstring."""
+    """Apply the ppg/SG/gradient interpretation rule to a raw (value, unit) match. See module
+    docstring."""
     warns: list[str] = []
+    if _is_gradient_unit(unit):
+        ppg = value / _PSI_PER_PPG_FT
+        if _PPG_MIN <= ppg <= _PPG_MAX:
+            return ppg, warns
+        warns.append(
+            f"density gradient {value} psi/ft converts to {ppg:.2f} ppg, outside the expected "
+            "ppg range; ignored"
+        )
+        return None, warns
     sg_unit = _is_sg_unit(unit)
     if _PPG_MIN <= value <= _PPG_MAX:
         if sg_unit:
@@ -277,6 +302,22 @@ def _extract_tvd(blocks: dict[str, list[str]]) -> tuple[float | None, str | None
 
 
 # --------------------------------------------------------------------------------------------------
+# free-text fields (well name, formation)
+# --------------------------------------------------------------------------------------------------
+def _extract_text(blocks: dict[str, list[str]], key: str) -> str | None:
+    """The first non-empty cell of `blocks[key]`, stripped, or None if the block is absent/empty.
+
+    First cell only, not a join of the whole block -- the template is one answer cell per label,
+    and joining risks pulling in spillover from whatever follows.
+    """
+    for text in blocks.get(key, []):
+        stripped = text.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+# --------------------------------------------------------------------------------------------------
 # entry point
 # --------------------------------------------------------------------------------------------------
 def parse_questionnaire(xlsx_path: str) -> QuestionnaireResult:
@@ -304,5 +345,15 @@ def parse_questionnaire(xlsx_path: str) -> QuestionnaireResult:
         result.warnings.extend(warns)
     except Exception as e:
         result.warnings.append(f"TVD parsing failed: {e}")
+
+    try:
+        result.well_name = _extract_text(blocks, _WELL_NAME)
+    except Exception as e:
+        result.warnings.append(f"well name parsing failed: {e}")
+
+    try:
+        result.formation = _extract_text(blocks, _FORMATION)
+    except Exception as e:
+        result.warnings.append(f"formation parsing failed: {e}")
 
     return result

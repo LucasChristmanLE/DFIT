@@ -58,3 +58,23 @@ def test_decode_coerces_null_scenario_fields_to_empty_string(tmp_path):
     state.closure_scenario = loaded.closure_scenario
     state.postclosure_scenario = loaded.postclosure_scenario
     compute_all(state, td)  # must not raise
+
+
+def test_well_name_and_formation_round_trip(tmp_path):
+    state = PickState(well_name="Foo State 1H", formation="Eagle Ford")
+    path = tmp_path / "picks.json"
+    state.to_json(str(path))
+
+    loaded = PickState.from_json(str(path))
+
+    assert loaded.well_name == "Foo State 1H"
+    assert loaded.formation == "Eagle Ford"
+
+
+def test_decode_defaults_well_name_and_formation_for_legacy_save():
+    # An old save predating these fields lacks the keys entirely -- the known-field filter in
+    # _decode must default them to "" (like `notes`), not raise.
+    d = {"pressure_col": "P"}
+    loaded = _decode(d)
+    assert loaded.well_name == ""
+    assert loaded.formation == ""

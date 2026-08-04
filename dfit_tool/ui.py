@@ -266,7 +266,7 @@ class DfitApp:
         self.var_alpha = tk.StringVar(value="1.0")
         self.var_step = tk.StringVar(value="30")
 
-        def combo(parent, label, var, width=18):
+        def combo(parent, label, var, width=24):
             ttk.Label(parent, text=label).pack(side="left", padx=(8, 2))
             c = ttk.Combobox(parent, textvariable=var, width=width, state="readonly")
             c.pack(side="left")
@@ -275,8 +275,19 @@ class DfitApp:
         self.cmb_pressure = combo(cfg, "Pressure:", self.var_pressure)
         ttk.Checkbutton(cfg, text="is BHP", variable=self.var_isbhp,
                         command=self._apply_config).pack(side="left", padx=4)
-        self.cmb_rate = combo(cfg, "Rate:", self.var_rate, 14)
-        self.cmb_volume = combo(cfg, "Volume:", self.var_volume, 12)
+        self.cmb_rate = combo(cfg, "Rate:", self.var_rate, 20)
+        self.cmb_volume = combo(cfg, "Volume:", self.var_volume, 18)
+
+        # Pure metadata -- prefilled from the questionnaire like density/TVD, but nothing
+        # computes on them and nothing gates on them. Free text, so plain Entry widgets.
+        meta = ttk.Frame(self.root, padding=(6, 0))
+        meta.pack(side="top", fill="x")
+        self.var_well = tk.StringVar()
+        self.var_formation = tk.StringVar()
+        ttk.Label(meta, text="Well Name:").pack(side="left", padx=(8, 2))
+        ttk.Entry(meta, textvariable=self.var_well, width=36).pack(side="left")
+        ttk.Label(meta, text="Formation:").pack(side="left", padx=(8, 2))
+        ttk.Entry(meta, textvariable=self.var_formation, width=26).pack(side="left")
 
         cfg2 = ttk.Frame(self.root, padding=(6, 2))
         cfg2.pack(side="top", fill="x")
@@ -493,6 +504,8 @@ class DfitApp:
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
         self.var_density.set("")
         self.var_tvd.set("")
+        self.var_well.set("")
+        self.var_formation.set("")
         self._load_questionnaire(path)
         self._sync_state_from_widgets()
         self._goto("overview")
@@ -575,6 +588,9 @@ class DfitApp:
         if self.current_entry is None or self.td is None:
             return
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        # Capture any unapplied entry-widget edits (density, TVD, well name, formation,
+        # channel mapping, alpha, resample step) so they aren't silently dropped on save.
+        self._sync_state_from_widgets()
         store.save_picks_for(self.current_entry, self.state)
         self.current_entry.status = store.status_for(self.state)
         self._refresh_queue_row(self.current_entry)
@@ -676,6 +692,10 @@ class DfitApp:
         entry = self.current_entry
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         self.state.explicit_status = self.var_mark.get() or None
+        # Capture any unapplied entry-widget edits, then refresh so self.res (feeding the log
+        # row below) is recomputed from the synced state rather than a stale prior compute.
+        self._sync_state_from_widgets()
+        self.refresh()
         store.save_picks_for(entry, self.state)
         entry.status = store.status_for(self.state)
         try:
@@ -705,12 +725,14 @@ class DfitApp:
         self._load_test(entry)
 
     def _load_questionnaire(self, csv_path: str):
-        """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill density/TVD.
+        """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill
+        density/TVD/well name/formation.
 
         Best-effort only: a missing or malformed questionnaire must never block the CSV load
         already underway, so any failure here is swallowed and just leaves the provenance label
         empty. Density/TVD entries are prefilled even when the parse is uncertain (e.g. a coerced
         SG->ppg reading) -- the provenance label shows the raw source text so it can be checked.
+        Well name/formation are plain free text, so there's no analogous "source" text to show.
         """
         self.quest_lbl.config(text="")
         try:
@@ -728,6 +750,12 @@ class DfitApp:
         if result.tvd_ft is not None:
             self.var_tvd.set(str(result.tvd_ft))
             parts.append(f'TVD {result.tvd_ft} ft ["{result.tvd_source}"]')
+        if result.well_name is not None:
+            self.var_well.set(result.well_name)
+            parts.append(f'well "{result.well_name}"')
+        if result.formation is not None:
+            self.var_formation.set(result.formation)
+            parts.append(f'formation "{result.formation}"')
         all_warnings = find_warnings + result.warnings
         if all_warnings:
             parts.append("warnings: " + "; ".join(all_warnings))
@@ -740,8 +768,14 @@ class DfitApp:
         self.state.rate_col = self.var_rate.get() or None
         self.state.volume_col = self.var_volume.get() or None
         self.state.pressure_is_bhp = self.var_isbhp.get()
-        self.state.density_ppg = _to_float(self.var_density.get())
-        self.state.tvd_ft = _to_float(self.var_tvd.get())
+        # This can fire mid-edit (e.g. on autosave), so a non-empty but
+        # unparseable entry ("8." mid-keystroke) must not null out a
+        # previously-good, already-logged value -- only an explicitly
+        # emptied box clears it.
+        self.state.density_ppg = _num(self.var_density.get(), self.state.density_ppg)
+        self.state.tvd_ft = _num(self.var_tvd.get(), self.state.tvd_ft)
+        self.state.well_name = self.var_well.get().strip()
+        self.state.formation = self.var_formation.get().strip()
         self.state.alpha = _to_float(self.var_alpha.get()) or 1.0
         self.state.resample_step = _to_float(self.var_step.get()) or 30.0
 
@@ -1378,6 +1412,8 @@ class DfitApp:
                                             filetypes=[("JSON", "*.json")])
         if path:
             self.state.notes = self.txt_notes.get("1.0", "end").strip()
+            # Capture any unapplied entry-widget edits so they aren't silently dropped on save.
+            self._sync_state_from_widgets()
             self.state.to_json(path)
 
     def _finish(self):
@@ -1393,6 +1429,9 @@ class DfitApp:
         if self.td is None:
             return
         self.state.step_status[self.step] = "done"
+        # Capture any unapplied entry-widget edits before refreshing, so self.res (feeding the
+        # PNG export and, in folder mode, the log row below) reflects the synced state.
+        self._sync_state_from_widgets()
         self.refresh()  # ensure current-step view stored in _views and self.res fresh
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         entry = self.current_entry
@@ -1437,6 +1476,8 @@ class DfitApp:
         self.var_isbhp.set(self.state.pressure_is_bhp)
         self.var_density.set("" if self.state.density_ppg is None else str(self.state.density_ppg))
         self.var_tvd.set("" if self.state.tvd_ft is None else str(self.state.tvd_ft))
+        self.var_well.set(self.state.well_name)
+        self.var_formation.set(self.state.formation)
         # Density/TVD above now came from the picks file, not the questionnaire that was auto-
         # detected (if any) when the CSV was loaded -- clear the stale provenance label so it
         # doesn't misattribute these values.
@@ -1466,3 +1507,22 @@ def _to_float(s: str):
         return float(s)
     except (TypeError, ValueError):
         return None
+
+
+def _num(text, current):
+    """Parse a numeric entry, preserving `current` on unparseable input.
+
+    An explicitly emptied box clears the value (returns None); a non-empty
+    but garbled/partial string (e.g. mid-keystroke "8.") leaves `current`
+    untouched rather than nulling out a previously-good value. Shared by
+    `_sync_state_from_widgets` and `_apply_config`, so Apply on a garbled
+    number also preserves the prior value instead of clearing it.
+    """
+    if text is None:
+        return None
+    if isinstance(text, str):
+        text = text.strip()
+        if not text:
+            return None
+    v = _to_float(text)
+    return v if v is not None else current

@@ -26,6 +26,10 @@ def _make_xlsx(path, rows, sheet_name="Sheet1"):
 # --------------------------------------------------------------------------------------------------
 def test_abraxas_style_density_and_tvd(tmp_path):
     path = _make_xlsx(tmp_path / "LOS DFIT Questionnaire_Foo.xlsx", [
+        "Well Name:",
+        "Foo State 1H",
+        "Formation:",
+        "Eagle Ford",
         "Type and density of fluid in the wellbore?",
         "3% KCl - 8.4 lbs/gal",
         "Planned Perforations (MD and TVD):",
@@ -41,6 +45,8 @@ def test_abraxas_style_density_and_tvd(tmp_path):
     assert result.density_source == "3% KCl - 8.4 lbs/gal"
     assert result.tvd_ft == pytest.approx(10958.0)
     assert result.tvd_source == "10958'"
+    assert result.well_name == "Foo State 1H"
+    assert result.formation == "Eagle Ford"
     # the "actual perforation depth" block has only the one bare MD number, which must not be
     # mistaken for TVD -- the parser should fall through to the "planned perforations" block and
     # note why it skipped the preferred block.
@@ -88,6 +94,45 @@ def test_true_specific_gravity_converted_to_ppg(tmp_path):
     assert result.density_source == "Produced water - 1.02 SG"
 
 
+def test_density_gradient_psi_per_ft_converted_to_ppg(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        "3% KCl - 0.433 psi/ft",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(0.433 / 0.052)
+    assert result.density_source == "3% KCl - 0.433 psi/ft"
+
+
+def test_density_gradient_psi_per_ft_word_variant(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        "0.45 psi per ft",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(0.45 / 0.052)
+
+
+@pytest.mark.parametrize("cell", ["0.44 psi/foot", "0.44 psi per foot"])
+def test_density_gradient_foot_variants(tmp_path, cell):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        cell,
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(0.44 / 0.052)
+
+
+def test_density_gradient_out_of_range_ignored(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        "2.0 psi/ft",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg is None
+    assert any("outside the expected ppg range" in w for w in result.warnings)
+
+
 def test_no_density_anywhere_returns_none_with_warning(tmp_path):
     path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
         "Type and density of fluid in the wellbore?",
@@ -133,6 +178,7 @@ def test_no_tvd_anywhere_returns_none_with_warning(tmp_path):
     result = parse_questionnaire(str(path))
     assert result.tvd_ft is None
     assert any("no parseable TVD" in w for w in result.warnings)
+    assert result.well_name == "Foo"
 
 
 def test_combined_md_tvd_cell_uses_number_after_tvd(tmp_path):
@@ -155,6 +201,32 @@ def test_malformed_perfs_cell_never_raises(tmp_path):
     result = parse_questionnaire(str(path))
     assert result.tvd_ft is None
     assert any("TVD parsing failed" in w for w in result.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
+# well name / formation
+# --------------------------------------------------------------------------------------------------
+def test_well_name_and_formation_absent_returns_none(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        "Saturated Oil",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.well_name is None
+    assert result.formation is None
+
+
+def test_formation_hydrocarbon_label_does_not_spill_into_formation(tmp_path):
+    # "Formation Hydrocarbon GOR:" is a longer, more specific known label than "Formation", so the
+    # longest-prefix rule in _label_key must route its answer to its own block, not "formation".
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Formation:",
+        "Eagle Ford",
+        "Formation Hydrocarbon GOR:",
+        "1200",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.formation == "Eagle Ford"
 
 
 # --------------------------------------------------------------------------------------------------
