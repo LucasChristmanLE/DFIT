@@ -289,6 +289,6 @@ select their tab (`ui.py:_open_guide`).
 ## TODO
 1) Mirroring how we get TVD and Density, I want to pull more from the questionaire, just for logging purposes: Well Name, Formation. I think I want to add a new first tab where all the setup lives to make it a more concrete step.
 2) Folder organization is more complex then hoped. The main folder contains Customer folders, with some of those folders containing multiple subfolders with DFIT tests (for customers where we did multiple wells), while others do not have subfolders and the data is just in that first layer. What's best, I reorganize the folder or we modify the script to work for either?
-3) DFIT data is on a shared M: drive. Should I copy it all locally?
+3) DFIT data is on a shared M: drive. Should I copy it all locally? It's many GB. Should I instead be able to point the program at a different folder and have it print the csv there and generate subfolders with pngs and JSONs?
 4) Remove the variable and tangent method effective ISIPs from the program sidebar but keep them in the results csv for reference. Change all net pressure calculations to use compliance method eff ISIP
 5) Add new calculation "Near-Wellbore Complexity". Shmin + net pressure + complexity = ISIP. I think this would have to be apparent ISIP, since Shmin + net = eff ISIP. Therefore, apparent ISIP - eff ISIP = complexity, right?
