@@ -48,6 +48,7 @@ LOG_COLUMNS = [
     "closure_time_compliance_min", "closure_time_tangent_min",
     "closure_time_variable_min",
     "net_pressure_isip_source",
+    "near_wellbore_complexity",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -394,4 +395,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "closure_time_tangent_min": _minutes(res.closure_time_tangent_s),
         "closure_time_variable_min": _minutes(res.closure_time_variable_s),
         "net_pressure_isip_source": res.net_pressure_isip_source,
+        "near_wellbore_complexity": res.near_wellbore_complexity,
     }
