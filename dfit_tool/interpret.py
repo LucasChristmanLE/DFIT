@@ -216,6 +216,18 @@ def net_pressure(reference_isip: float, shmin: float) -> float:
     return reference_isip - shmin
 
 
+def near_wellbore_complexity(apparent_isip: float, reference_isip: float) -> float:
+    """Near-wellbore complexity = apparent ISIP - reference (effective) ISIP: the near-wellbore
+    friction/tortuosity present in the early-decline extrapolation but already dissipated by the
+    time the P-vs-G line is fit. Closes the identity
+
+        Shmin + net pressure + complexity = apparent ISIP
+
+    for every method, since each net pressure subtracts its own Shmin from that same reference.
+    """
+    return apparent_isip - reference_isip
+
+
 # --------------------------------------------------------------------------------------------------
 # pore pressure (postclosure)
 # --------------------------------------------------------------------------------------------------
