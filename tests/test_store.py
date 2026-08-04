@@ -703,3 +703,17 @@ def test_build_log_row_closure_time_none_stays_none(tmp_path):
 def test_build_log_row_pressure_source_bhp_vs_whp(tmp_path):
     row, _, res = _built_row(tmp_path)
     assert row["pressure_source"] == ("BHP" if res.pressure_is_bhp else "WHP")
+
+
+def test_log_row_has_net_pressure_isip_source(tmp_path):
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    res.net_pressure_isip_source = "compliance"
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = os.path.join(str(tmp_path), "well1.csv")
+
+    row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
+
+    assert "net_pressure_isip_source" in store.LOG_COLUMNS
+    assert row["net_pressure_isip_source"] == "compliance"

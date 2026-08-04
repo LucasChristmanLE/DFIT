@@ -193,8 +193,14 @@ Per-test deliverables:
 - **Pore pressure** — intercept of the late-time postclosure line on the t^(−1/2) or t^(−1)
   axis chosen by the postclosure scenario.
 
-**Net pressure** = reference ISIP − Shmin, using each method's own effective ISIP (falling
-back to apparent ISIP per method when that effective ISIP is unavailable).
+**Net pressure** = shared reference ISIP − Shmin. All three methods (compliance, tangent,
+variable) subtract their own Shmin from one shared reference ISIP: the compliance effective
+ISIP, falling back to the tangent effective ISIP, else undefined (no apparent-ISIP fallback,
+so a net pressure is blank when neither effective ISIP exists or that method's Shmin is
+absent). `compute_all` records the source that fed the reference in
+`DerivedResults.net_pressure_isip_source` ("compliance"/"tangent"/""), logged to the
+`net_pressure_isip_source` column of `dfit_log.csv`. The tangent and variable effective ISIPs
+are kept in the CSV log but are no longer shown in the sidebar panel.
 
 **Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
 ≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense

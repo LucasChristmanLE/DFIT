@@ -227,6 +227,9 @@ class DerivedResults:
     net_pressure_compliance: Optional[float] = None
     net_pressure_tangent: Optional[float] = None
     net_pressure_variable: Optional[float] = None
+    # Which effective-ISIP source fed the shared net-pressure reference:
+    # "compliance", "tangent", or "" when no reference was available.
+    net_pressure_isip_source: Optional[str] = None
     delta_closure: Optional[float] = None
     pore_pressure: Optional[float] = None
 
@@ -243,6 +246,27 @@ class DerivedResults:
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
 
     warnings: list[str] = field(default_factory=list)
+
+
+def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
+    """Set net_pressure_* and net_pressure_isip_source on ``res`` from a single shared
+    reference ISIP: compliance eff ISIP, else tangent eff ISIP, else none (no apparent-ISIP
+    fallback). Each net pressure keeps its own per-method Shmin guard, so it stays None when
+    the shared reference is None or its own Shmin is None."""
+    if res.effective_isip_compliance is not None:
+        ref, res.net_pressure_isip_source = res.effective_isip_compliance, "compliance"
+    elif res.effective_isip_tangent is not None:
+        ref, res.net_pressure_isip_source = res.effective_isip_tangent, "tangent"
+    else:
+        ref, res.net_pressure_isip_source = None, ""
+    if ref is not None:
+        if res.shmin_compliance is not None:
+            res.net_pressure_compliance = interpret.net_pressure(ref, res.shmin_compliance)
+        if res.shmin_tangent is not None:
+            res.net_pressure_tangent = interpret.net_pressure(ref, res.shmin_tangent)
+        if res.shmin_variable is not None:
+            res.net_pressure_variable = interpret.net_pressure(ref, res.shmin_variable)
+    return res
 
 
 def compute_all(state: PickState, td: TestData) -> DerivedResults:
@@ -354,20 +378,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
         res.effective_isip_variable = interpret.effective_isip(x, y, slope)
 
-    # Net pressures: each method references its own effective ISIP, falling back to apparent ISIP
-    # per-method when that method's effective ISIP isn't available.
-    ref_compliance = res.effective_isip_compliance if res.effective_isip_compliance is not None \
-        else res.apparent_isip
-    ref_tangent = res.effective_isip_tangent if res.effective_isip_tangent is not None \
-        else res.apparent_isip
-    ref_variable = res.effective_isip_variable if res.effective_isip_variable is not None \
-        else res.apparent_isip
-    if ref_compliance is not None and res.shmin_compliance is not None:
-        res.net_pressure_compliance = interpret.net_pressure(ref_compliance, res.shmin_compliance)
-    if ref_tangent is not None and res.shmin_tangent is not None:
-        res.net_pressure_tangent = interpret.net_pressure(ref_tangent, res.shmin_tangent)
-    if ref_variable is not None and res.shmin_variable is not None:
-        res.net_pressure_variable = interpret.net_pressure(ref_variable, res.shmin_variable)
+    _resolve_net_pressures(res)
     if res.shmin_compliance is not None and res.shmin_tangent is not None:
         res.delta_closure = res.shmin_compliance - res.shmin_tangent
 
