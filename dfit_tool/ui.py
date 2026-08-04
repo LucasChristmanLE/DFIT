@@ -531,27 +531,72 @@ class DfitApp:
         if path:
             self._open_folder_path(path)
 
+    def _make_scan_progress(self):
+        """A small modal Toplevel with an indeterminate progress bar, shown over `self.root`
+        while `_open_folder_path` scans and loads -- main thread only, no background work. Grabs
+        input so the user can't click into the half-scanned queue. Returns `(win, set_text)`;
+        callers must destroy `win` themselves (in a `finally`, since the scan/load below can
+        raise or return early)."""
+        win = tk.Toplevel(self.root)
+        win.title("Opening folder")
+        win.transient(self.root)
+        win.resizable(False, False)
+        # The scan/load below is a blocking main-thread call with no way to cancel mid-flight --
+        # don't let the WM 'X' button destroy the modal (and drop its grab) out from under it.
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        lbl = ttk.Label(win, text="Scanning folder…", width=48)
+        lbl.pack(padx=16, pady=(16, 8))
+        bar = ttk.Progressbar(win, mode="indeterminate", length=280)
+        bar.pack(padx=16, pady=(0, 16))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        win.grab_set()
+        bar.start()
+
+        def set_text(text: str):
+            lbl.config(text=text)
+            self.root.update()
+
+        return win, set_text
+
     def _open_folder_path(self, path: str):
-        entries, log_df = store.list_tests(path)
+        progress_win, set_progress_text = self._make_scan_progress()
+        entries: list[store.TestEntry] = []
+        try:
+            def _on_scan_progress(dirs_scanned: int, tests_found: int):
+                set_progress_text(f"Scanning folder…  {tests_found} test(s) found")
+
+            entries, log_df = store.list_tests(path, progress=_on_scan_progress)
+            if entries:
+                self._save_current_queue_picks()  # never lose the outgoing test's work
+                self.folder_root = path
+                self.queue_entries = entries
+                self.log_df = log_df
+                self._populate_queue()
+                self._show_queue()
+                # Clear current_entry before the auto-open below -- if _load_test's
+                # _load_common fails (corrupt/unreadable first file), it returns early
+                # without ever assigning current_entry, and this folder's queue must not be
+                # left paired with either no test (fine) or, worse, a stale TestEntry from
+                # whatever folder/test was open before this call (current_entry is None is
+                # the mode invariant "no test loaded", not "no possibly-wrong test loaded").
+                self.current_entry = None
+                target = next((e for e in entries if e.status == "new"), entries[0])
+                set_progress_text(f"Loading {target.display_label}…")
+                self._load_test(target)
+                self._update_folder_controls()  # covers _load_test's early return too
+        finally:
+            try:
+                progress_win.grab_release()
+                progress_win.destroy()
+            except tk.TclError:
+                pass  # already destroyed (e.g. window closed out from under the scan)
+
         if not entries:
             messagebox.showinfo("Open Folder", "No DFIT tests found in this folder.")
             return
-        self._save_current_queue_picks()  # never lose the outgoing test's work
-        self.folder_root = path
-        self.queue_entries = entries
-        self.log_df = log_df
-        self._populate_queue()
-        self._show_queue()
-        # Clear current_entry before the auto-open below -- if _load_test's _load_common fails
-        # (corrupt/unreadable first file), it returns early without ever assigning
-        # current_entry, and this folder's queue must not be left paired with either no test
-        # (fine) or, worse, a stale TestEntry from whatever folder/test was open before this
-        # call (current_entry is None is the mode invariant "no test loaded", not "no
-        # possibly-wrong test loaded").
-        self.current_entry = None
-        target = next((e for e in entries if e.status == "new"), entries[0])
-        self._load_test(target)
-        self._update_folder_controls()  # covers _load_test's early return on a failed load too
 
         # Surface scan warnings as a one-line summary rather than dialog-spamming per test.
         warn_count = sum(len(e.scan_warnings) for e in entries)
@@ -568,7 +613,7 @@ class DfitApp:
     def _populate_queue(self):
         self.queue_tree.delete(*self.queue_tree.get_children())
         for entry in self.queue_entries:
-            self.queue_tree.insert("", "end", iid=entry.test_id, text=entry.test_id,
+            self.queue_tree.insert("", "end", iid=entry.test_id, text=entry.display_label,
                                    values=(entry.status,), tags=(entry.status,))
         self._update_progress_label()
 
@@ -618,7 +663,7 @@ class DfitApp:
                 self._apply_loaded_state(saved)
         self.state.active_source = source.lower()
         self.current_entry = entry
-        self.root.title(f"DFIT interpretation — {entry.test_id}")
+        self.root.title(f"DFIT interpretation — {entry.display_label}")
         entry.status = store.status_for(self.state if saved else None)
         self._refresh_queue_row(entry)
         self._update_folder_controls()

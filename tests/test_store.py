@@ -54,6 +54,23 @@ def test_test_entry_picks_path():
     assert entry.picks_path == os.path.join("root", "well1", "well1" + store.PICKS_SUFFIX)
 
 
+def test_test_entry_picks_path_uses_picks_basename_override():
+    entry = store.TestEntry(
+        test_id="CustomerA/Well1", folder=os.path.join("root", "Well1"), picks_basename="Well1_DFIT"
+    )
+    assert entry.picks_path == os.path.join("root", "Well1", "Well1_DFIT" + store.PICKS_SUFFIX)
+
+
+def test_test_entry_display_label_nested():
+    entry = store.TestEntry(test_id="CustomerA/Well1", folder="f")
+    assert entry.display_label == "CustomerA / Well1"
+
+
+def test_test_entry_display_label_bare_unchanged():
+    entry = store.TestEntry(test_id="well1", folder="f")
+    assert entry.display_label == "well1"
+
+
 def test_test_entry_available_sources_csv_first():
     entry = store.TestEntry(test_id="w", folder="f", csv_path="a.csv", dbs_path="a.dbs")
     assert entry.available_sources == ["CSV", "DBS"]
@@ -136,7 +153,7 @@ def test_scan_root_flat_layout_same_stem_csv_dbs_merges(tmp_path):
     assert entry.dbs_path == str(tmp_path / "well4.dbs")
 
 
-def test_scan_root_multiple_csv_takes_alphabetical_first_and_warns(tmp_path):
+def test_scan_root_multiple_stems_in_one_dir_yield_two_tests_no_warning(tmp_path):
     sub = tmp_path / "well5"
     sub.mkdir()
     (sub / "b.csv").write_text("a")
@@ -144,11 +161,8 @@ def test_scan_root_multiple_csv_takes_alphabetical_first_and_warns(tmp_path):
 
     entries = store.scan_root(str(tmp_path))
 
-    assert len(entries) == 1
-    entry = entries[0]
-    assert entry.csv_path == str(sub / "a.csv")
-    assert len(entry.scan_warnings) == 1
-    assert "a.csv" in entry.scan_warnings[0]
+    assert [e.test_id for e in entries] == ["well5/a", "well5/b"]
+    assert all(not e.scan_warnings for e in entries)
 
 
 def test_scan_root_ignores_other_extensions(tmp_path):
@@ -223,6 +237,136 @@ def test_scan_root_sorted_by_test_id(tmp_path):
     entries = store.scan_root(str(tmp_path))
 
     assert [e.test_id for e in entries] == ["alpha", "mid", "zeta"]
+
+
+def test_scan_root_depth_two_nested_single_stem(tmp_path):
+    sub = tmp_path / "CustomerA" / "Well1"
+    sub.mkdir(parents=True)
+    (sub / "Well1_DFIT.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.test_id == "CustomerA/Well1"
+    assert entry.display_label == "CustomerA / Well1"
+    assert entry.picks_basename == "Well1_DFIT"
+    assert entry.csv_path == str(sub / "Well1_DFIT.csv")
+
+
+def test_scan_root_depth_three_nested(tmp_path):
+    sub = tmp_path / "Customer" / "Well" / "Stage"
+    sub.mkdir(parents=True)
+    (sub / "data.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert len(entries) == 1
+    assert entries[0].test_id == "Customer/Well/Stage"
+
+
+def test_scan_root_multiple_loose_wells_in_customer_folder(tmp_path):
+    sub = tmp_path / "CustomerB"
+    sub.mkdir()
+    (sub / "well_x.csv").write_text("a")
+    (sub / "well_y.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert [e.test_id for e in entries] == ["CustomerB/well_x", "CustomerB/well_y"]
+    assert entries[0].picks_basename == "well_x"
+    assert entries[1].picks_basename == "well_y"
+    assert all(not e.scan_warnings for e in entries)
+
+
+def test_scan_root_nested_multi_stem_dir_merges_csv_and_dbs(tmp_path):
+    sub = tmp_path / "CustomerC"
+    sub.mkdir()
+    (sub / "well_x.csv").write_text("a")
+    (sub / "well_x.dbs").write_bytes(b"x")
+    (sub / "well_y.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+
+    entry = next(e for e in entries if e.test_id == "CustomerC/well_x")
+    assert entry.csv_path == str(sub / "well_x.csv")
+    assert entry.dbs_path == str(sub / "well_x.dbs")
+
+
+def test_scan_root_prunes_dfit_plots_export_dir(tmp_path):
+    (tmp_path / "well1.csv").write_text("a")
+    export_dir = tmp_path / "well1 DFIT plots"
+    export_dir.mkdir()
+    (export_dir / "stray.csv").write_text("x")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert [e.test_id for e in entries] == ["well1"]
+
+
+def test_scan_root_root_loose_vs_subfolder_still_dedups(tmp_path):
+    sub = tmp_path / "well1"
+    sub.mkdir()
+    (sub / "well1.csv").write_text("a")
+    (tmp_path / "well1.csv").write_text("b")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.test_id == "well1"
+    assert entry.folder == str(sub)
+    assert any("well1" in w for w in entry.scan_warnings)
+
+
+# --------------------------------------------------------------------------------------------------
+# scan_root progress callback: the UI-facing hook a folder-open modal pumps to show life during a
+# slow scan. Optional and additive -- must not alter what gets scanned.
+# --------------------------------------------------------------------------------------------------
+def test_scan_root_progress_callback_reports_running_count_without_altering_results(tmp_path):
+    for name in ("well1", "well2"):
+        sub = tmp_path / name
+        sub.mkdir()
+        (sub / f"{name}.csv").write_text("a")
+
+    calls = []
+    entries = store.scan_root(str(tmp_path), progress=lambda dirs, tests: calls.append((dirs, tests)))
+
+    assert calls  # called at least once
+    assert calls[-1][1] == len(entries)  # final tests_found matches what was returned
+    assert entries == store.scan_root(str(tmp_path))  # progress must not alter results
+
+
+def test_scan_root_and_list_tests_default_progress_none_unchanged(tmp_path):
+    (tmp_path / "well1.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+    assert [e.test_id for e in entries] == ["well1"]
+
+    entries2, log_df = store.list_tests(str(tmp_path))
+    assert [e.test_id for e in entries2] == ["well1"]
+    assert list(log_df.columns) == store.LOG_COLUMNS
+
+
+def test_nested_entry_save_and_load_picks_roundtrip(tmp_path):
+    sub = tmp_path / "CustomerA" / "Well1"
+    sub.mkdir(parents=True)
+    (sub / "Well1_DFIT.csv").write_text("a")
+
+    entries = store.scan_root(str(tmp_path))
+    entry = entries[0]
+    assert "/" in entry.test_id
+
+    st = PickState(pressure_col="P")
+    store.save_picks_for(entry, st)
+
+    expected_path = os.path.join(str(sub), "Well1_DFIT" + store.PICKS_SUFFIX)
+    assert os.path.exists(expected_path)
+    assert entry.picks_path == expected_path
+
+    loaded = store.load_picks_for(entry)
+    assert loaded is not None
+    assert loaded.pressure_col == "P"
 
 
 # --------------------------------------------------------------------------------------------------

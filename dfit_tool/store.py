@@ -63,17 +63,23 @@ _POSTCLOSURE_TREND_BY_PREFIX = {
 # --------------------------------------------------------------------------------------------------
 @dataclass
 class TestEntry:
-    test_id: str                 # immediate-child dir name, or file stem for flat layout
+    test_id: str                 # path-qualified, forward-slash-separated id, unique within a root
     folder: str                  # dir containing the data files
     csv_path: Optional[str] = None
     dbs_path: Optional[str] = None
     questionnaire_path: Optional[str] = None
     scan_warnings: list[str] = field(default_factory=list)
     status: str = "new"          # recomputed from picks JSON, never trusted from the log CSV
+    picks_basename: Optional[str] = None  # local data-file stem; falls back to test_id if unset
 
     @property
     def picks_path(self) -> str:
-        return os.path.join(self.folder, self.test_id + PICKS_SUFFIX)
+        base = self.picks_basename if self.picks_basename is not None else self.test_id
+        return os.path.join(self.folder, base + PICKS_SUFFIX)
+
+    @property
+    def display_label(self) -> str:
+        return self.test_id.replace("/", " / ")
 
     @property
     def available_sources(self) -> list[str]:
@@ -98,47 +104,17 @@ class TestEntry:
 
 
 # --------------------------------------------------------------------------------------------------
-# scan_root: depth-1 scan of an opened root -- subfolder tests and flat-layout loose files.
-# A stated limitation: nested subfolders (depth 2+) are never scanned.
+# scan_root: arbitrary-depth scan of an opened root -- every directory under it (including the
+# root itself) that holds data files becomes one or more tests, keyed by a path-qualified,
+# forward-slash-separated test_id unique within the root.
 # --------------------------------------------------------------------------------------------------
-def _pick_first(names: list[str], ext_label: str, dirpath: str, warnings: list[str]) -> str:
-    """Alphabetically-first (case-insensitive) name among `names`; appends a warning to
-    `warnings` if there was more than one."""
-    ordered = sorted(names, key=str.lower)
-    if len(ordered) > 1:
-        warnings.append(
-            f"multiple {ext_label} files found in {dirpath!r}; using {ordered[0]!r}"
-        )
-    return ordered[0]
-
-
-def _scan_dir(test_id: str, dirpath: str) -> Optional[TestEntry]:
-    """One candidate test from an immediate subdirectory, or None if it holds no data files."""
-    try:
-        names = os.listdir(dirpath)
-    except OSError:
-        return None
-    csvs = [n for n in names if n.lower().endswith(".csv")]
-    dbss = [n for n in names if n.lower().endswith(".dbs")]
-    if not csvs and not dbss:
-        return None
-    entry = TestEntry(test_id=test_id, folder=dirpath)
-    if csvs:
-        entry.csv_path = os.path.join(dirpath, _pick_first(csvs, "CSV", dirpath, entry.scan_warnings))
-    if dbss:
-        entry.dbs_path = os.path.join(dirpath, _pick_first(dbss, "DBS", dirpath, entry.scan_warnings))
-    return entry
-
-
-def _scan_flat(root: str, names: list[str]) -> list[TestEntry]:
-    """Loose *.csv/*.dbs files directly in `root`: one flat-layout test per file stem, with
-    same-stem csv+dbs merged into a single entry. dfit_log.csv is excluded (it is our own log,
-    not a test); the check is case-insensitive on the filename."""
-    by_stem: dict[str, dict[str, list[str]]] = {}
-    for name in names:
-        full = os.path.join(root, name)
-        if not os.path.isfile(full):
-            continue
+def _group_data_files(filenames: list[str]) -> dict[str, dict[str, str]]:
+    """Group one directory's filenames by stem: `{stem: {"csv": name, "dbs": name}}`. Files that
+    are not `.csv`/`.dbs` (case-insensitive) are skipped, as is `LOG_FILENAME` (case-insensitive,
+    it is our own log, not a test). Filenames within one directory are unique, so each
+    (stem, ext) maps to exactly one name -- no "pick first" ambiguity to warn about."""
+    by_stem: dict[str, dict[str, str]] = {}
+    for name in filenames:
         if name.lower() == LOG_FILENAME.lower():
             continue
         low = name.lower()
@@ -149,54 +125,79 @@ def _scan_flat(root: str, names: list[str]) -> list[TestEntry]:
         else:
             continue
         stem = os.path.splitext(name)[0]
-        by_stem.setdefault(stem, {}).setdefault(ext, []).append(name)
+        by_stem.setdefault(stem, {})[ext] = name
+    return by_stem
 
+
+def _entries_for_dir(root: str, dirpath: str, filenames: list[str]) -> list[TestEntry]:
+    """One TestEntry per stem group in `dirpath`, per the identity rules: loose files directly in
+    `root` get `test_id = stem`; a non-root dir with a single stem group collapses to
+    `test_id = rel`; a non-root dir with multiple stem groups gets `test_id = rel + "/" + stem`.
+    `picks_basename` is always the local stem, so the picks file stays unique within its folder
+    regardless of how test_id is qualified."""
+    by_stem = _group_data_files(filenames)
+    if not by_stem:
+        return []
+    rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
     entries = []
     for stem, by_ext in by_stem.items():
-        entry = TestEntry(test_id=stem, folder=root)
+        if rel == ".":
+            test_id = stem
+        elif len(by_stem) == 1:
+            test_id = rel
+        else:
+            test_id = f"{rel}/{stem}"
+        entry = TestEntry(test_id=test_id, folder=dirpath, picks_basename=stem)
         if "csv" in by_ext:
-            entry.csv_path = os.path.join(root, _pick_first(by_ext["csv"], "CSV", root, entry.scan_warnings))
+            entry.csv_path = os.path.join(dirpath, by_ext["csv"])
         if "dbs" in by_ext:
-            entry.dbs_path = os.path.join(root, _pick_first(by_ext["dbs"], "DBS", root, entry.scan_warnings))
+            entry.dbs_path = os.path.join(dirpath, by_ext["dbs"])
         entries.append(entry)
     return entries
 
 
-def scan_root(root: str) -> list[TestEntry]:
-    """Every candidate test directly under `root`: one entry per immediate subdirectory that
-    holds data files, plus one per loose data file (or same-stem csv+dbs pair) directly in
-    `root`. Everything else (other extensions, dfit_log.csv, empty subdirectories) is ignored.
-    Attaches each entry's questionnaire (via ``find_questionnaire``) and returns entries sorted
-    by test_id.
+def scan_root(root: str, progress=None) -> list[TestEntry]:
+    """Every candidate test anywhere under `root`, at any depth: one entry per stem group of data
+    files in each walked directory (including `root` itself), keyed by a path-qualified test_id
+    (see `_entries_for_dir`). Everything else (other extensions, dfit_log.csv, directories with no
+    data files) is ignored. Export subdirectories named "<stem> DFIT plots" (created by Finish)
+    are pruned before descending, so a stray PNG-export folder never becomes a test. Attaches each
+    entry's questionnaire (via ``find_questionnaire``) and returns entries sorted by test_id.
 
-    A loose root file can collide on test_id with a subfolder test of the same stem (e.g. a zip
-    extracted next to the csv it came from: `well1/well1.csv` and a stray loose `well1.csv`).
-    The directory entry wins -- it is the richer layout -- so the loose-file entry is dropped and
-    a warning is attached to the surviving directory entry instead. Duplicate iids would
-    otherwise crash the folder-mode queue Treeview (insert with a repeated iid)."""
-    names = os.listdir(root)
-    dir_entries: list[TestEntry] = []
-    for name in names:
-        full = os.path.join(root, name)
-        if os.path.isdir(full):
-            entry = _scan_dir(name, full)
-            if entry is not None:
-                dir_entries.append(entry)
+    `progress`, if given, is an optional `progress(dirs_scanned: int, tests_found: int) -> None`
+    called once per directory visited during the `os.walk` loop below, so a caller (the UI) can
+    pump its event loop and show a running count during a slow scan. Not called during the
+    dedup/sort/questionnaire-attach step that follows -- default None leaves behavior unchanged.
 
-    dir_ids = {e.test_id for e in dir_entries}
-    flat_entries = []
-    for entry in _scan_flat(root, names):
-        if entry.test_id in dir_ids:
-            dir_entry = next(e for e in dir_entries if e.test_id == entry.test_id)
-            dir_entry.scan_warnings.append(
-                f"loose file {os.path.basename(entry.csv_path or entry.dbs_path)!r} in root "
-                f"ignored: test folder {entry.test_id!r} has the same name"
-            )
+    A test_id collision (e.g. a loose `well1.csv` in a customer folder alongside a
+    `well1/well1.csv` subfolder of the same name) is resolved in favor of the deeper folder --
+    it is the richer layout -- with a warning attached to the surviving entry and the shallower
+    one dropped. Duplicate iids would otherwise crash the folder-mode queue Treeview (insert with
+    a repeated iid)."""
+    entries: list[TestEntry] = []
+    dirs_scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.endswith(" DFIT plots")]
+        entries.extend(_entries_for_dir(root, dirpath, filenames))
+        dirs_scanned += 1
+        if progress is not None:
+            progress(dirs_scanned, len(entries))
+
+    by_id: dict[str, TestEntry] = {}
+    for entry in entries:
+        existing = by_id.get(entry.test_id)
+        if existing is None:
+            by_id[entry.test_id] = entry
             continue
-        flat_entries.append(entry)
+        # Same test_id from two different folders: the deeper one wins.
+        shallow, deep = sorted((existing, entry), key=lambda e: e.folder.count(os.sep))
+        deep.scan_warnings.append(
+            f"loose file {os.path.basename(shallow.csv_path or shallow.dbs_path)!r} in "
+            f"{shallow.folder!r} ignored: test folder {entry.test_id!r} has the same name"
+        )
+        by_id[entry.test_id] = deep
 
-    entries = dir_entries + flat_entries
-
+    entries = list(by_id.values())
     for entry in entries:
         data_path = entry.csv_path or entry.dbs_path
         entry.questionnaire_path, warns = find_questionnaire(data_path)
@@ -318,11 +319,14 @@ def upsert_log_row(df: pd.DataFrame, row: dict) -> pd.DataFrame:
     return pd.concat([df, new_row], ignore_index=True)
 
 
-def list_tests(root: str) -> tuple[list[TestEntry], pd.DataFrame]:
-    """`scan_root(root)` with each entry's `status` recomputed from its picks file, plus
-    `load_log(root)`. Log rows whose test_id matches no scanned entry are kept as-is -- the UI
-    can detect these orphans by comparing the df's test_ids to the returned entries."""
-    entries = scan_root(root)
+def list_tests(root: str, progress=None) -> tuple[list[TestEntry], pd.DataFrame]:
+    """`scan_root(root, progress=progress)` with each entry's `status` recomputed from its picks
+    file, plus `load_log(root)`. Log rows whose test_id matches no scanned entry are kept as-is
+    -- the UI can detect these orphans by comparing the df's test_ids to the returned entries.
+
+    `progress`, if given, is passed straight through to `scan_root` (see its docstring); default
+    None leaves behavior unchanged."""
+    entries = scan_root(root, progress=progress)
     for entry in entries:
         entry.status = status_for(load_picks_for(entry))
     return entries, load_log(root)

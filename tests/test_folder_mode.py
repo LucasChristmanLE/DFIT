@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import types
 
+import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
@@ -288,6 +289,12 @@ def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
     stub._load_test_calls = []
     stub._update_folder_controls_calls = []
     stub._update_folder_controls = lambda: stub._update_folder_controls_calls.append(True)
+    # The real _make_scan_progress needs a live tk.Tk() root -- stub it out with a no-op
+    # progress window/setter, same duck-typing approach as the rest of this stand-in.
+    stub._make_scan_progress = lambda: (
+        types.SimpleNamespace(grab_release=lambda: None, destroy=lambda: None),
+        lambda text: None,
+    )
 
     def _failing_load_test(entry, source=None, force_reset=False):
         # Simulates _load_common failing inside the real _load_test -- it returns early and
@@ -307,6 +314,33 @@ def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
     assert stub._update_folder_controls_calls == [True]
     assert stub.folder_root == str(tmp_path)
     assert len(stub.queue_entries) == 2  # the queue is still populated despite the failed load
+
+
+# --------------------------------------------------------------------------------------------------
+# _open_folder_path: empty folder. Regression guard -- the "No DFIT tests found" messagebox must
+# still fire after the progress modal is torn down; an earlier version buried the empty-entries
+# check inside the try, so its `return` ran the `finally` and exited before ever reaching it.
+# --------------------------------------------------------------------------------------------------
+def test_open_folder_path_no_tests_found_shows_messagebox(tmp_path, monkeypatch):
+    info_calls = []
+    monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **kw: info_calls.append((a, kw)))
+    monkeypatch.setattr(
+        store, "list_tests",
+        lambda path, progress=None: ([], pd.DataFrame(columns=store.LOG_COLUMNS)),
+    )
+
+    stub = types.SimpleNamespace()
+    stub.current_entry = None
+    stub.td = None
+    stub._make_scan_progress = lambda: (
+        types.SimpleNamespace(grab_release=lambda: None, destroy=lambda: None),
+        lambda text: None,
+    )
+    stub._open_folder_path = types.MethodType(DfitApp._open_folder_path, stub)
+
+    stub._open_folder_path(str(tmp_path))
+
+    assert len(info_calls) == 1
 
 
 def test_on_queue_select_tolerates_current_entry_none():
