@@ -58,7 +58,7 @@ _PC_HINTS = {
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
-# The 19 result-panel rows, in display order -- module level (not just a literal inside
+# The 18 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
