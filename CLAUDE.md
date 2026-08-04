@@ -188,8 +188,8 @@ Per-test deliverables:
 - **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point.
 - **Shmin, variable** — BHP at the G-time midpoint of the contact and closure picks. This
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
-  other two (effective ISIP, Shmin, closure time, and net pressure each have compliance,
-  tangent, and variable columns in the panel).
+  other two (Shmin, closure time, and net pressure each have compliance, tangent, and
+  variable rows in the panel; effective ISIP shows only the compliance row there).
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and
@@ -210,9 +210,13 @@ subtracts that same shared reference from the apparent ISIP
 complexity = apparent ISIP` for all three methods. It is one value per test, not one per
 method, set by `model._resolve_net_pressures` alongside the net pressures and guarded on the
 apparent ISIP being present. A negative value is reported as-is -- no warning, no clamp --
-since clamping would break the identity. The C-D rapid-closure scenario gets no complexity:
-it has no contact pick and so no effective ISIP, and `shmin_rapid` deliberately never feeds
-the shared reference.
+since clamping would break the identity. C-C and C-D clear the contact pick, so neither gets
+a compliance effective ISIP -- but once the closure pick is made the tangent effective ISIP
+still exists, so the shared reference falls back to tangent and complexity IS reported for
+both. `shmin_rapid` never feeds the shared reference, so for C-D the reported complexity is
+referenced to the tangent effective ISIP and composes with `shmin_tangent`, not with
+`shmin_rapid` -- there is no `net_pressure_rapid`, so for C-D the complexity participates in
+no reported identity.
 
 **Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
 ≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense

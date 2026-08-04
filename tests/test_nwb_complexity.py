@@ -64,6 +64,37 @@ def test_complexity_negative_reported_as_is_with_no_warning():
     assert r.warnings == []
 
 
+def test_cd_complexity_falls_back_to_tangent_reference():
+    # C-D clears only the contact pick (apply_closure_scenario), so effective_isip_compliance
+    # is None -- but the tangent eff ISIP still builds off the auto-seeded closure_G
+    # (seed_tangent), so the shared reference falls back to tangent and complexity IS
+    # reported here, even though C-D's own Shmin is shmin_rapid, not shmin_tangent. Pins the
+    # real pipeline behavior so the CLAUDE.md/spec correction (docs previously claimed C-D
+    # gets no complexity at all) can never silently regress.
+    td = make_testdata()
+    st = overview_state(td)
+    res = compute_all(st, td)
+
+    picks.seed_gfunction(st, res)
+    st.closure_scenario = "C-D rapid"
+    picks.apply_closure_scenario(st, res)
+    picks.seed_tangent(st, res)
+
+    # apparent_isip needs a stored shut-in tangent; overview_state sets none. Anchoring at the
+    # shut-in instant makes apparent_isip == anchor_y (same stand-in as
+    # tests/test_variable_compliance.py::test_net_pressure_none_when_no_effective_isip_available).
+    st.isip_tangent = TangentPick(anchor_x=res.t_shutin_s, anchor_y=4500.0, slope=-10.0)
+    res = compute_all(st, td)
+
+    assert st.contact_G is None
+    assert res.effective_isip_compliance is None
+    assert res.effective_isip_tangent is not None
+    assert res.net_pressure_isip_source == "tangent"
+    assert res.shmin_rapid is not None
+    assert res.near_wellbore_complexity == pytest.approx(
+        res.apparent_isip - res.effective_isip_tangent)
+
+
 def test_identity_shmin_plus_net_plus_complexity_equals_apparent_isip():
     # End-to-end through compute_all on synthetic data: the identity must close for each of
     # the three Shmin methods.

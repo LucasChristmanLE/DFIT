@@ -1,5 +1,6 @@
 """DFIT interpretation math: te, ISIP (apparent/effective), Shmin (compliance/tangent),
-net pressure, pore pressure, and auto-suggestion helpers for the interactive picks.
+net pressure, near-wellbore complexity, pore pressure, and auto-suggestion helpers for the
+interactive picks.
 
 Functions here are pure: they take data arrays and pick parameters and return numbers. The
 interactive layer (picks.py / ui.py) owns the pick state and calls these to recompute live.
@@ -179,7 +180,7 @@ def effective_isip(anchor_G: float, anchor_P: float, slope_P_per_G: float) -> fl
 
 
 # --------------------------------------------------------------------------------------------------
-# Shmin + net pressure
+# Shmin + net pressure + near-wellbore complexity
 # --------------------------------------------------------------------------------------------------
 def shmin_compliance(contact_pressure: float, offset: float = COMPLIANCE_OFFSET_PSI) -> float:
     """Compliance-method Shmin = contact pressure - offset (default 75 psi)."""
