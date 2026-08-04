@@ -109,7 +109,9 @@ def test_closure_time_both_picks_set_matches_independent_calc_and_orders_correct
 # --------------------------------------------------------------------------------------------------
 # per-method net pressure
 # --------------------------------------------------------------------------------------------------
-def test_net_pressures_each_use_their_own_effective_isip_and_can_differ():
+def test_net_pressures_all_use_shared_compliance_reference():
+    # TODO #4: net pressure now references one shared ISIP (compliance -> tangent -> none)
+    # rather than each method's own effective ISIP.
     td, st, res = _res()
     dg = res.diagnostics
     contact_G, closure_G = _picked_gs(dg)
@@ -118,22 +120,25 @@ def test_net_pressures_each_use_their_own_effective_isip_and_can_differ():
     picks.commit_closure_point(st, closure_G)
     res2 = compute_all(st, td)
 
+    assert res2.net_pressure_isip_source == "compliance"
     assert res2.net_pressure_compliance == pytest.approx(
         interpret.net_pressure(res2.effective_isip_compliance, res2.shmin_compliance))
     assert res2.net_pressure_tangent == pytest.approx(
-        interpret.net_pressure(res2.effective_isip_tangent, res2.shmin_tangent))
+        interpret.net_pressure(res2.effective_isip_compliance, res2.shmin_tangent))
     assert res2.net_pressure_variable == pytest.approx(
-        interpret.net_pressure(res2.effective_isip_variable, res2.shmin_variable))
+        interpret.net_pressure(res2.effective_isip_compliance, res2.shmin_variable))
 
-    # The three anchors (contact_G, closure_G, and their midpoint) sit on different parts of a
-    # non-linear decline curve, so the three method-owned eff ISIPs -- and hence net pressures --
-    # are not all equal.
-    refs = {res2.effective_isip_compliance, res2.effective_isip_tangent,
-            res2.effective_isip_variable}
-    assert len(refs) > 1
+    # The three Shmin picks (contact_G, closure_G, and their midpoint) sit on different parts of
+    # a non-linear decline curve, so even though every net pressure shares the same reference
+    # ISIP, the net pressures themselves are not all equal.
+    values = {res2.net_pressure_compliance, res2.net_pressure_tangent,
+              res2.net_pressure_variable}
+    assert len(values) > 1
 
 
-def test_net_pressure_falls_back_to_apparent_isip_when_effective_isip_unavailable(monkeypatch):
+def test_net_pressure_none_when_no_effective_isip_available(monkeypatch):
+    # TODO #4: no apparent-ISIP fallback -- when neither rung of the shared reference
+    # (compliance, then tangent) has an effective ISIP, every net pressure is None.
     td, st, res = _res()
     dg = res.diagnostics
     contact_G, closure_G = _picked_gs(dg)
@@ -157,9 +162,7 @@ def test_net_pressure_falls_back_to_apparent_isip_when_effective_isip_unavailabl
     assert res2.shmin_tangent is not None
     assert res2.shmin_variable is not None
 
-    assert res2.net_pressure_compliance == pytest.approx(
-        interpret.net_pressure(res2.apparent_isip, res2.shmin_compliance))
-    assert res2.net_pressure_tangent == pytest.approx(
-        interpret.net_pressure(res2.apparent_isip, res2.shmin_tangent))
-    assert res2.net_pressure_variable == pytest.approx(
-        interpret.net_pressure(res2.apparent_isip, res2.shmin_variable))
+    assert res2.net_pressure_isip_source == ""
+    assert res2.net_pressure_compliance is None
+    assert res2.net_pressure_tangent is None
+    assert res2.net_pressure_variable is None
