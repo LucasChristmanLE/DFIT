@@ -33,8 +33,12 @@ pressures already subtract their own Shmin from that same reference:
   means the apparent ISIP came out below the P-vs-G extrapolation, which indicates a bad
   ISIP tangent pick, but the tool reports the arithmetic and leaves the judgment to the
   analyst. Clamping was rejected because it breaks the identity above.
-- The C-D rapid-closure scenario produces no value. That scenario has no contact pick and so
-  no effective ISIP, and `shmin_rapid` deliberately never feeds the shared reference.
+- C-C and C-D clear the contact pick, so neither gets a compliance effective ISIP -- but the
+  tangent effective ISIP still exists once the closure pick is made, so the reference falls
+  back to tangent and complexity IS reported for both. `shmin_rapid` never feeds the shared
+  reference, so for C-D the reported complexity is referenced to the tangent effective ISIP
+  and composes with `shmin_tangent`, not with `shmin_rapid`; there is no `net_pressure_rapid`,
+  so for C-D the complexity participates in no reported identity.
 
 ## Changes
 

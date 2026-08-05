@@ -717,3 +717,32 @@ def test_log_row_has_net_pressure_isip_source(tmp_path):
 
     assert "net_pressure_isip_source" in store.LOG_COLUMNS
     assert row["net_pressure_isip_source"] == "compliance"
+
+
+def test_log_row_has_near_wellbore_complexity(tmp_path):
+    td = make_testdata()
+    state = overview_state(td)
+    res = compute_all(state, td)
+    res.near_wellbore_complexity = 107.0
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = os.path.join(str(tmp_path), "well1.csv")
+
+    row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
+
+    # Appended last so an existing dfit_log.csv stays loadable.
+    assert store.LOG_COLUMNS[-1] == "near_wellbore_complexity"
+    assert row["near_wellbore_complexity"] == 107.0
+
+
+def test_load_log_backfills_missing_near_wellbore_complexity(tmp_path):
+    old_columns = [c for c in store.LOG_COLUMNS if c != "near_wellbore_complexity"]
+    old_df = pd.DataFrame([{c: "" for c in old_columns}])
+    old_df.loc[0, "test_id"] = "well1"
+    path = tmp_path / store.LOG_FILENAME
+    old_df.to_csv(path, index=False)
+
+    loaded = store.load_log(str(tmp_path))
+
+    assert list(loaded.columns) == store.LOG_COLUMNS
+    assert loaded.loc[0, "test_id"] == "well1"
+    assert pd.isna(loaded.loc[0, "near_wellbore_complexity"])

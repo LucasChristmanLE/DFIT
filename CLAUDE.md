@@ -188,8 +188,12 @@ Per-test deliverables:
 - **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point.
 - **Shmin, variable** — BHP at the G-time midpoint of the contact and closure picks. This
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
-  other two (effective ISIP, Shmin, closure time, and net pressure each have compliance,
-  tangent, and variable columns in the panel).
+  other two (Shmin, closure time, and net pressure each have compliance, tangent, and
+  variable rows in the panel; effective ISIP shows only the compliance row there).
+- **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
+  near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
+  dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and
+  logged to the `near_wellbore_complexity` column.
 - **Pore pressure** — intercept of the late-time postclosure line on the t^(−1/2) or t^(−1)
   axis chosen by the postclosure scenario.
 
@@ -200,7 +204,19 @@ so a net pressure is blank when neither effective ISIP exists or that method's S
 absent). `compute_all` records the source that fed the reference in
 `DerivedResults.net_pressure_isip_source` ("compliance"/"tangent"/""), logged to the
 `net_pressure_isip_source` column of `dfit_log.csv`. The tangent and variable effective ISIPs
-are kept in the CSV log but are no longer shown in the sidebar panel.
+are kept in the CSV log but are no longer shown in the sidebar panel. Near-wellbore complexity
+subtracts that same shared reference from the apparent ISIP
+(`interpret.near_wellbore_complexity`), which closes the identity `Shmin + net pressure +
+complexity = apparent ISIP` for all three methods. It is one value per test, not one per
+method, set by `model._resolve_net_pressures` alongside the net pressures and guarded on the
+apparent ISIP being present. A negative value is reported as-is -- no warning, no clamp --
+since clamping would break the identity. C-C and C-D clear the contact pick, so neither gets
+a compliance effective ISIP -- but once the closure pick is made the tangent effective ISIP
+still exists, so the shared reference falls back to tangent and complexity IS reported for
+both. `shmin_rapid` never feeds the shared reference, so for C-D the reported complexity is
+referenced to the tangent effective ISIP and composes with `shmin_tangent`, not with
+`shmin_rapid` -- there is no `net_pressure_rapid`, so for C-D the complexity participates in
+no reported identity.
 
 **Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
 ≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense
@@ -291,4 +307,6 @@ select their tab (`ui.py:_open_guide`).
 2) Folder organization is more complex then hoped. The main folder contains Customer folders, with some of those folders containing multiple subfolders with DFIT tests (for customers where we did multiple wells), while others do not have subfolders and the data is just in that first layer. What's best, I reorganize the folder or we modify the script to work for either?
 3) DFIT data is on a shared M: drive. Should I copy it all locally? It's many GB. Should I instead be able to point the program at a different folder and have it print the csv there and generate subfolders with pngs and JSONs?
 4) Remove the variable and tangent method effective ISIPs from the program sidebar but keep them in the results csv for reference. Change all net pressure calculations to use compliance method eff ISIP
-5) Add new calculation "Near-Wellbore Complexity". Shmin + net pressure + complexity = ISIP. I think this would have to be apparent ISIP, since Shmin + net = eff ISIP. Therefore, apparent ISIP - eff ISIP = complexity, right?
+5) ~~Add new calculation "Near-Wellbore Complexity". Shmin + net pressure + complexity = ISIP.~~
+   Done: apparent ISIP − shared reference eff ISIP, panel row "NWB complexity" and log column
+   `near_wellbore_complexity`. See "Net pressure" under Domain and methodology.

@@ -1,5 +1,6 @@
 """DFIT interpretation math: te, ISIP (apparent/effective), Shmin (compliance/tangent),
-net pressure, pore pressure, and auto-suggestion helpers for the interactive picks.
+net pressure, near-wellbore complexity, pore pressure, and auto-suggestion helpers for the
+interactive picks.
 
 Functions here are pure: they take data arrays and pick parameters and return numbers. The
 interactive layer (picks.py / ui.py) owns the pick state and calls these to recompute live.
@@ -179,7 +180,7 @@ def effective_isip(anchor_G: float, anchor_P: float, slope_P_per_G: float) -> fl
 
 
 # --------------------------------------------------------------------------------------------------
-# Shmin + net pressure
+# Shmin + net pressure + near-wellbore complexity
 # --------------------------------------------------------------------------------------------------
 def shmin_compliance(contact_pressure: float, offset: float = COMPLIANCE_OFFSET_PSI) -> float:
     """Compliance-method Shmin = contact pressure - offset (default 75 psi)."""
@@ -193,8 +194,9 @@ def shmin_tangent(closure_pressure: float) -> float:
 
 def shmin_rapid(apparent_isip: float, offset: float = RAPID_CLOSURE_OFFSET_PSI) -> float:
     """C-D "rapid" Shmin = apparent (literal) ISIP - offset (default the 175 psi midpoint of
-    the 100-250 psi range the ResFrac guidelines give as an approximate range; no contact pick
-    or effective ISIP is constructed for this scenario)."""
+    the 100-250 psi range the ResFrac guidelines give as an approximate range; no contact pick,
+    so no compliance effective ISIP, is constructed for this scenario -- the tangent effective
+    ISIP still exists)."""
     return apparent_isip - offset
 
 
@@ -214,6 +216,18 @@ def format_shmin_rapid(value: float, verbose: bool = False) -> str:
 def net_pressure(reference_isip: float, shmin: float) -> float:
     """Net pressure = reference ISIP - Shmin."""
     return reference_isip - shmin
+
+
+def near_wellbore_complexity(apparent_isip: float, reference_isip: float) -> float:
+    """Near-wellbore complexity = apparent ISIP - reference (effective) ISIP: the near-wellbore
+    friction/tortuosity present in the early-decline extrapolation but already dissipated by the
+    time the P-vs-G line is fit. Closes the identity
+
+        Shmin + net pressure + complexity = apparent ISIP
+
+    for every method, since each net pressure subtracts its own Shmin from that same reference.
+    """
+    return apparent_isip - reference_isip
 
 
 # --------------------------------------------------------------------------------------------------

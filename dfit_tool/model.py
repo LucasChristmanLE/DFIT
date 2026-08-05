@@ -230,6 +230,10 @@ class DerivedResults:
     # Which effective-ISIP source fed the shared net-pressure reference:
     # "compliance", "tangent", or "" when no reference was available.
     net_pressure_isip_source: Optional[str] = None
+    # Apparent ISIP - that same shared reference ISIP. One value per test (not per method);
+    # None when either the apparent ISIP or the reference is missing. Negative values are
+    # reported as-is -- see _resolve_net_pressures.
+    near_wellbore_complexity: Optional[float] = None
     delta_closure: Optional[float] = None
     pore_pressure: Optional[float] = None
 
@@ -249,10 +253,13 @@ class DerivedResults:
 
 
 def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
-    """Set net_pressure_* and net_pressure_isip_source on ``res`` from a single shared
-    reference ISIP: compliance eff ISIP, else tangent eff ISIP, else none (no apparent-ISIP
-    fallback). Each net pressure keeps its own per-method Shmin guard, so it stays None when
-    the shared reference is None or its own Shmin is None."""
+    """Resolve the single shared reference ISIP -- compliance eff ISIP, else tangent eff ISIP,
+    else none (no apparent-ISIP fallback) -- and set everything derived from it on ``res``:
+    ``net_pressure_isip_source``, the three ``net_pressure_*``, and
+    ``near_wellbore_complexity``. Each net pressure keeps its own per-method Shmin guard, so it
+    stays None when the shared reference is None or its own Shmin is None. Complexity is
+    guarded on the apparent ISIP instead, and a negative result is returned as-is (no clamp, no
+    warning) so the identity Shmin + net + complexity = apparent ISIP stays exact."""
     if res.effective_isip_compliance is not None:
         ref, res.net_pressure_isip_source = res.effective_isip_compliance, "compliance"
     elif res.effective_isip_tangent is not None:
@@ -260,6 +267,9 @@ def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
     else:
         ref, res.net_pressure_isip_source = None, ""
     if ref is not None:
+        if res.apparent_isip is not None:
+            res.near_wellbore_complexity = interpret.near_wellbore_complexity(res.apparent_isip,
+                                                                              ref)
         if res.shmin_compliance is not None:
             res.net_pressure_compliance = interpret.net_pressure(ref, res.shmin_compliance)
         if res.shmin_tangent is not None:
@@ -344,8 +354,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
                                                           res.resampled.dt))
 
-    # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, no effective ISIP --
-    # a separate field so this doesn't feed net_pressure_compliance/delta_closure, see
+    # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, so no *compliance*
+    # effective ISIP -- the tangent one still exists and still feeds the shared reference; this
+    # is a separate field so it doesn't feed net_pressure_compliance/delta_closure, see
     # ../CLAUDE.md and the plan's decision D2).
     if state.closure_scenario.startswith("C-D") and res.apparent_isip is not None:
         res.shmin_rapid = interpret.shmin_rapid(res.apparent_isip)

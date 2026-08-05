@@ -762,8 +762,10 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
       - C-B adequate: contact = the dP/dG inflection (flattest point of the decline). Also seeds
         ``state.min_dpdg_G`` if unset -- for this scenario the triangle is the inflection *seed*,
         not a rel-min pick (decision 4), and it must exist for the marker to be drawn/draggable.
-      - C-C no-contact / C-D rapid: no contact pick -> Shmin(compliance) and the effective
-        ISIP become None downstream (model.compute_all).
+      - C-C no-contact / C-D rapid: no contact pick -> Shmin(compliance) and the *compliance*
+        effective ISIP become None downstream (model.compute_all). The tangent effective ISIP
+        is unaffected -- it builds off ``closure_G``, so it still feeds the shared
+        net-pressure/complexity reference.
 
     Returns a user-facing hint string when the rule finds nothing (picks left unchanged),
     else None. Degrades to a no-op when diagnostics aren't ready.
