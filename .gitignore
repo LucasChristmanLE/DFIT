@@ -8,3 +8,7 @@ __pycache__/
 LOS DFIT Questionnaire_Abraxas_Caprito 99-202H/
 Refs/
 Copy of ResFrac DFIT Interpretation Template - August 2024.xlsx
+# COGCC shapefile attribute tables for scripts/well_locations.py -- ~100 MB of binaries
+# (Wells.dbf alone is 94 MB), not source
+Well Locations/
+well_locations.xlsx

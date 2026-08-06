@@ -101,6 +101,15 @@ class QuestionnaireResult:
 # --------------------------------------------------------------------------------------------------
 # file discovery
 # --------------------------------------------------------------------------------------------------
+def is_questionnaire_filename(name: str) -> bool:
+    """True if `name` is a candidate questionnaire filename: ``.xlsx`` (case-insensitive),
+    contains "questionnaire" (case-insensitive), and isn't an Excel lock file (``~$...``).
+    Factored out of `find_questionnaire` so other callers (`scripts/triage/features.py`'s
+    well-root grouping) apply the exact same predicate rather than a hand-duplicated copy."""
+    low = name.lower()
+    return low.endswith(".xlsx") and "questionnaire" in low and not name.startswith("~$")
+
+
 def find_questionnaire(data_path: str) -> tuple[str | None, list[str]]:
     """Look for a ``*questionnaire*.xlsx`` next to `data_path`, then in its parent directory.
 
@@ -113,10 +122,7 @@ def find_questionnaire(data_path: str) -> tuple[str | None, list[str]]:
         if not directory or not os.path.isdir(directory):
             continue
         candidates = sorted(
-            name for name in os.listdir(directory)
-            if name.lower().endswith(".xlsx")
-            and "questionnaire" in name.lower()
-            and not name.startswith("~$")
+            name for name in os.listdir(directory) if is_questionnaire_filename(name)
         )
         if candidates:
             warns = []

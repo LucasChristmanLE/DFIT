@@ -310,7 +310,7 @@ def test_open_folder_path_failed_auto_open_leaves_current_entry_none(tmp_path):
     assert len(stub._load_test_calls) == 1
     # _open_folder_path calls _update_folder_controls itself -- _load_test's early return
     # (simulated above) never reaches its own call, so this is the only thing that resyncs the
-    # Source/Mark/Save & Next controls to the now-None current_entry.
+    # Source combobox and Skip-test button to the now-None current_entry.
     assert stub._update_folder_controls_calls == [True]
     assert stub.folder_root == str(tmp_path)
     assert len(stub.queue_entries) == 2  # the queue is still populated despite the failed load
@@ -497,7 +497,7 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
 
 
 # --------------------------------------------------------------------------------------------------
-# _next_new_index: the pure selection logic behind Save & Next's auto-advance.
+# _next_new_index: the pure selection logic behind Finish's and Skip test's auto-advance.
 # --------------------------------------------------------------------------------------------------
 def test_next_new_index_finds_next_after_current():
     assert _next_new_index(["done", "new", "in_progress"], 0) == 1
@@ -526,7 +526,7 @@ def test_next_new_index_empty_statuses_is_none():
 
 
 # --------------------------------------------------------------------------------------------------
-# _update_folder_controls: the one sync point for Source/Mark/Save & Next.
+# _update_folder_controls: the one sync point for the Source combobox and the Skip-test button.
 # --------------------------------------------------------------------------------------------------
 class _FakeCombo:
     def __init__(self):
@@ -542,15 +542,24 @@ class _FakeCombo:
             self.state_ = kw["state"]
 
 
+class _FakeButton:
+    def __init__(self):
+        self.state_ = None
+        self.text = None
+
+    def config(self, **kw):
+        if "state" in kw:
+            self.state_ = kw["state"]
+        if "text" in kw:
+            self.text = kw["text"]
+
+
 def _folder_controls_stub():
     stub = types.SimpleNamespace()
     stub.var_source = _Var()
     stub.cmb_source = _FakeCombo()
-    stub.var_mark = _Var()
-    stub.cmb_mark = _FakeCombo()
-    stub.btn_save_next = types.SimpleNamespace(state_=None,
-                                                config=lambda **kw: setattr(
-                                                    stub.btn_save_next, "state_", kw.get("state")))
+    stub.btn_skip_test = _FakeButton()
+    stub._update_skip_test_btn = types.MethodType(DfitApp._update_skip_test_btn, stub)
     stub._update_folder_controls = types.MethodType(DfitApp._update_folder_controls, stub)
     return stub
 
@@ -564,25 +573,23 @@ def test_update_folder_controls_single_file_mode_disables_and_clears():
     assert stub.var_source.value == ""
     assert stub.cmb_source.values == []
     assert stub.cmb_source.state_ == "disabled"
-    assert stub.var_mark.value == ""
-    assert stub.cmb_mark.state_ == "disabled"
-    assert stub.btn_save_next.state_ == "disabled"
+    assert stub.btn_skip_test.state_ == "disabled"
+    assert stub.btn_skip_test.text == "Skip test"
 
 
 def test_update_folder_controls_folder_mode_multi_source_enables_readonly():
     stub = _folder_controls_stub()
     entry = store.TestEntry(test_id="w1", folder="f", csv_path="a.csv", dbs_path="a.dbs")
     stub.current_entry = entry
-    stub.state = PickState(active_source="dbs", explicit_status="done")
+    stub.state = PickState(active_source="dbs", explicit_status="skipped")
 
     stub._update_folder_controls()
 
     assert stub.cmb_source.values == ["CSV", "DBS"]
     assert stub.var_source.value == "DBS"
     assert stub.cmb_source.state_ == "readonly"
-    assert stub.cmb_mark.state_ == "readonly"
-    assert stub.var_mark.value == "done"
-    assert stub.btn_save_next.state_ == "normal"
+    assert stub.btn_skip_test.state_ == "normal"
+    assert stub.btn_skip_test.text == "Unskip test"
 
 
 def test_update_folder_controls_folder_mode_single_source_disables_source_combo():
@@ -595,44 +602,8 @@ def test_update_folder_controls_folder_mode_single_source_disables_source_combo(
 
     assert stub.cmb_source.values == ["CSV"]
     assert stub.cmb_source.state_ == "disabled"
-    assert stub.var_mark.value == ""
-    assert stub.btn_save_next.state_ == "normal"
-
-
-# --------------------------------------------------------------------------------------------------
-# _on_mark_change: an explicit done/skipped override -- reflected into entry.status and the
-# queue row, no log write.
-# --------------------------------------------------------------------------------------------------
-def test_on_mark_change_sets_explicit_status_and_refreshes_row():
-    entry = store.TestEntry(test_id="w1", folder="f")
-    stub = types.SimpleNamespace()
-    stub.state = PickState(step_status={"overview": "done"})
-    stub.current_entry = entry
-    stub.var_mark = _Var("skipped")
-    stub._refresh_calls = []
-    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
-    stub._on_mark_change = types.MethodType(DfitApp._on_mark_change, stub)
-
-    stub._on_mark_change()
-
-    assert stub.state.explicit_status == "skipped"
-    assert entry.status == "skipped"
-    assert stub._refresh_calls == [entry]
-
-
-def test_on_mark_change_empty_selection_clears_explicit_status():
-    entry = store.TestEntry(test_id="w1", folder="f")
-    stub = types.SimpleNamespace()
-    stub.state = PickState(explicit_status="done", step_status={})
-    stub.current_entry = entry
-    stub.var_mark = _Var("")
-    stub._refresh_queue_row = lambda e: None
-    stub._on_mark_change = types.MethodType(DfitApp._on_mark_change, stub)
-
-    stub._on_mark_change()
-
-    assert stub.state.explicit_status is None
-    assert entry.status == "new"
+    assert stub.btn_skip_test.state_ == "normal"
+    assert stub.btn_skip_test.text == "Skip test"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -685,10 +656,263 @@ def test_on_source_change_accept_calls_load_test_with_force_reset(monkeypatch):
 
 
 # --------------------------------------------------------------------------------------------------
-# _save_and_next: only reachable in folder mode. Saves picks + upserts dfit_log.csv, refreshes
-# the queue row, and advances to the next "new" entry (or reports the queue is exhausted).
+# _advance_queue: the shared auto-advance tail of Finish and Skip test. Advances to the next
+# "new" entry (scanning circularly from just after the current one), or reports the queue is
+# exhausted.
 # --------------------------------------------------------------------------------------------------
-def _save_and_next_stub(tmp_path, second_status="new"):
+def test_advance_queue_loads_next_new_entry():
+    entry1 = store.TestEntry(test_id="w1", folder="f1", status="done")
+    entry2 = store.TestEntry(test_id="w2", folder="f2", status="new")
+    stub = types.SimpleNamespace()
+    stub.current_entry = entry1
+    stub.queue_entries = [entry1, entry2]
+    stub._load_test_calls = []
+    stub._load_test = lambda e: stub._load_test_calls.append(e)
+    stub._advance_queue = types.MethodType(DfitApp._advance_queue, stub)
+
+    stub._advance_queue()
+
+    assert stub._load_test_calls == [entry2]
+
+
+def test_advance_queue_reports_no_new_tests_remain(monkeypatch):
+    info_calls = []
+    monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **kw: info_calls.append((a, kw)))
+    entry1 = store.TestEntry(test_id="w1", folder="f1", status="done")
+    stub = types.SimpleNamespace()
+    stub.current_entry = entry1
+    stub.queue_entries = [entry1]
+    stub._load_test_calls = []
+    stub._load_test = lambda e: stub._load_test_calls.append(e)
+    stub._advance_queue = types.MethodType(DfitApp._advance_queue, stub)
+
+    stub._advance_queue()
+
+    assert stub._load_test_calls == []
+    assert len(info_calls) == 1
+
+
+# --------------------------------------------------------------------------------------------------
+# _finish / _skip_test: the folder branch saves picks only via store.save_picks_for (no
+# <stem>_picks.json duplicate), upserts dfit_log.csv, and (unlike single-file mode) advances the
+# queue via _advance_queue. The second queue entry (`entry2`) lets each test choose, via
+# `second_status`, whether an advance target exists.
+# --------------------------------------------------------------------------------------------------
+def _finish_stub(tmp_path, folder_mode, monkeypatch, second_status="new"):
+    png_calls = []
+
+    def _fake_save_pngs(*a, **kw):
+        png_calls.append(1)
+        return []
+    monkeypatch.setattr(ui.plots, "save_all_step_pngs", _fake_save_pngs)
+    data_dir = tmp_path / "w1" if folder_mode else tmp_path
+    if folder_mode:
+        data_dir.mkdir()
+    csv_path = data_dir / "w1.csv"
+    csv_path.write_text("t,p\n")
+
+    td = make_testdata()
+    td.path = str(csv_path)
+    state = overview_state(td)
+    res = compute_all(state, td)
+
+    stub = types.SimpleNamespace()
+    stub.td = td
+    stub.state = state
+    stub.res = res
+    stub.step = "porepressure"
+    stub._views = {}
+    stub._png_calls = png_calls
+    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
+    stub.refresh = lambda: None
+    stub._refresh_calls = []
+    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+    stub._update_skip_test_btn = lambda: None
+    # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
+    # (real _finish/_skip_test both sync these before refresh()).
+    stub.var_pressure = _Var(state.pressure_col)
+    stub.var_rate = _Var(state.rate_col)
+    stub.var_volume = _Var(state.volume_col)
+    stub.var_isbhp = _Var(state.pressure_is_bhp)
+    stub.var_density = _Var(state.density_ppg)
+    stub.var_tvd = _Var(state.tvd_ft)
+    stub.var_well = _Var(state.well_name)
+    stub.var_formation = _Var(state.formation)
+    stub.var_alpha = _Var(state.alpha)
+    stub.var_step = _Var(state.resample_step)
+    stub._sync_state_from_widgets = types.MethodType(DfitApp._sync_state_from_widgets, stub)
+
+    entry2 = None
+    if folder_mode:
+        entry = store.TestEntry(test_id="w1", folder=str(data_dir), csv_path=str(csv_path))
+        stub.current_entry = entry
+        stub.folder_root = str(tmp_path)
+        stub.log_df = store.load_log(str(tmp_path))
+        entry2_dir = tmp_path / "w2"
+        entry2_dir.mkdir()
+        csv2 = entry2_dir / "w2.csv"
+        csv2.write_text("t,p\n")
+        entry2 = store.TestEntry(test_id="w2", folder=str(entry2_dir), csv_path=str(csv2),
+                                 status=second_status)
+        stub.queue_entries = [entry, entry2]
+        stub._load_test_calls = []
+        stub._load_test = lambda e: stub._load_test_calls.append(e)
+    else:
+        entry = None
+        stub.current_entry = None
+        stub.folder_root = None
+        stub.log_df = None
+
+    stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
+    stub._advance_queue = types.MethodType(DfitApp._advance_queue, stub)
+    stub._finish = types.MethodType(DfitApp._finish, stub)
+    stub._skip_test = types.MethodType(DfitApp._skip_test, stub)
+    return stub, entry, data_dir, entry2
+
+
+def test_finish_folder_branch_saves_via_store_and_writes_log(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+
+    stub._finish()
+
+    assert os.path.exists(entry.picks_path)
+    assert not (data_dir / "w1_picks.json").exists()  # no stem-JSON duplicate in folder mode
+
+    log_path = os.path.join(str(tmp_path), store.LOG_FILENAME)
+    assert os.path.exists(log_path)
+    log_df = store.load_log(str(tmp_path))
+    assert "w1" in log_df["test_id"].tolist()
+    assert stub._refresh_calls == [entry]
+
+
+def test_finish_folder_branch_advances_to_next_new_entry(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+
+    stub._finish()
+
+    assert stub._load_test_calls == [entry2]
+    assert stub._png_calls == [1]  # Finish still exports PNGs, unlike Skip test
+
+
+def test_finish_folder_branch_reports_no_new_tests_remain(tmp_path, monkeypatch):
+    info_calls = []
+    monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **kw: info_calls.append((a, kw)))
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch,
+                                                 second_status="done")
+
+    stub._finish()
+
+    assert stub._load_test_calls == []
+    assert len(info_calls) == 1
+
+
+def test_finish_single_file_branch_writes_stem_json_no_log(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=False, monkeypatch=monkeypatch)
+
+    stub._finish()
+
+    assert (data_dir / "w1_picks.json").exists()
+    assert not (data_dir / store.LOG_FILENAME).exists()
+
+
+def test_finish_preserves_skip_on_last_step(tmp_path, monkeypatch):
+    # "Skip >" on the last step ("porepressure") writes step_status["porepressure"] =
+    # "skipped", then next_step clamps in place so the button reads "Finish". Finish must not
+    # rewrite that "skipped" back to "done" -- the test should still report skipped overall.
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    for key in store.STEP_KEYS:
+        stub.state.step_status[key] = "done"
+    stub.state.step_status["porepressure"] = "skipped"
+
+    stub._finish()
+
+    assert stub.state.step_status["porepressure"] == "skipped"
+    loaded = store.load_picks_for(entry)
+    assert loaded.step_status["porepressure"] == "skipped"
+    assert store.status_for(loaded) == "skipped"
+    assert entry.status == "skipped"
+
+
+def test_finish_preserves_skip_under_pcf_on_loglog(tmp_path, monkeypatch):
+    # Under PC-F, _goto redirects a "porepressure" destination back to "loglog", so Finish can
+    # land on self.step == "loglog" with that step already flagged "skipped" -- same hole as
+    # the last-step case above, just via a different step key.
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    stub.step = "loglog"
+    for key in store.STEP_KEYS:
+        stub.state.step_status[key] = "done"
+    stub.state.step_status["loglog"] = "skipped"
+
+    stub._finish()
+
+    assert stub.state.step_status["loglog"] == "skipped"
+    loaded = store.load_picks_for(entry)
+    assert loaded.step_status["loglog"] == "skipped"
+    assert store.status_for(loaded) == "skipped"
+    assert entry.status == "skipped"
+
+
+def test_finish_unparks_whole_test_skip(tmp_path, monkeypatch):
+    # A test previously flagged via Skip test (explicit_status == "skipped") that is later
+    # walked to completion and Finished should report "done", not the stale park flag.
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    stub.state.explicit_status = "skipped"
+    for key in store.STEP_KEYS:
+        stub.state.step_status[key] = "done"
+
+    stub._finish()
+
+    assert stub.state.explicit_status is None
+    loaded = store.load_picks_for(entry)
+    assert loaded.explicit_status is None
+    assert store.status_for(loaded) == "done"
+    assert entry.status == "done"
+
+
+def test_skip_test_flags_writes_skipped_status_and_advances(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+
+    stub._skip_test()
+
+    loaded = store.load_picks_for(entry)
+    assert loaded.explicit_status == "skipped"
+    assert entry.status == "skipped"
+
+    log_df = store.load_log(str(tmp_path))
+    row = log_df[log_df["test_id"] == "w1"].iloc[0]
+    assert row["status"] == "skipped"
+
+    assert stub._load_test_calls == [entry2]
+    assert stub._png_calls == []  # a skipped test produces no plots
+
+
+def test_skip_test_toggle_clears_flag_and_does_not_advance(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    stub.state.explicit_status = "skipped"
+
+    stub._skip_test()
+
+    loaded = store.load_picks_for(entry)
+    assert loaded.explicit_status is None
+    assert stub._load_test_calls == []
+
+
+def test_skip_test_noop_in_single_file_mode(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=False, monkeypatch=monkeypatch)
+
+    stub._skip_test()  # must not raise despite no queue/log attributes existing
+
+    assert not (data_dir / store.LOG_FILENAME).exists()
+
+
+# --------------------------------------------------------------------------------------------------
+# _skip_test with REAL DfitApp.refresh() (not the `refresh = lambda: None` stand-in _finish_stub
+# uses): this is the regression guard the since-removed test_save_and_next_captures_
+# unapplied_widget_edits used to provide for Save & Next, ported onto Skip test now that it
+# absorbed that button's "save + log + advance" responsibility. Same headless-Agg real-Figure
+# plumbing as test_view_state.py's _refresh_stub.
+# --------------------------------------------------------------------------------------------------
+def _skip_test_real_refresh_stub(tmp_path):
     entry1_dir = tmp_path / "w1"
     entry1_dir.mkdir()
     csv1 = entry1_dir / "w1.csv"
@@ -699,8 +923,7 @@ def _save_and_next_stub(tmp_path, second_status="new"):
     entry2_dir.mkdir()
     csv2 = entry2_dir / "w2.csv"
     csv2.write_text("t,p\n")
-    entry2 = store.TestEntry(test_id="w2", folder=str(entry2_dir), csv_path=str(csv2),
-                             status=second_status)
+    entry2 = store.TestEntry(test_id="w2", folder=str(entry2_dir), csv_path=str(csv2))
 
     td = make_testdata()
     td.path = str(csv1)
@@ -717,10 +940,9 @@ def _save_and_next_stub(tmp_path, second_status="new"):
     stub.folder_root = str(tmp_path)
     stub.log_df = store.load_log(str(tmp_path))
     stub.queue_entries = [entry1, entry2]
-    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "save and next notes")
-    stub.var_mark = _Var("done")
+    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "skip test notes")
     # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
-    # (real _save_and_next now syncs these before refresh()/the log write).
+    # (real _skip_test syncs these before refresh()/the log write, same as _finish).
     stub.var_pressure = _Var(state.pressure_col)
     stub.var_rate = _Var(state.rate_col)
     stub.var_volume = _Var(state.volume_col)
@@ -752,69 +974,42 @@ def _save_and_next_stub(tmp_path, second_status="new"):
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     stub._refresh_calls = []
     stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
+    stub._update_skip_test_btn = lambda: None
     stub._load_test_calls = []
     stub._load_test = lambda e: stub._load_test_calls.append(e)
     stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
-    stub._save_and_next = types.MethodType(DfitApp._save_and_next, stub)
+    stub._advance_queue = types.MethodType(DfitApp._advance_queue, stub)
+    stub._skip_test = types.MethodType(DfitApp._skip_test, stub)
     return stub, entry1, entry2
 
 
-def test_save_and_next_noop_when_not_in_folder_mode():
-    stub = types.SimpleNamespace()
-    stub.current_entry = None
-    stub.td = object()
-    stub._save_and_next = types.MethodType(DfitApp._save_and_next, stub)
-
-    stub._save_and_next()  # must not raise despite no other attribute existing
-
-
-def test_save_and_next_writes_picks_and_log_then_advances(tmp_path):
-    stub, entry1, entry2 = _save_and_next_stub(tmp_path)
-
-    stub._save_and_next()
-
-    assert os.path.exists(entry1.picks_path)
-    loaded = store.load_picks_for(entry1)
-    assert loaded.notes == "save and next notes"
-    assert loaded.explicit_status == "done"
-    assert entry1.status == store.status_for(loaded) == "done"
-
-    log_path = os.path.join(str(tmp_path), store.LOG_FILENAME)
-    assert os.path.exists(log_path)
-    log_df = store.load_log(str(tmp_path))
-    row = log_df[log_df["test_id"] == "w1"].iloc[0]
-    assert row["status"] == "done"
-    assert row["notes"] == "save and next notes"
-
-    assert stub._refresh_calls == [entry1]
-    assert stub._load_test_calls == [entry2]
-
-
-def test_save_and_next_captures_unapplied_widget_edits(tmp_path):
-    """Same regression guard as _save_current_queue_picks' version, but for Save & Next --
-    which also feeds the log row, so both the saved picks JSON and the dfit_log.csv row must
-    reflect the NEW widget values rather than the OLD ones still sitting in self.state."""
-    stub, entry1, entry2 = _save_and_next_stub(tmp_path)
+def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
+    """Same regression guard as the since-removed test_save_and_next_captures_unapplied_
+    widget_edits: the saved picks JSON and the dfit_log.csv row must reflect the NEW widget
+    values, not the OLD ones still sitting in self.state, and non-empty notes must round-trip
+    into the saved picks."""
+    stub, entry1, entry2 = _skip_test_real_refresh_stub(tmp_path)
     stub.state.density_ppg = 8.0
     stub.state.well_name = "Old Well"
     stub.state.formation = "Old Formation"
     stub.var_density.set(9.3)
     stub.var_well.set("New Well 1H")
     stub.var_formation.set("Eagle Ford")
-    # pressure_is_bhp alone flips ChannelConfig.bhp_inputs_ready() regardless of density/tvd,
-    # so this is a res-DERIVED column (build_log_row reads res.pressure_is_bhp, not
-    # state.pressure_is_bhp directly) -- it only reflects the new widget value if _save_and_next's
+    # pressure_is_bhp alone flips ChannelConfig.bhp_inputs_ready() regardless of density/tvd, so
+    # this is a res-DERIVED column (build_log_row reads res.pressure_is_bhp, not
+    # state.pressure_is_bhp directly) -- it only reflects the new widget value if _skip_test's
     # refresh() actually recomputed self.res on the synced state, not just the sync itself.
     assert stub.state.pressure_is_bhp is False
     stub.var_isbhp.set(True)
 
-    stub._save_and_next()
+    stub._skip_test()
 
     loaded = store.load_picks_for(entry1)
     assert loaded.density_ppg == 9.3
     assert loaded.well_name == "New Well 1H"
     assert loaded.formation == "Eagle Ford"
     assert loaded.pressure_is_bhp is True
+    assert loaded.notes == "skip test notes"
 
     log_df = store.load_log(str(tmp_path))
     row = log_df[log_df["test_id"] == "w1"].iloc[0]
@@ -822,96 +1017,4 @@ def test_save_and_next_captures_unapplied_widget_edits(tmp_path):
     assert row["formation"] == "Eagle Ford"
     assert row["fluid_density"] == 9.3
     assert row["pressure_source"] == "BHP"
-
-
-def test_save_and_next_reports_no_new_tests_remain(tmp_path, monkeypatch):
-    info_calls = []
-    monkeypatch.setattr(ui.messagebox, "showinfo", lambda *a, **kw: info_calls.append((a, kw)))
-    stub, entry1, entry2 = _save_and_next_stub(tmp_path, second_status="done")
-
-    stub._save_and_next()
-
-    assert stub._load_test_calls == []
-    assert len(info_calls) == 1
-
-
-# --------------------------------------------------------------------------------------------------
-# _finish: the folder branch saves picks only via store.save_picks_for (no <stem>_picks.json
-# duplicate) and upserts dfit_log.csv; the single-file branch is unchanged -- stem JSON, PNG
-# folder, no log (regression guard for the mode gating).
-# --------------------------------------------------------------------------------------------------
-def _finish_stub(tmp_path, folder_mode, monkeypatch):
-    monkeypatch.setattr(ui.plots, "save_all_step_pngs", lambda *a, **kw: [])
-    data_dir = tmp_path / "w1" if folder_mode else tmp_path
-    if folder_mode:
-        data_dir.mkdir()
-    csv_path = data_dir / "w1.csv"
-    csv_path.write_text("t,p\n")
-
-    td = make_testdata()
-    td.path = str(csv_path)
-    state = overview_state(td)
-    res = compute_all(state, td)
-
-    stub = types.SimpleNamespace()
-    stub.td = td
-    stub.state = state
-    stub.res = res
-    stub.step = "porepressure"
-    stub._views = {}
-    stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
-    stub.refresh = lambda: None
-    stub._refresh_calls = []
-    stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)
-    # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
-    # (real _finish now syncs these before refresh()).
-    stub.var_pressure = _Var(state.pressure_col)
-    stub.var_rate = _Var(state.rate_col)
-    stub.var_volume = _Var(state.volume_col)
-    stub.var_isbhp = _Var(state.pressure_is_bhp)
-    stub.var_density = _Var(state.density_ppg)
-    stub.var_tvd = _Var(state.tvd_ft)
-    stub.var_well = _Var(state.well_name)
-    stub.var_formation = _Var(state.formation)
-    stub.var_alpha = _Var(state.alpha)
-    stub.var_step = _Var(state.resample_step)
-    stub._sync_state_from_widgets = types.MethodType(DfitApp._sync_state_from_widgets, stub)
-
-    if folder_mode:
-        entry = store.TestEntry(test_id="w1", folder=str(data_dir), csv_path=str(csv_path))
-        stub.current_entry = entry
-        stub.folder_root = str(tmp_path)
-        stub.log_df = store.load_log(str(tmp_path))
-    else:
-        entry = None
-        stub.current_entry = None
-        stub.folder_root = None
-        stub.log_df = None
-
-    stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
-    stub._finish = types.MethodType(DfitApp._finish, stub)
-    return stub, entry, data_dir
-
-
-def test_finish_folder_branch_saves_via_store_and_writes_log(tmp_path, monkeypatch):
-    stub, entry, data_dir = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
-
-    stub._finish()
-
-    assert os.path.exists(entry.picks_path)
-    assert not (data_dir / "w1_picks.json").exists()  # no stem-JSON duplicate in folder mode
-
-    log_path = os.path.join(str(tmp_path), store.LOG_FILENAME)
-    assert os.path.exists(log_path)
-    log_df = store.load_log(str(tmp_path))
-    assert "w1" in log_df["test_id"].tolist()
-    assert stub._refresh_calls == [entry]
-
-
-def test_finish_single_file_branch_writes_stem_json_no_log(tmp_path, monkeypatch):
-    stub, entry, data_dir = _finish_stub(tmp_path, folder_mode=False, monkeypatch=monkeypatch)
-
-    stub._finish()
-
-    assert (data_dir / "w1_picks.json").exists()
-    assert not (data_dir / store.LOG_FILENAME).exists()
+    assert row["notes"] == "skip test notes"

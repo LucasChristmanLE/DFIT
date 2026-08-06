@@ -31,13 +31,13 @@ def test_pickstate_new_fields_default():
 
 def test_pickstate_roundtrip_preserves_new_fields(tmp_path):
     path = tmp_path / "picks.json"
-    st = PickState(active_source="dbs", explicit_status="done")
+    st = PickState(active_source="dbs", explicit_status="skipped")
     st.to_json(str(path))
 
     loaded = PickState.from_json(str(path))
 
     assert loaded.active_source == "dbs"
-    assert loaded.explicit_status == "done"
+    assert loaded.explicit_status == "skipped"
 
 
 def test_decode_without_new_fields_takes_defaults():
@@ -428,17 +428,28 @@ def test_status_for_all_done_is_done():
     assert store.status_for(st) == "done"
 
 
-def test_status_for_done_and_skipped_mix_is_done():
+def test_status_for_done_and_skipped_mix_is_skipped():
+    # All six steps accounted for, but one was a per-step Skip > -- the derivation now reports
+    # that as "skipped" rather than "done" (a step_status skip is a real user decision, unlike
+    # the PC-F clause below, which is a scenario the workflow forces rather than chooses).
     st = PickState(step_status={
         "overview": "done", "isip": "done", "gfunction": "skipped",
         "tangent": "done", "loglog": "done", "porepressure": "done",
     })
-    assert store.status_for(st) == "done"
+    assert store.status_for(st) == "skipped"
 
 
-def test_status_for_explicit_status_done_overrides():
+def test_status_for_one_step_skipped_others_not_visited_is_in_progress():
+    st = PickState(step_status={"overview": "skipped"})
+    assert store.status_for(st) == "in_progress"
+
+
+def test_status_for_legacy_explicit_status_done_does_not_override():
+    # A pre-this-change save could carry explicit_status == "done" from the since-removed Mark
+    # combobox; _decode normalizes that to None on load (see test_pcf_skip.py), but status_for
+    # itself no longer trusts anything but "skipped" either way -- belt-and-braces.
     st = PickState(step_status={}, explicit_status="done")
-    assert store.status_for(st) == "done"
+    assert store.status_for(st) == "new"
 
 
 def test_status_for_explicit_status_skipped_overrides():
@@ -452,6 +463,20 @@ def test_status_for_pcf_without_porepressure_step_is_done():
         step_status={
             "overview": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done",
+        },
+    )
+    assert store.status_for(st) == "done"
+
+
+def test_status_for_pcf_with_stale_porepressure_skip_entry_is_still_done():
+    # A session where the analyst hit Skip on pore pressure before choosing PC-F leaves a stale
+    # step_status["porepressure"] == "skipped" entry -- not a user decision worth reporting once
+    # PC-F makes the step moot, so it must not drag the derived status down to "skipped".
+    st = PickState(
+        postclosure_scenario="PC-F no peak",
+        step_status={
+            "overview": "done", "isip": "done", "gfunction": "done",
+            "tangent": "done", "loglog": "done", "porepressure": "skipped",
         },
     )
     assert store.status_for(st) == "done"
@@ -604,11 +629,11 @@ def test_list_tests_keeps_orphaned_log_rows(tmp_path):
 def test_list_tests_recomputes_status_from_picks(tmp_path):
     (tmp_path / "well1.csv").write_text("a")
     entry_stub = store.TestEntry(test_id="well1", folder=str(tmp_path))
-    store.save_picks_for(entry_stub, PickState(explicit_status="done"))
+    store.save_picks_for(entry_stub, PickState(explicit_status="skipped"))
 
     entries, _ = store.list_tests(str(tmp_path))
 
-    assert entries[0].status == "done"
+    assert entries[0].status == "skipped"
 
 
 # --------------------------------------------------------------------------------------------------

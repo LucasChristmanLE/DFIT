@@ -80,11 +80,14 @@ class PickState:
     # from_json like everything else in this dataclass. ---
     step_status: dict[str, str] = field(default_factory=dict)
 
-    # --- folder mode (store.py): which data file this test's picks were made against, and a
-    # user override of the recomputed status (store.status_for). Old saves lack both keys and
-    # take these defaults via _decode's known-field filter, no migration needed. ---
+    # --- folder mode (store.py): which data file this test's picks were made against, and the
+    # whole-test Skip-test flag -- a user override of the recomputed status (store.status_for)
+    # for the one thing step_status can't express: parking a test outright regardless of how
+    # far its steps got. "done" is never a manual choice; it is always derived from step_status.
+    # Old saves lack both keys and take these defaults via _decode's known-field filter, no
+    # migration needed (a legacy "done" value is normalized to None in _decode below). ---
     active_source: str = "csv"  # "csv" or "dbs"
-    explicit_status: Optional[str] = None  # "done"/"skipped"/None
+    explicit_status: Optional[str] = None  # "skipped"/None
 
     def channel_config(self) -> ChannelConfig:
         return ChannelConfig(
@@ -143,6 +146,11 @@ def _decode(d: dict) -> PickState:
     }
     if d.get("postclosure_scenario") in pc_label_migrations:
         d["postclosure_scenario"] = pc_label_migrations[d["postclosure_scenario"]]
+    # Old saves made with the since-removed Mark combobox can carry explicit_status == "done";
+    # that value space narrowed to "skipped"/None (see the field comment above), so normalize
+    # the stale "done" to None rather than let it linger as a value no other code expects.
+    if d.get("explicit_status") == "done":
+        d["explicit_status"] = None
     # Filter to known field names so an old save (missing step_status -> falls to its default)
     # or a foreign/future save (extra keys we don't understand yet) never raises a TypeError
     # from an unexpected/missing keyword argument.

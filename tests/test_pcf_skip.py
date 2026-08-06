@@ -74,6 +74,20 @@ def test_decode_leaves_unrecognized_postclosure_labels_unchanged(label):
     assert state.postclosure_scenario == label
 
 
+def test_decode_normalizes_legacy_explicit_status_done_to_none():
+    # Old saves made with the since-removed Mark combobox could carry explicit_status ==
+    # "done"; that field's value space narrowed to "skipped"/None (model.py), so a legacy
+    # "done" must decode to None rather than linger as a value store.status_for no longer
+    # trusts (belt-and-braces alongside store.status_for's own guard, see test_store.py).
+    state = _decode({"explicit_status": "done"})
+    assert state.explicit_status is None
+
+
+def test_decode_leaves_explicit_status_skipped_unchanged():
+    state = _decode({"explicit_status": "skipped"})
+    assert state.explicit_status == "skipped"
+
+
 def test_pickstate_from_json_roundtrip_migrates_label(tmp_path):
     path = tmp_path / "picks.json"
     st = PickState(postclosure_scenario="PC-F none")

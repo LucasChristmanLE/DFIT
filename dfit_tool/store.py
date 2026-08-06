@@ -241,28 +241,35 @@ def save_picks_for(entry: TestEntry, state: PickState) -> None:
 # status
 # --------------------------------------------------------------------------------------------------
 def status_for(state: Optional[PickState]) -> str:
-    """The folder-mode status for `state`: "new" (no picks / never visited a step), "done",
-    "in_progress", or "skipped" -- the latter two only reachable through explicit_status, the
-    user override from the Mark combobox."""
+    """The folder-mode status for `state`: "new" (no picks / never visited a step), "done" and
+    "in_progress" are purely derived from step_status -- all six steps accounted for and none
+    skipped is "done", all accounted for with >=1 skipped is "skipped", otherwise
+    "in_progress" -- except "skipped" can also come from explicit_status, the whole-test
+    Skip-test button, which overrides the derivation at any point in the workflow regardless of
+    how far the steps got."""
     if state is None:
         return "new"
-    if state.explicit_status in ("done", "skipped"):
-        return state.explicit_status
+    if state.explicit_status == "skipped":  # the whole-test Skip button, any point in the workflow
+        return "skipped"
     if not any(k in state.step_status for k in STEP_KEYS):
         return "new"
+    pp_auto = model.porepressure_skipped(state)
 
-    def _step_complete(key: str) -> bool:
-        if state.step_status.get(key) in ("done", "skipped"):
+    def _accounted(key: str) -> bool:
+        # PC-F ("no peak") skips the pore-pressure step end to end, so it may have no
+        # step_status entry at all -- and any entry it does have (from a session where the
+        # analyst hit Skip before choosing PC-F) is not a user decision worth reporting.
+        if key == "porepressure" and pp_auto:
             return True
-        # PC-F ("no peak") skips the pore-pressure step end to end, so it never gets a
-        # step_status entry -- without this, a PC-F test could never reach "done".
-        if key == "porepressure" and model.porepressure_skipped(state):
-            return True
-        return False
+        return state.step_status.get(key) in ("done", "skipped")
 
-    if all(_step_complete(k) for k in STEP_KEYS):
-        return "done"
-    return "in_progress"
+    def _user_skipped(key: str) -> bool:
+        return not (key == "porepressure" and pp_auto) \
+            and state.step_status.get(key) == "skipped"
+
+    if not all(_accounted(k) for k in STEP_KEYS):
+        return "in_progress"
+    return "skipped" if any(_user_skipped(k) for k in STEP_KEYS) else "done"
 
 
 # --------------------------------------------------------------------------------------------------

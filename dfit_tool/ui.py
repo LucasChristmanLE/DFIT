@@ -143,11 +143,11 @@ def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> 
 
 def _next_new_index(statuses: list[str], current_index: int) -> Optional[int]:
     """The index of the next ``"new"``-status entry in ``statuses``, scanning circularly
-    starting just after ``current_index`` -- the pure selection logic behind Save & Next's
-    auto-advance. Deliberately never revisits ``current_index`` itself even if its own status
-    is ``"new"`` (its work was just saved this call), so "the only new entry is the current
-    one" correctly reports no candidate. Returns None if ``statuses`` is empty or no other
-    entry is ``"new"``."""
+    starting just after ``current_index`` -- the pure selection logic behind Finish's and
+    Skip test's auto-advance. Deliberately never revisits ``current_index`` itself even if its
+    own status is ``"new"`` (its work was just saved this call), so "the only new entry is the
+    current one" correctly reports no candidate. Returns None if ``statuses`` is empty or no
+    other entry is ``"new"``."""
     n = len(statuses)
     for offset in range(1, n):
         i = (current_index + offset) % n
@@ -302,21 +302,6 @@ class DfitApp:
         ttk.Button(cfg2, text="Save picks…", command=self._save_picks).pack(side="right", padx=4)
         ttk.Button(cfg2, text="Load picks…", command=self._load_picks).pack(side="right")
 
-        # Folder mode only: mark the current test's queue status and roll it (plus every
-        # computed value) into dfit_log.csv. Disabled/cleared in single-file mode --
-        # _update_folder_controls is the one sync point for both widgets' state/values. Packed
-        # right-to-left (each subsequent pack lands to the left of the one before it), so this
-        # order reads left-to-right as "Mark: [combo] [Save & Next]", just left of Load/Save.
-        self.btn_save_next = ttk.Button(cfg2, text="Save && Next", command=self._save_and_next,
-                                        state="disabled")
-        self.btn_save_next.pack(side="right", padx=4)
-        self.var_mark = tk.StringVar()
-        self.cmb_mark = ttk.Combobox(cfg2, textvariable=self.var_mark,
-                                     values=["", "done", "skipped"], width=8, state="disabled")
-        self.cmb_mark.pack(side="right")
-        self.cmb_mark.bind("<<ComboboxSelected>>", lambda e: self._on_mark_change())
-        ttk.Label(cfg2, text="Mark:").pack(side="right", padx=(8, 2))
-
         # Provenance for the density/TVD prefill above -- set by _load when a questionnaire xlsx
         # is auto-detected next to the CSV; empty when none was found. Density/TVD stay ordinary
         # editable entries either way, this is just so the user can see (and judge) the source. On
@@ -443,11 +428,18 @@ class DfitApp:
         bar = ttk.Frame(self.root, padding=6)
         bar.pack(side="bottom", fill="x")
 
-        # Right side: Reset view, then the warning label at the far edge -- both pre-existing,
-        # just not previously placed in the stepbar. Packed right-to-left, so pack the
-        # rightmost-visually one (warn_lbl) first.
+        # Right side: Reset view, then Skip test, then the warning label at the far edge --
+        # Reset view and warn_lbl are pre-existing, just not previously placed in the stepbar.
+        # Packed right-to-left, so pack the rightmost-visually one (warn_lbl) first, giving
+        # "[Reset view] [Skip test] <warning text>" reading left to right.
         self.warn_lbl = ttk.Label(bar, text="", foreground="red")
         self.warn_lbl.pack(side="right")
+        # Folder mode only: park the whole test as "skipped" regardless of how far its steps
+        # got, an override no per-step Skip > can express. Disabled/labeled in single-file mode
+        # and toggled by _update_skip_test_btn, the one sync point for this button's state/text.
+        self.btn_skip_test = ttk.Button(bar, text="Skip test", command=self._skip_test,
+                                        state="disabled")
+        self.btn_skip_test.pack(side="right", padx=4)
         ttk.Button(bar, text="Reset view", command=self._reset_view).pack(side="right", padx=4)
 
         # Left side: < Back, the six breadcrumbs, Next >, Skip >.
@@ -670,31 +662,27 @@ class DfitApp:
         self._update_folder_controls()
 
     def _update_folder_controls(self):
-        """One sync point for the Source/Mark/Save & Next controls -- called from _load_test
-        (after current_entry is set), the single-file _load wrapper (after clearing folder
-        state), and _open_folder_path (which also covers _load_test's early return on a failed
-        load, since that return happens before this call runs inside _load_test itself).
+        """One sync point for the Source combobox and the Skip-test button -- called from
+        _load_test (after current_entry is set), the single-file _load wrapper (after clearing
+        folder state), and _open_folder_path (which also covers _load_test's early return on a
+        failed load, since that return happens before this call runs inside _load_test itself).
 
-        Single-file mode (current_entry is None): all three cleared and disabled. Folder mode:
-        cmb_source lists the entry's available sources (readonly only if there's more than
-        one -- a single-source test has nothing to switch to), cmb_mark is readonly, and
-        btn_save_next is enabled."""
+        Single-file mode (current_entry is None): cmb_source cleared/disabled, Skip-test
+        disabled via _update_skip_test_btn. Folder mode: cmb_source lists the entry's available
+        sources (readonly only if there's more than one -- a single-source test has nothing to
+        switch to), and Skip-test is enabled with its label synced to explicit_status."""
         if self.current_entry is None:
             self.var_source.set("")
             self.cmb_source["values"] = []
             self.cmb_source.config(state="disabled")
-            self.var_mark.set("")
-            self.cmb_mark.config(state="disabled")
-            self.btn_save_next.config(state="disabled")
+            self._update_skip_test_btn()
             return
         entry = self.current_entry
         self.cmb_source["values"] = entry.available_sources
         self.var_source.set(self.state.active_source.upper())
         self.cmb_source.config(
             state="readonly" if len(entry.available_sources) > 1 else "disabled")
-        self.cmb_mark.config(state="readonly")
-        self.var_mark.set(self.state.explicit_status or "")
-        self.btn_save_next.config(state="normal")
+        self._update_skip_test_btn()
 
     def _on_source_change(self):
         """The Source combobox: switching CSV<->DBS resets all picks for this test (a fresh
@@ -710,16 +698,9 @@ class DfitApp:
             return
         self._load_test(self.current_entry, source=new, force_reset=True)
 
-    def _on_mark_change(self):
-        """The Mark combobox: an explicit done/skipped override on the current test's status.
-        Persists only via Save & Next / navigation's picks-save (no log write here)."""
-        self.state.explicit_status = self.var_mark.get() or None
-        self.current_entry.status = store.status_for(self.state)
-        self._refresh_queue_row(self.current_entry)
-
     def _write_log_row(self, entry: store.TestEntry):
         """Build and upsert one dfit_log.csv row for `entry` from the current state/res, then
-        persist the whole log -- shared by _save_and_next and _finish's folder branch, the only
+        persist the whole log -- shared by _finish's and _skip_test's folder branches, the only
         two places dfit_log.csv is written. Callers wrap this in try/except (OneDrive file
         locks happen); the picks JSON save must already have succeeded independently before
         this runs."""
@@ -728,27 +709,12 @@ class DfitApp:
         self.log_df = store.upsert_log_row(self.log_df, row)
         store.save_log(self.folder_root, self.log_df)
 
-    def _save_and_next(self):
-        """Bound to the Save & Next button -- only reachable in folder mode (the button is
-        disabled otherwise), guarded anyway. Saves picks + the master log row, then advances to
-        the next queue entry with status "new" (scanning circularly from just after the
-        current one), or reports the queue is exhausted."""
-        if self.current_entry is None or self.td is None:
-            return
+    def _advance_queue(self):
+        """Advance to the next "new"-status queue entry (scanning circularly from just after
+        the current one), or report the queue is exhausted. Shared tail of Finish and Skip
+        test's folder branches -- both have just finalized the current entry's status before
+        calling this, so `current_entry` is still the just-finished test when this runs."""
         entry = self.current_entry
-        self.state.notes = self.txt_notes.get("1.0", "end").strip()
-        self.state.explicit_status = self.var_mark.get() or None
-        # Capture any unapplied entry-widget edits, then refresh so self.res (feeding the log
-        # row below) is recomputed from the synced state rather than a stale prior compute.
-        self._sync_state_from_widgets()
-        self.refresh()
-        store.save_picks_for(entry, self.state)
-        entry.status = store.status_for(self.state)
-        try:
-            self._write_log_row(entry)
-        except Exception as e:
-            messagebox.showerror("Log write failed", str(e))
-        self._refresh_queue_row(entry)
         statuses = [e.status for e in self.queue_entries]
         current_index = self.queue_entries.index(entry)
         next_index = _next_new_index(statuses, current_index)
@@ -756,6 +722,48 @@ class DfitApp:
             messagebox.showinfo("Queue", "No new tests remain.")
             return
         self._load_test(self.queue_entries[next_index])
+
+    def _update_skip_test_btn(self):
+        """One sync point for the Skip-test button's enabled state and toggle label -- called
+        from _update_folder_controls (mode changes / test load) and _update_stepbar (every
+        refresh, so the label tracks a state swapped in by _apply_loaded_state, e.g. loading a
+        picks JSON that already has explicit_status set)."""
+        if self.current_entry is None:
+            self.btn_skip_test.config(state="disabled", text="Skip test")
+            return
+        self.btn_skip_test.config(
+            state="normal",
+            text="Unskip test" if self.state.explicit_status == "skipped" else "Skip test")
+
+    def _skip_test(self):
+        """Bound to the Skip-test button -- only reachable in folder mode (the button is
+        disabled otherwise), guarded anyway. A toggle: flags the whole test as "skipped"
+        regardless of how far its steps got (an override no per-step Skip > can express), or
+        clears that flag if it's already set (the button reads "Unskip test" then). Flagging
+        saves + logs + advances, same as Finish minus the PNG export -- a skipped test produces
+        no plots. Unflagging saves + logs and stays put, with no confirm dialog either way:
+        nothing is discarded (picks are untouched) and the action is reversible by clicking
+        again."""
+        if self.current_entry is None or self.td is None:
+            return
+        entry = self.current_entry
+        self.state.notes = self.txt_notes.get("1.0", "end").strip()
+        # Capture any unapplied entry-widget edits, then refresh so self.res (feeding the log
+        # row below) is recomputed from the synced state rather than a stale prior compute.
+        self._sync_state_from_widgets()
+        self.refresh()
+        flagging = self.state.explicit_status != "skipped"
+        self.state.explicit_status = "skipped" if flagging else None
+        store.save_picks_for(entry, self.state)
+        entry.status = store.status_for(self.state)
+        try:
+            self._write_log_row(entry)
+        except Exception as e:
+            messagebox.showerror("Log write failed", str(e))
+        self._refresh_queue_row(entry)
+        self._update_skip_test_btn()
+        if flagging:
+            self._advance_queue()
 
     def _on_queue_select(self, event=None):
         sel = self.queue_tree.selection()
@@ -1154,6 +1162,7 @@ class DfitApp:
             self.next_btn.configure(text="Finish", style="StepCurrent.TButton")
         else:
             self.next_btn.configure(text="Next >", style="TButton")
+        self._update_skip_test_btn()
 
     def _update_panel_visibility(self):
         """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
@@ -1464,16 +1473,33 @@ class DfitApp:
     def _finish(self):
         """Bound to the Finish button (_advance on the last step): a silent one-click export.
 
+        Finish means "I completed this test", so it un-parks a whole-test Skip (clears
+        explicit_status below) -- a test that was Skip-test-parked and later walked to
+        completion should report done, not a stale skipped. Per-step "skipped" entries from
+        "Skip >" are a different thing (a decision about that step, not the whole test) and are
+        preserved, not overwritten by the "done" stamp below -- so a test finished with a
+        skipped step still reports skipped overall.
+
         Single-file mode (current_entry is None): byte-for-byte today's behavior -- re-save the
         picks JSON next to the data file and write a PNG per step (current zoom) into a sibling
-        subfolder; no log. Folder mode: save picks via store.save_picks_for (the store path is
-        the single ground truth in folder mode -- no <stem>_picks.json duplicate), same PNG
-        export, then the same dfit_log.csv row write as _save_and_next -- but no auto-advance.
+        subfolder; no log, no advance. Folder mode: save picks via store.save_picks_for (the
+        store path is the single ground truth in folder mode -- no <stem>_picks.json
+        duplicate), same PNG export, the dfit_log.csv row write, then _advance_queue() to the
+        next "new" test.
 
         No success popup; only a failure raises a dialog."""
         if self.td is None:
             return
-        self.state.step_status[self.step] = "done"
+        # Preserve a skip recorded by "Skip >" on this step (reachable here on the last step,
+        # or on loglog under PC-F where _goto redirects a porepressure destination back to
+        # loglog) -- Finish must not silently promote an already-skipped step back to "done".
+        if self.state.step_status.get(self.step) != "skipped":
+            self.state.step_status[self.step] = "done"
+        # Un-park a whole-test Skip: Finish is "I completed this test", so clear the flag before
+        # saving so it doesn't survive into the picks JSON or feed a stale status below. Set
+        # unconditionally rather than branching on folder/single-file mode -- single-file mode
+        # never sets this field, so clearing it there is a no-op.
+        self.state.explicit_status = None
         # Capture any unapplied entry-widget edits before refreshing, so self.res (feeding the
         # PNG export and, in folder mode, the log row below) reflects the synced state.
         self._sync_state_from_widgets()
@@ -1503,6 +1529,7 @@ class DfitApp:
         except Exception as e:
             messagebox.showerror("Log write failed", str(e))
         self._refresh_queue_row(entry)
+        self._advance_queue()
 
     def _apply_loaded_state(self, state: PickState):
         """Adopt `state` as the current PickState and reflect it into every widget -- shared by

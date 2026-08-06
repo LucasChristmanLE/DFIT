@@ -79,10 +79,13 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   than crashing the queue on a duplicate iid. Picks persist to a per-test
   `<folder>/<test_id>.dfit_picks.json`, written atomically (temp file + `os.replace`), same
   contract as `PickState.to_json`/`from_json`. `status_for` derives a test's queue status
-  ("new"/"in_progress"/"done"/"skipped") from its saved `PickState`, ground-truthing
-  `step_status` -- including the PC-F clause: `porepressure` counts as complete under PC-F even
-  though that scenario never gets a `step_status` entry for it, since the step is skipped end
-  to end (see the PC-F section below). `load_log`/`save_log` read and atomically write the
+  ("new"/"in_progress"/"done"/"skipped") from its saved `PickState`: `"done"` and
+  `"in_progress"` are purely derived from `step_status` -- ground-truthing it, including the
+  PC-F clause (`porepressure` counts as complete under PC-F even though that scenario never
+  gets a `step_status` entry for it, since the step is skipped end to end; see the PC-F section
+  below) -- but `"skipped"` can also come from `state.explicit_status`, the whole-test
+  Skip-test button's override, which short-circuits the derivation regardless of how far the
+  steps got. `load_log`/`save_log` read and atomically write the
   per-root `dfit_log.csv`; `build_log_row` maps one test's `PickState`/`DerivedResults` into a
   `LOG_COLUMNS`-shaped row (it computes nothing itself), and `upsert_log_row` replaces-or-
   appends by `test_id`.
@@ -107,7 +110,7 @@ saved and loaded through a file dialog (`DfitApp._save_picks`/`_load_picks`) to 
 analyst chooses. In folder mode there is no file dialog for picks: `ui.py` saves through
 `store.save_picks_for`/`store.load_picks_for` to the fixed per-test
 `<test_id>.dfit_picks.json` next to the test's data files -- on queue navigation
-(`_save_current_queue_picks`), Save & Next, and Finish. `DerivedResults` is never serialized
+(`_save_current_queue_picks`), Finish, and Skip test. `DerivedResults` is never serialized
 either way. `model._decode` migrates legacy saves: it maps the old `eff_isip_line` pick to
 `min_dpdg_G`, rebuilds tuples and `TangentPick`, and filters unknown keys so old or foreign
 JSON never raises. `step_status` (the breadcrumb history) rides along in the same JSON;
@@ -119,24 +122,36 @@ writes a PNG of all six step plots, in their current zoom state, to a `<stem> DF
 subfolder next to the loaded data file. In single-file mode (`current_entry` is None) that is
 byte-for-byte the original behavior: picks re-save to `<stem>_picks.json`, no log write. In
 folder mode, picks save through `store.save_picks_for` instead (no `<stem>_picks.json`
-duplicate), and Finish also upserts and writes the current test's `dfit_log.csv` row
-(`ui._write_log_row`, shared with Save & Next) -- but does not auto-advance the queue. The
-PNG export itself is headless: `plots.render_step_figure`/`save_all_step_pngs` take no
+duplicate), Finish also upserts and writes the current test's `dfit_log.csv` row
+(`ui._write_log_row`, shared with Skip test), and then advances to the next `"new"` queue
+entry via `ui._advance_queue` (or reports the queue is exhausted). The PNG export itself is
+headless: `plots.render_step_figure`/`save_all_step_pngs` take no
 Tkinter and replicate `ui.refresh`'s view-resolution logic (including the gfunction-specific
 clamps) against an offscreen `Figure`, so `ui._finish` just resolves `self._views` into the
 plain tuples that function expects.
 
 **Folder mode.** "Open Folder…" (`ui._open_folder_path`) scans the chosen root via
 `store.list_tests`, populates the sidebar queue Treeview (row iid = `test_id`), and
-auto-opens the first `"new"`-status test (or the first entry if none are new). Save & Next
-(`ui._save_and_next`) saves picks, writes the log row, and advances to the next queue entry
-with status `"new"`, scanning circularly from just after the current one; it reports when the
-queue is exhausted rather than looping forever. The Mark combobox sets
-`state.explicit_status` (`"done"`/`"skipped"`) as a user override -- `store.status_for`
-checks it before falling back to the `step_status` breadcrumb, so a test can be forced done or
-skipped regardless of how far its picks actually got. The Source dropdown (CSV/DBS) is enabled
-only when a test has both files available; switching sources is treated as a different data
-file, so it resets that test's picks after a confirm dialog (`ui._on_source_change`).
+auto-opens the first `"new"`-status test (or the first entry if none are new). There are
+exactly two ways to end a test, both in the bottom stepbar: Finish (completed it) and Skip
+test (park it) -- `ui._advance_queue` is their shared auto-advance tail, scanning circularly
+from just after the current entry for the next `"new"`-status one and reporting when the
+queue is exhausted rather than looping forever. `"done"` and `"in_progress"` are purely
+derived from `step_status` (all six steps accounted for and none skipped is `"done"`, all
+accounted for with >=1 skipped is `"skipped"`, otherwise `"in_progress"`); `"done"` is never a
+manual choice. Skip test (`ui._skip_test`) is the one capability that has no other
+expression: a toggle button that flags the whole test `state.explicit_status = "skipped"`
+regardless of how far its steps got, saves picks, writes the log row, refreshes the queue row,
+and advances -- or, when the test is already flagged (the button then reads "Unskip test"),
+clears the flag, saves/logs/refreshes, and stays put. `store.status_for` checks
+`explicit_status` before falling back to the `step_status` derivation. Finish clears the flag
+too -- completing a test un-parks it -- but it preserves a per-step `"skipped"` written by
+"Skip >" on the step it is invoked from (reachable on the last step, where `next_step` clamps,
+and on `loglog` under PC-F), so a test finished with a skipped step still reports `"skipped"`.
+The Source dropdown
+(CSV/DBS) is enabled only when a test has both files available; switching sources is treated
+as a different data file, so it resets that test's picks after a confirm dialog
+(`ui._on_source_change`).
 
 ## Conventions and invariants
 
@@ -297,16 +312,17 @@ select their tab (`ui.py:_open_guide`).
 - Accepted known limitations in the folder-mode Source switch/resume logic: if a test's saved
   picks name a source the resume logic silently falls back to applying those picks to whatever
   source actually loads, with no warning; a source switch (`ui._on_source_change`) only
-  persists to disk on the next save (queue navigation, Save & Next, or Finish), not
+  persists to disk on the next save (queue navigation, Finish, or Skip test), not
   immediately; and using the manual "Load picks…" file-dialog button while in folder mode
-  loads that JSON into the workspace but does not re-sync the Source/Mark/Save & Next
-  controls to it.
+  loads that JSON into the workspace but does not re-sync the Source combobox to it (the
+  Skip-test button does re-sync, via `_apply_loaded_state`'s `_goto` -> `refresh` ->
+  `_update_stepbar` -> `_update_skip_test_btn` chain).
 
 ## TODO
-1) Mirroring how we get TVD and Density, I want to pull more from the questionaire, just for logging purposes: Well Name, Formation. I think I want to add a new first tab where all the setup lives to make it a more concrete step.
-2) Folder organization is more complex then hoped. The main folder contains Customer folders, with some of those folders containing multiple subfolders with DFIT tests (for customers where we did multiple wells), while others do not have subfolders and the data is just in that first layer. What's best, I reorganize the folder or we modify the script to work for either?
-3) DFIT data is on a shared M: drive. Should I copy it all locally? It's many GB. Should I instead be able to point the program at a different folder and have it print the csv there and generate subfolders with pngs and JSONs?
-4) Remove the variable and tangent method effective ISIPs from the program sidebar but keep them in the results csv for reference. Change all net pressure calculations to use compliance method eff ISIP
-5) ~~Add new calculation "Near-Wellbore Complexity". Shmin + net pressure + complexity = ISIP.~~
-   Done: apparent ISIP − shared reference eff ISIP, panel row "NWB complexity" and log column
-   `near_wellbore_complexity`. See "Net pressure" under Domain and methodology.
+- Apparent ISIP tool has 3 move methods: drag along line (with the vertical segment), pan, and rotate (activated when hovering over either end of the tool). Rotate seems to be gone/impossible because the tangent line is too long. Make it shorter and extend back to shut in time with dotted line
+- Apparent ISIP tool needs to be a perfect tangent to pressure. Seems maybe it's taking an average slope over interval instead.
+- Some tests suddenly drop off to zero pressure towards end, need to be able to trim tail, probably on G-function plot.
+- 0 surface pressure means bottom hole can no longer be calc'd accurately because the head falls. After trimming tail, warn user if surface pressure ever falls below 100 psi.
+- Would like to be able to resize both sidebars. Field names in right sidebar are getting cut off, even though there's lots of space.
+- When no rate is auto-detected, the start/shut-in vlines never appear
+- Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in
