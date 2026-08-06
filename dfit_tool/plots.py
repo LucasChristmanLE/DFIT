@@ -28,6 +28,11 @@ from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
 
+# Solid-segment half-width (minutes) for the apparent-ISIP tangent construction; must keep both
+# endpoints inside render_isip's default (-1, 3)-min view for the seeded anchor (~+1 min) so the
+# AnchorLineController rotate handles stay reachable.
+_ISIP_TANGENT_HALF_MIN = 0.75
+
 
 D2_AXIS_GID = "d2pdg2_axis"  # gid on the gfunction step's optional third (d2P/dG2) twin axes
 
@@ -178,7 +183,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         slope_per_min = tg.slope * 60.0
         y_span = float(np.nanmax(xp) - np.nanmin(xp)) if xp.size else max(abs(tg.anchor_y), 1.0)
         _draw_tangent_construction(
-            ax, anchor_x_min, tg.anchor_y, slope_per_min, ref_x=0.0, half=3.0,
+            ax, anchor_x_min, tg.anchor_y, slope_per_min, ref_x=0.0, half=_ISIP_TANGENT_HALF_MIN,
             color="tab:purple",
             gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                   "extension": "isip_tangent_extension"},

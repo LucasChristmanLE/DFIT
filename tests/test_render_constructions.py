@@ -153,6 +153,27 @@ def test_render_isip_tangent_construction_gids_colors_and_extension_reaches_shut
     assert tick.get_ydata()[0] != tick.get_ydata()[1]  # a short vertical mark, not a point
 
 
+def test_render_isip_solid_segment_ends_inside_default_view_extension_visible():
+    td, st, res = _seeded()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_isip(ax, td, st, res)
+
+    seg = _gid(ax, "isip_tangent_segment")
+    ext = _gid(ax, "isip_tangent_extension")
+    lo, hi = defaults.xlim
+    # Both solid-segment endpoints must sit strictly inside the default view -- they are the
+    # AnchorLineController rotate hit zones and are unreachable off-screen.
+    for x in seg.get_xdata():
+        assert lo < x < hi
+    # The dashed extension is a real, visible run from the shut-in vertical (x=0) to the
+    # segment's near end -- no longer hidden under a solid segment that crosses shut-in.
+    ext_x = sorted(ext.get_xdata())
+    assert ext_x[0] == pytest.approx(0.0)
+    assert ext_x[1] == pytest.approx(min(seg.get_xdata()))
+    assert ext_x[1] > 0.0
+
+
 def test_render_isip_clamps_view_and_plotted_data_to_shutin_window():
     # n=1800 gives a 25-min falloff tail (shut-in at 300 s), so the +15-min clamp is binding.
     td = make_testdata(n=1800)
