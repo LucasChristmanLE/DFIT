@@ -154,9 +154,10 @@ class DragLineController:
     ``gate`` (a shared ``_CaptureGate``) is claimed only *after* this controller's own hit-test at
     press finds a line, and released on button-release -- same claim-after-hit-test contract as
     ``AnchorLineController``/``DraggablePointController``, so this controller can share a gate
-    with them (e.g. the G-function step's tail-trim line and its contact-point marker). Defaults
-    to a private gate (no sharing) when omitted, so the injection step's existing solo usage is
-    unaffected.
+    with either of them if a step ever overlays a draggable line on top of a draggable point or
+    anchor. Defaults to a private gate (no sharing) when omitted, which covers every current
+    usage: the injection step's start/shut-in vlines and the Overview step's tail-trim line each
+    have their axes to themselves.
     """
 
     def __init__(self, canvas, ax, handlers, guard=None, tol_px: float = 6.0,
@@ -841,8 +842,9 @@ def commit_closure_point(state: PickState, x: float) -> None:
 
 
 def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
-    """DragLineController commit for the manual tail-trim line (G-function step): ``dt`` is
-    shut-in-relative seconds, or None to clear the trim (drag released at/past the last point).
+    """DragLineController commit for the manual tail-trim line (Overview step, behind the "Show
+    trim tool" toggle): ``dt`` is shut-in-relative seconds, or None to clear the trim (drag
+    released at/past the last point).
     Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario,
     reset_gfunction_picks, or a SEEDERS entry, since a trim must never be auto-set or
     auto-cleared."""

@@ -6,7 +6,7 @@ Guidance for working in this repository.
 
 An interactive tool for interpreting a single diagnostic fracture injection test (DFIT)
 by the compliance method. A Tkinter/ttk shell hosts an embedded matplotlib canvas. The
-interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and walks six
+interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and walks seven
 workflow steps, making draggable picks on each plot. Every reported number is derived from
 one pure function, `model.compute_all`.
 
@@ -17,8 +17,10 @@ results up into a per-root `dfit_log.csv` master log. The sidebar and the log ex
 folder mode; single-file mode is otherwise unchanged. There is still no cross-test
 aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
-The six steps (`ui.py:STEPS`): overview → isip → gfunction → tangent → loglog →
-porepressure.
+The seven steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
+porepressure. Overview shows the entire dataset, unclamped, and hosts the tail-trim tool
+behind a toggle; Injection is the zoomed injection-window view with the draggable
+start/shut-in lines and the te/Vinj/qmax title.
 
 ## Commands
 
@@ -118,7 +120,7 @@ JSON never raises. `step_status` (the breadcrumb history) rides along in the sam
 
 On the last step (`porepressure`) the stepbar's "Next >" button becomes a bolded "Finish"
 button (`ui.py:_advance`/`_update_stepbar`). One click (`ui.py:_finish`) saves picks and
-writes a PNG of all six step plots, in their current zoom state, to a `<stem> DFIT plots/`
+writes a PNG of all step plots, in their current zoom state, to a `<stem> DFIT plots/`
 subfolder next to the loaded data file. In single-file mode (`current_entry` is None) that is
 byte-for-byte the original behavior: picks re-save to `<stem>_picks.json`, no log write. In
 folder mode, picks save through `store.save_picks_for` instead (no `<stem>_picks.json`
@@ -137,7 +139,7 @@ exactly two ways to end a test, both in the bottom stepbar: Finish (completed it
 test (park it) -- `ui._advance_queue` is their shared auto-advance tail, scanning circularly
 from just after the current entry for the next `"new"`-status one and reporting when the
 queue is exhausted rather than looping forever. `"done"` and `"in_progress"` are purely
-derived from `step_status` (all six steps accounted for and none skipped is `"done"`, all
+derived from `step_status` (all seven steps accounted for and none skipped is `"done"`, all
 accounted for with >=1 skipped is `"skipped"`, otherwise `"in_progress"`); `"done"` is never a
 manual choice. Skip test (`ui._skip_test`) is the one capability that has no other
 expression: a toggle button that flags the whole test `state.explicit_status = "skipped"`
@@ -166,7 +168,7 @@ Preserve these when changing the code.
   either the stored view or the renderer default. Do not call `set_xlim`/`set_ylim` inside a
   renderer.
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`.** A twin axes (e.g.
-  the overview's rate `twinx`) owns `inaxes` over the shared region, so an identity check
+  the injection's rate `twinx`) owns `inaxes` over the shared region, so an identity check
   against a specific Axes never matches. Use `_axes_contains_pixel`/`_data_from_pixel`.
 - **Slider `on_changed` callbacks must never call `refresh()`.** `refresh()` calls
   `fig.clf()`, which destroys the slider mid-drag. Callbacks only `set_xlim`/`set_ylim`,
@@ -181,7 +183,7 @@ Preserve these when changing the code.
 Tests live in `tests/` (~21 files). `tests/conftest.py` forces the Agg backend before
 `matplotlib.pyplot` is imported, so the suite runs with no display or Tk. Synthetic data
 comes from `tests/helpers.make_testdata` (a DFIT-shaped `TestData`) and
-`helpers.overview_state`; tests drive controllers with real synthesized `MouseEvent`s.
+`helpers.injection_state`; tests drive controllers with real synthesized `MouseEvent`s.
 GUI-only paths are exercised by binding real `DfitApp` methods onto duck-typed stand-ins
 rather than constructing a real `tk.Tk()`.
 
@@ -241,14 +243,15 @@ minimum (non-monotonic late data) for long enough, and in enough samples, to rul
 see Tail trim below for the exact thresholds.
 
 **No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
-the detection threshold), `picks.seed_overview` seeds the start/shut-in vlines from the
+the detection threshold), `picks.seed_injection` seeds the start/shut-in vlines from the
 pressure shape instead (`interpret.suggest_injection_window_pressure`: shut-in at the
 pressure max, start at the last upcross of a 10%-of-rise threshold, non-finite samples
 ignored so dropouts can't fake an upcross, positional defaults for degenerate shapes), so the
-draggable lines always exist. `compute_all` sets `t_shutin_s`
-from the picks alone and, when the effective te (Vinj/qmax) is unavailable, falls back to
-te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj and qmax stay
-blank without rate; the overview title shows only the pieces that exist.
+draggable lines always exist. `picks.seed_overview` delegates to the same seeder on the
+Overview step's first visit, so the reference lines exist there too. `compute_all` sets
+`t_shutin_s` from the picks alone and, when the effective te (Vinj/qmax) is unavailable,
+falls back to te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj
+and qmax stay blank without rate; the Injection title shows only the pieces that exist.
 
 **Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it
 fires when a run of samples stays continuously more than a fixed 30 psi
@@ -264,18 +267,27 @@ the front of `DerivedResults.warnings` (not appended), so it stays the topmost l
 right panel's stacked warning display (under the Notes box, one warning per line, wrapped --
 `ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A monotone
 crash to ~0 psi (gauge pulled, well opened) still sails through it and pollutes the
-derivatives. The G-function step has a manual trim for this: a draggable dashed vline
-(`gid="tail_trim"`, a `DragLineController`
-sharing the step's `_CaptureGate`) commits `PickState.tail_trim_dt` (shut-in-relative seconds,
-`None` = no trim, logged to `tail_trim_s`). `compute_all` resamples the full post-shut-in
-record, keeps it on `DerivedResults.resampled_full`/`G_full`, then masks to
-`dt <= tail_trim_dt` before computing diagnostics -- so the trim propagates to every
-downstream value (effective ISIP, Shmin, log-log, pore pressure) with no other plumbing. The
-renderer draws the excluded tail grayed out (`gid="tail_excluded"`) so the line can be dragged
-back right; releasing at/past the last point clears the trim, and the commit clamps to >=3
-kept points -- a record whose full resample already yields <=3 points can therefore only ever
-clear the trim, never set one (a pathological saved trim hits a renderer/controller recovery
-path plus a warning instead of a dead plot). The trim is manual-only (no seeder) and is never
+derivatives. The Overview step has a manual trim for this, hidden by default behind its own
+"Show trim tool" checkbox (`ui.py`'s `self.show_trim`): an ephemeral session toggle, reset to
+off on every file load and never part of `PickState` or serialized, so `render_step_figure`/
+`save_all_step_pngs` never pass it and an exported PNG never carries the interactive line.
+Checking it draws a draggable dashed vline (`gid="tail_trim"`) in time-domain hours, a
+`DragLineController` with its own private gate (nothing else is draggable on that axes, so
+there is no gate to share). Dragging snaps to the nearest full-resample sample
+(`picks._nearest` against `DerivedResults.resampled_full.dt`) and commits
+`PickState.tail_trim_dt` (shut-in-relative seconds, `None` = no trim, logged to
+`tail_trim_s`). `compute_all` resamples the full post-shut-in record, keeps it on
+`DerivedResults.resampled_full`/`G_full`, then masks to `dt <= tail_trim_dt` before computing
+diagnostics -- so the trim propagates to every downstream value (effective ISIP, Shmin,
+log-log, pore pressure) with no other plumbing. The Overview renderer draws the excluded tail
+grayed out (`gid="tail_excluded"`) whenever a trim is set, regardless of the toggle, so the
+effect of a trim stays visible even with the tool hidden; releasing the drag at/past the last
+point clears the trim, and the commit clamps to >=3 kept points -- a record whose full
+resample already yields <=3 points can therefore only ever clear the trim, never set one (a
+pathological saved trim hits a renderer/controller recovery path on the G-function step, plus
+a warning directing the analyst back to the Overview tab, instead of a dead plot). The
+G-function plot itself carries no trim artifacts at all -- only the rise guard's own
+`guard_excluded` preview remains there. The trim is manual-only (no seeder) and is never
 touched by scenario changes or the G-function reset button. Warnings: WHP below 100 psi
 (`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler actually consumed post-shut-in
 data -- up to where its own rise guard stopped it (`resample.Resampled.guard_dt`), further
@@ -338,7 +350,7 @@ true, the pore-pressure step is skipped end to end: `ui._last_step()` reports `"
 any `"porepressure"` destination (the log-log Skip button, resume-on-load, a breadcrumb click)
 to `"loglog"`; `_update_stepbar` force-disables the porepressure breadcrumb even if that step
 was visited earlier in the session; and `plots.save_all_step_pngs` omits the porepressure PNG
-(the other five keep their `RENDERERS`-order numbering).
+(the other six keep their `RENDERERS`-order numbering).
 
 An in-app "Interpretation guide" window (opened from the "Interpretation guide..." buttons on
 the G-function step's closure-scenario panel and the log-log/pore-pressure steps'
@@ -368,7 +380,3 @@ select their tab (`ui.py:_open_guide`).
   loads that JSON into the workspace but does not re-sync the Source combobox to it (the
   Skip-test button does re-sync, via `_apply_loaded_state`'s `_goto` -> `refresh` ->
   `_update_stepbar` -> `_update_skip_test_btn` chain).
-
-## TODO
-- Make tail trimming tool hidden until toggled on by a button. It should then be used to trim then toggled back off to not clutter the G-function plot.
-- Rename overview tab to "Injectiom". Add new "Overview" tab showing entire dataset. Move the trim tool from the G-func tab to this tab.

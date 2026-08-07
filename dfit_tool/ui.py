@@ -1,4 +1,4 @@
-"""Tkinter/ttk shell: file open, channel mapping, the six-step canvas, live value panel.
+"""Tkinter/ttk shell: file open, channel mapping, the seven-step canvas, live value panel.
 
 Hosts the matplotlib canvas and wires the per-step pickers from picks.py to a recompute+redraw
 loop. Holds no interpretation logic itself -- every number comes from model.compute_all.
@@ -396,7 +396,7 @@ class DfitApp:
         ttk.Separator(panel).pack(fill="x", pady=6)
 
         # Overview-step-only widget: the tail-trim tool's ephemeral show/hide toggle (moved off
-        # the G-function step, see CLAUDE.md TODO). Built/packed the same way as
+        # the G-function step). Built/packed the same way as
         # frm_cscen/frm_pcscen below -- not packed here, _update_panel_visibility owns that.
         self.frm_overview = ttk.Frame(panel)
         self.var_show_trim = tk.BooleanVar(value=False)
@@ -489,7 +489,7 @@ class DfitApp:
         self.btn_skip_test.pack(side="right", padx=4)
         ttk.Button(bar, text="Reset view", command=self._reset_view).pack(side="right", padx=4)
 
-        # Left side: < Back, the six breadcrumbs, Next >, Skip >.
+        # Left side: < Back, the seven breadcrumbs, Next >, Skip >.
         ttk.Button(bar, text="< Back", command=self._back).pack(side="left", padx=2)
         self.step_buttons: dict[str, ttk.Button] = {}
         for key, label in STEPS:

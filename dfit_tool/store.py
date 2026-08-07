@@ -243,7 +243,7 @@ def save_picks_for(entry: TestEntry, state: PickState) -> None:
 # --------------------------------------------------------------------------------------------------
 def status_for(state: Optional[PickState]) -> str:
     """The folder-mode status for `state`: "new" (no picks / never visited a step), "done" and
-    "in_progress" are purely derived from step_status -- all six steps accounted for and none
+    "in_progress" are purely derived from step_status -- all seven steps accounted for and none
     skipped is "done", all accounted for with >=1 skipped is "skipped", otherwise
     "in_progress" -- except "skipped" can also come from explicit_status, the whole-test
     Skip-test button, which overrides the derivation at any point in the workflow regardless of
