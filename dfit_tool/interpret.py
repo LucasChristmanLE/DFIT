@@ -80,39 +80,48 @@ def suggest_injection_window_pressure(p: np.ndarray) -> tuple[int, int]:
 
     shutin = the global pressure maximum (in a DFIT the max sits at/just before shut-in);
     start = the last upcross of baseline + 10% of the rise at/before that max (the *last*
-    upcross tolerates breakdown pulses and step-rate cycles earlier in the record).
-    Degenerate shapes (flat record, max at the first sample) fall back to positional
-    defaults at 2% / 25% of the record. Raises ``ValueError`` only when fewer than 2 finite
-    samples exist; otherwise always returns ``start < shutin``. This is only a default --
-    the interpreter drags the lines to the true window.
+    upcross tolerates breakdown pulses and step-rate cycles earlier in the record). The
+    heuristic runs on the finite samples only -- a gauge dropout (NaN) is ignored rather
+    than treated as below-threshold, so it can't fake an upcross and collapse the window
+    (a run above the threshold stays one run across a dropout). Degenerate shapes (flat
+    record, max at the first finite sample) fall back to positional defaults at 2% / 25%
+    of the record. Raises ``ValueError`` only when fewer than 2 finite samples exist;
+    otherwise always returns ``start < shutin``. This is only a default -- the interpreter
+    drags the lines to the true window.
     """
     p = np.asarray(p, dtype=float)
     n = len(p)
-    if int(np.isfinite(p).sum()) < 2:
+    fin = np.where(np.isfinite(p))[0]
+    if fin.size < 2:
         raise ValueError("Need at least 2 finite pressure samples to suggest a window")
+    pf = p[fin]
 
-    shutin = int(np.nanargmax(p))
+    k = int(np.argmax(pf))  # position of the max within the finite subsequence
+    shutin = int(fin[k])
     start = None
-    if shutin > 0:
-        baseline = float(np.nanmin(p[:shutin + 1]))
-        rise = float(p[shutin]) - baseline
+    if k > 0:
+        baseline = float(np.min(pf[:k + 1]))
+        rise = float(pf[k]) - baseline
         if rise > 0:
             thresh = baseline + 0.1 * rise
-            above = p[:shutin + 1] >= thresh  # NaN compares False, so dropouts stay "below"
+            above = pf[:k + 1] >= thresh
             upcross = np.where(above[1:] & ~above[:-1])[0] + 1
             if upcross.size:
-                start = int(upcross[-1])
-            elif above.any():  # unreachable in practice (the max is above); belt and braces
-                start = int(np.where(above)[0][0])
+                j = int(upcross[-1])
+            else:  # unreachable in practice (the max is above, the baseline is below)
+                j = int(np.where(above)[0][0]) if above.any() else None
+            if j is not None:
+                if j >= k:
+                    # A single-sample jump straight to the max: keep the max, back off one
+                    # finite sample.
+                    j = k - 1
+                start = int(fin[j])
 
-    if shutin == 0 or start is None:
+    if start is None:
         # Flat or declining-only record: positional defaults, coerced so start < shutin.
         start = max(int(0.02 * (n - 1)), 0)
         shutin = min(max(int(0.25 * (n - 1)), start + 1), n - 1)
         start = min(start, shutin - 1)
-    elif start >= shutin:
-        # A single-sample jump straight to the max: keep the max, back start off one.
-        start = shutin - 1
     return start, shutin
 
 

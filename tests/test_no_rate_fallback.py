@@ -50,16 +50,35 @@ def test_pressure_window_skips_an_early_breakdown_pulse():
     assert start < shutin
 
 
+def test_pressure_window_dropout_before_the_max_does_not_collapse_the_window():
+    # A NaN read as "below threshold" would fake an upcross right before the peak and
+    # collapse the window to one sample; finite-only handling must keep the real onset.
+    td = make_testdata()
+    p = td.column(PRESSURE_COL).copy()
+    clean_start, clean_shutin = interpret.suggest_injection_window_pressure(p)
+    p[SHUTIN_IDX - 2] = np.nan  # one gauge dropout right before the peak
+    start, shutin = interpret.suggest_injection_window_pressure(p)
+    assert start == clean_start
+    assert abs(shutin - clean_shutin) <= 2
+
+
+def test_pressure_window_dropout_block_mid_rise_does_not_relocate_start():
+    td = make_testdata()
+    p = td.column(PRESSURE_COL).copy()
+    clean_start, _ = interpret.suggest_injection_window_pressure(p)
+    p[200:203] = np.nan  # dropout block mid-injection, well above the 10% threshold
+    start, _ = interpret.suggest_injection_window_pressure(p)
+    assert start == clean_start
+
+
 def test_pressure_window_flat_record_falls_back_to_positional():
     p = np.full(50, 1000.0)
-    start, shutin = interpret.suggest_injection_window_pressure(p)
-    assert 0 <= start < shutin <= 49
+    assert interpret.suggest_injection_window_pressure(p) == (0, 12)  # 2% / 25% of n-1
 
 
 def test_pressure_window_declining_record_falls_back_to_positional():
     p = np.linspace(5000.0, 1000.0, 50)  # max at index 0
-    start, shutin = interpret.suggest_injection_window_pressure(p)
-    assert 0 <= start < shutin <= 49
+    assert interpret.suggest_injection_window_pressure(p) == (0, 12)  # 2% / 25% of n-1
 
 
 def test_pressure_window_too_few_finite_samples_raises():
@@ -76,6 +95,8 @@ def test_seed_overview_no_rate_col_seeds_from_pressure():
     picks.seed_overview(st, td)
     assert st.start_idx is not None and st.shutin_idx is not None
     assert st.start_idx < st.shutin_idx
+    exp = interpret.suggest_injection_window_pressure(td.column(PRESSURE_COL))
+    assert (st.start_idx, st.shutin_idx) == exp
 
 
 def test_seed_overview_dead_rate_channel_falls_back_to_pressure():
@@ -149,3 +170,14 @@ def test_render_overview_title_with_fallback_te_and_no_rate():
     title = ax.get_title()
     assert "te=" in title
     assert "Vinj" not in title and "qmax" not in title
+
+
+def test_render_overview_no_rate_still_draws_the_draggable_vlines():
+    td = make_testdata()
+    st = PickState(pressure_col=PRESSURE_COL)  # no rate_col
+    picks.seed_overview(st, td)
+    res = compute_all(st, td)
+    ax = Figure().add_subplot(111)
+    plots.render_overview(ax, td, st, res)
+    gids = {ln.get_gid() for ln in ax.lines}
+    assert {"start", "shutin"} <= gids

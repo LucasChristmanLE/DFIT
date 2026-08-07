@@ -243,8 +243,9 @@ see Tail trim below for the exact thresholds.
 **No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
 the detection threshold), `picks.seed_overview` seeds the start/shut-in vlines from the
 pressure shape instead (`interpret.suggest_injection_window_pressure`: shut-in at the
-pressure max, start at the last upcross of a 10%-of-rise threshold, positional defaults for
-degenerate shapes), so the draggable lines always exist. `compute_all` sets `t_shutin_s`
+pressure max, start at the last upcross of a 10%-of-rise threshold, non-finite samples
+ignored so dropouts can't fake an upcross, positional defaults for degenerate shapes), so the
+draggable lines always exist. `compute_all` sets `t_shutin_s`
 from the picks alone and, when the effective te (Vinj/qmax) is unavailable, falls back to
 te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj and qmax stay
 blank without rate; the overview title shows only the pieces that exist.

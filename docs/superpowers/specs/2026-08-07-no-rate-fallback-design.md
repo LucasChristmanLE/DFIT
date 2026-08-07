@@ -30,8 +30,11 @@ New pure function `suggest_injection_window_pressure(p: np.ndarray) -> tuple[int
   (p[shutin] − baseline), where baseline = nan-min of `p[:shutin+1]`. Take the **last
   upcross** of the threshold at or before `shutin` (tolerates breakdown pulses and step-rate
   cycles earlier in the record); fall back to the first sample at/above the threshold.
-- Degenerate inputs (flat record, `shutin == 0`, `start >= shutin`) fall back to positional
-  defaults: `start = int(0.02*(n-1))`, `shutin = int(0.25*(n-1))`, coerced so
+- The heuristic runs on the finite samples only: a gauge dropout (NaN) is ignored rather
+  than treated as below-threshold, so it cannot fake an upcross and collapse the window.
+  A single-sample jump straight to the max keeps the max and backs `start` off one finite
+  sample. Degenerate shapes (flat record, max at the first finite sample) fall back to
+  positional defaults: `start = int(0.02*(n-1))`, `shutin = int(0.25*(n-1))`, coerced so
   `start < shutin`. The function raises `ValueError` only when fewer than 2 finite samples
   exist; otherwise it always returns a valid `start < shutin` pair. It is only a default --
   the interpreter drags the lines to the true window.
