@@ -144,3 +144,25 @@ def test_vline_gid_none_ignores_a_line_at_the_old_vline_position():
 
     ctrl._on_release(_event("button_release_event", canvas, ax, x[20], 0.0))
     assert got == []
+
+
+def test_recomputes_pixel_array_every_motion_event_no_cache(monkeypatch):
+    """DraggablePointController deliberately keeps the uncached path -- only
+    AnchorLineController's anchor drag caches the transform (its curve is far larger)."""
+    x, y = _curve()
+    fig, ax, canvas = _build_axes(marker_x=x[10], marker_y=y[10])
+    ctrl = picks.DraggablePointController(canvas, ax, "marker", x, y, commit_fn=lambda *_: None)
+
+    calls = {"n": 0}
+    orig = picks._pixel_xs
+
+    def counting(ax_, arr):
+        calls["n"] += 1
+        return orig(ax_, arr)
+
+    monkeypatch.setattr(picks, "_pixel_xs", counting)
+
+    ctrl._on_press(_event("button_press_event", canvas, ax, x[10], y[10]))
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, x[15], y[15]))
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, x[20], y[20]))
+    assert calls["n"] == 2  # one full-array transform per motion event, uncached

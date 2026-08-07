@@ -420,3 +420,53 @@ def test_pin_x_keeps_extension_pinned_to_shutin_during_anchor_drag():
                            float(x_arr[target_idx]), float(y_arr[target_idx])))
     ext = _line(ax, "extension")
     assert 0.0 in ext.get_xdata()
+
+
+def test_anchor_drag_caches_pixel_array_once_per_gesture(monkeypatch):
+    x_arr = np.linspace(0.0, 20.0, 401)
+    y_arr = 100.0 - 3.0 * x_arr
+    anchor_x0, anchor_y0 = float(x_arr[10]), float(y_arr[10])
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=0.0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope=0.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit,
+                                      curve=(x_arr, y_arr), anchor_half=4)
+
+    call_count = {"n": 0}
+    orig = picks._pixel_xs
+
+    def counting(ax_, arr):
+        call_count["n"] += 1
+        return orig(ax_, arr)
+
+    monkeypatch.setattr(picks, "_pixel_xs", counting)
+
+    ctrl._on_press(_event("button_press_event", canvas, ax, anchor_x0, anchor_y0))
+    assert call_count["n"] == 1
+
+    for target_idx in (50, 120, 300):
+        ctrl._on_motion(_event("motion_notify_event", canvas, ax,
+                               float(x_arr[target_idx]), float(y_arr[target_idx])))
+    assert call_count["n"] == 1  # never re-transformed the full array during motion
+
+    ctrl._on_release(_event("button_release_event", canvas, ax,
+                            float(x_arr[300]), float(y_arr[300])))
+    assert ctrl._curve_px is None
+
+
+def test_anchor_drag_cached_index_matches_nearest_index_by_pixel():
+    x_arr = np.linspace(0.0, 20.0, 81)
+    y_arr = np.sin(x_arr)
+    anchor_x0, anchor_y0 = float(x_arr[10]), float(y_arr[10])
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=0.0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope=0.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit,
+                                      curve=(x_arr, y_arr), anchor_half=4)
+    ctrl._on_press(_event("button_press_event", canvas, ax, anchor_x0, anchor_y0))
+
+    ev = _event("motion_notify_event", canvas, ax, float(x_arr[47]), float(y_arr[47]) + 0.2)
+    ctrl._on_motion(ev)
+    expected_idx = picks._nearest_index_by_pixel(ax, x_arr, ev)
+    _, ax1, _, _ = ctrl._final
+    assert ax1 == pytest.approx(x_arr[expected_idx])

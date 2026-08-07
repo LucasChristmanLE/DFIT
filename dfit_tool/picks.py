@@ -60,11 +60,19 @@ def _data_from_pixel(ax, event) -> tuple[float, float]:
     return float(x), float(y)
 
 
+def _pixel_xs(ax, x_arr: np.ndarray) -> np.ndarray:
+    """On-screen (transData) x-pixel for every sample in ``x_arr``, one vectorized transform.
+    Shared by ``_nearest_index_by_pixel`` (recomputes every call) and AnchorLineController's
+    press-time cache, which computes it once per gesture -- view limits are frozen for a
+    gesture's duration (sliders grab the mouse), so the array is drag-invariant."""
+    xs = np.asarray(x_arr, dtype=float)
+    return ax.transData.transform(np.column_stack([xs, np.zeros_like(xs)]))[:, 0]
+
+
 def _nearest_index_by_pixel(ax, x_arr: np.ndarray, event) -> int:
     """Index into ``x_arr`` whose on-screen (transData) x-pixel is nearest ``event.x``. Matching
     by pixel rather than raw data-x keeps snapping correct on a log-scaled axis too."""
-    xs = np.asarray(x_arr, dtype=float)
-    px = ax.transData.transform(np.column_stack([xs, np.zeros_like(xs)]))[:, 0]
+    px = _pixel_xs(ax, x_arr)
     return int(np.nanargmin(np.abs(px - event.x)))
 
 
@@ -311,6 +319,7 @@ class AnchorLineController:
         self._tick_orig = None
         self._final = None          # (kind, anchor_x, anchor_y, slope) -- last-known-good geometry
         self._readout = None
+        self._curve_px = None       # per-gesture cache of _pixel_xs(curve[0]) for anchor drags
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
             canvas.mpl_connect("motion_notify_event", self._on_motion),
@@ -390,6 +399,8 @@ class AnchorLineController:
         self._tick_orig = ((list(tick.get_xdata()), list(tick.get_ydata()))
                            if tick is not None else None)
         self._final = (kind, pick.anchor_x, pick.anchor_y, pick.slope)
+        self._curve_px = (_pixel_xs(self.ax, self.curve[0])
+                          if kind == "anchor" and self.curve is not None else None)
 
         if self.readout_fn is not None:
             text = self.readout_fn(kind, pick.anchor_x, pick.anchor_y, pick.slope)
@@ -404,7 +415,10 @@ class AnchorLineController:
         ax0, ay0, slope0 = self._press_anchor
         if kind == "anchor":
             x_arr, y_arr = self.curve
-            idx = _nearest_index_by_pixel(self.ax, x_arr, event)
+            if self._curve_px is not None:
+                idx = int(np.nanargmin(np.abs(self._curve_px - event.x)))
+            else:
+                idx = _nearest_index_by_pixel(self.ax, x_arr, event)
             ax1, ay1, slope1 = interpret.tangent_from_index(x_arr, y_arr, idx, self.anchor_half)
         elif kind == "body":
             cx, cy = _data_from_pixel(self.ax, event)
@@ -467,6 +481,7 @@ class AnchorLineController:
         self._tick_orig = None
         self._press_anchor = None
         self._press_data = None
+        self._curve_px = None
         if self._readout is not None:
             self._readout.remove()
             self._readout = None
