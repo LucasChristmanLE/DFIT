@@ -20,6 +20,9 @@ BBL_PER_MIN = 1.0  # BPM is bbl/min; time integrated in minutes gives bbl.
 COMPLIANCE_OFFSET_PSI = 75.0
 RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-250 psi)
 RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
+ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
+                      # small enough to stay a true local tangent on the curving early decline,
+                      # large enough to reject single-sample gauge noise.
 
 
 # --------------------------------------------------------------------------------------------------
@@ -147,23 +150,36 @@ def extrapolate(anchor_x: float, anchor_y: float, slope: float, target_x: float)
     return anchor_y + slope * (target_x - anchor_x)
 
 
-def local_slope(x: np.ndarray, y: np.ndarray, idx: int, half: int = 4) -> float:
-    """Slope of a least-squares fit over the +/-``half`` neighborhood of sample ``idx``."""
+def _local_line_fit(x: np.ndarray, y: np.ndarray, idx: int, half: int) -> tuple[float, float]:
+    """Least-squares line over the +/-``half`` neighborhood of sample ``idx``: returns
+    ``(slope, anchor_y)`` where ``anchor_y`` is the fitted line's value AT ``x[idx]``. The fit
+    runs on x centered on ``x[idx]`` (numerical conditioning), so the centered intercept IS the
+    anchor y and the slope is unchanged by the shift. A degenerate window (<2 points) returns
+    ``(0.0, y[idx])`` -- no fit is possible, so the anchor falls back to the raw sample."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     lo, hi = max(0, idx - half), min(len(x), idx + half + 1)
     if hi - lo < 2:
-        return 0.0
-    m, _ = fit_line(x[lo:hi], y[lo:hi])
-    return m
+        return 0.0, float(y[idx])
+    m, b = fit_line(x[lo:hi] - x[idx], y[lo:hi])
+    return m, b
+
+
+def local_slope(x: np.ndarray, y: np.ndarray, idx: int, half: int = 4) -> float:
+    """Slope of a least-squares fit over the +/-``half`` neighborhood of sample ``idx``."""
+    slope, _ = _local_line_fit(x, y, idx, half)
+    return slope
 
 
 def tangent_from_index(x_arr: np.ndarray, y_arr: np.ndarray, idx: int,
                        half: int = 4) -> tuple[float, float, float]:
-    """The tangent line anchored at sample ``idx``: ``(anchor_x, anchor_y, slope)``, the slope
-    from a local fit of the +/-``half`` neighborhood (``local_slope``)."""
-    slope = local_slope(x_arr, y_arr, idx, half=half)
-    return float(x_arr[idx]), float(y_arr[idx]), slope
+    """The tangent line anchored at sample ``idx``: ``(anchor_x, anchor_y, slope)``. Both come
+    from one least-squares fit over the +/-``half`` neighborhood (``_local_line_fit``);
+    ``anchor_y`` is the fitted value AT the anchor -- a true local tangent -- not the raw
+    (possibly noisy) sample ``y_arr[idx]``, except in the degenerate <2-point window where it
+    falls back to the raw sample (matching ``local_slope``'s slope-0.0 guard)."""
+    slope, anchor_y = _local_line_fit(x_arr, y_arr, idx, half)
+    return float(x_arr[idx]), float(anchor_y), slope
 
 
 # --------------------------------------------------------------------------------------------------

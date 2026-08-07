@@ -709,7 +709,8 @@ def commit_isip_tangent(state: PickState, td: TestData, res: DerivedResults,
     """Commit the apparent-ISIP tangent (BHP vs time-seconds) after an AnchorLineController drag."""
     if kind == "anchor":
         idx = _nearest(td.t_s, anchor_x)
-        ax_, ay_, sl_ = interpret.tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
+        ax_, ay_, sl_ = interpret.tangent_from_index(td.t_s, res.bhp_all, idx,
+                                                     half=interpret.ISIP_ANCHOR_HALF)
         state.isip_tangent = TangentPick(anchor_x=ax_, anchor_y=ay_, slope=sl_)
     elif kind == "body":
         prev = state.isip_tangent
@@ -932,7 +933,8 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
     if res.t_shutin_s is None or res.bhp_all is None:
         return
     idx = _nearest(td.t_s, res.t_shutin_s + 60.0)
-    anchor_x, anchor_y, slope = interpret.tangent_from_index(td.t_s, res.bhp_all, idx, half=30)
+    anchor_x, anchor_y, slope = interpret.tangent_from_index(
+        td.t_s, res.bhp_all, idx, half=interpret.ISIP_ANCHOR_HALF)
     state.isip_tangent = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
 
 

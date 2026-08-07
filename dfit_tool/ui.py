@@ -1325,7 +1325,7 @@ class DfitApp:
                     gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                           "extension": "isip_tangent_extension"},
                     get_pick=get_pick, commit_fn=commit, curve=(t_min, res.bhp_all),
-                    anchor_half=30, readout_fn=readout, gate=gate))
+                    anchor_half=interpret.ISIP_ANCHOR_HALF, readout_fn=readout, gate=gate))
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))

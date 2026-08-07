@@ -20,14 +20,15 @@ def _res():
 def test_commit_isip_tangent_anchor_snaps_and_refits_ignoring_passed_y_and_slope():
     td, st, res = _res()
     idx = picks._nearest(td.t_s, res.t_shutin_s + 120.0)
-    expected_slope = interpret.local_slope(td.t_s, res.bhp_all, idx, half=30)
+    expected_x, expected_y, expected_slope = interpret.tangent_from_index(
+        td.t_s, res.bhp_all, idx, half=interpret.ISIP_ANCHOR_HALF)
 
     state = PickState()
     picks.commit_isip_tangent(state, td, res, "anchor",
                               anchor_x=float(td.t_s[idx]), anchor_y=-99999.0, slope=99999.0)
 
-    assert state.isip_tangent.anchor_x == pytest.approx(float(td.t_s[idx]))
-    assert state.isip_tangent.anchor_y == pytest.approx(float(res.bhp_all[idx]))
+    assert state.isip_tangent.anchor_x == pytest.approx(expected_x)
+    assert state.isip_tangent.anchor_y == pytest.approx(expected_y)
     assert state.isip_tangent.slope == pytest.approx(expected_slope)
 
 
@@ -97,10 +98,11 @@ def test_commit_contact_point_then_compute_all_derives_eff_isip_line_compliance(
     res2 = compute_all(st, td)
 
     idx = int(np.nanargmin(np.abs(dg.G - target_G)))
-    expected_slope = interpret.local_slope(dg.G, res.resampled.p, idx, half=4)
+    expected_x, expected_y, expected_slope = interpret.tangent_from_index(
+        dg.G, res.resampled.p, idx, half=4)
     assert res2.eff_isip_line_compliance is not None
-    assert res2.eff_isip_line_compliance.anchor_x == pytest.approx(float(dg.G[idx]))
-    assert res2.eff_isip_line_compliance.anchor_y == pytest.approx(float(res.resampled.p[idx]))
+    assert res2.eff_isip_line_compliance.anchor_x == pytest.approx(expected_x)
+    assert res2.eff_isip_line_compliance.anchor_y == pytest.approx(expected_y)
     assert res2.eff_isip_line_compliance.slope == pytest.approx(expected_slope)
     assert res2.effective_isip_compliance is not None
     assert np.isfinite(res2.effective_isip_compliance)
