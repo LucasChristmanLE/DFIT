@@ -382,11 +382,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     stride = -(-n // 500)
                     res.guard_excluded_G = tail_G[::stride]
                     res.guard_excluded_p = tail_p[::stride]
-            # Inserted at the front (not appended) so an earlier-queued warning (density/TVD,
-            # volume disagreement, ...) can't push this out of warn_lbl's warnings[:2] slots --
-            # a firing guard must never be silent in the UI. The tail-trim escape warning below
-            # (its own insert(0), for a diagnostics-starving trim) runs after this in code order,
-            # so it still lands frontmost of the two when both fire.
+            # Inserted at the front (not appended) so this stays the topmost line in warn_lbl's
+            # stacked display, ahead of any earlier-queued warning (density/TVD, volume
+            # disagreement, ...) -- a firing guard must never be buried in the UI. The tail-trim
+            # escape warning below (its own insert(0), for a diagnostics-starving trim) runs after
+            # this in code order, so it still lands frontmost of the two when both fire.
             res.warnings.insert(0,
                 f"Tail guard stopped resampling {rs_full.guard_dt/60:.0f} min after shut-in "
                 "(sustained pressure rise); later data excluded")
@@ -404,9 +404,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         elif state.tail_trim_dt is not None:
             # A pathological trim leaves too few points to diagnose -- warn rather than let it be
             # a silent dead end (the renderer/controller recovery path still lets the analyst drag
-            # the trim line back right from here). Inserted at the front so it survives the
-            # warn_lbl's warnings[:2] slots even when other warnings already queued ahead of it --
-            # this is the escape instruction for an otherwise-blank plot.
+            # the trim line back right from here). Inserted at the front so it stays the topmost
+            # line in warn_lbl's stacked display even when other warnings already queued ahead of
+            # it -- this is the escape instruction for an otherwise-blank plot.
             res.warnings.insert(0, f"Tail trim leaves only {len(rs.p)} resampled point(s); drag "
                                    "the trim line back right")
 

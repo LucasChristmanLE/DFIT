@@ -356,6 +356,16 @@ class DfitApp:
         panel = ttk.Frame(body, padding=8, width=320)
         panel.pack(side="right", fill="y")
         panel.pack_propagate(False)
+
+        # Bottom-packed first so these two keep their full height when a scenario frame
+        # overfills the fixed panel -- the squeeze then falls on the notes box instead
+        # of clipping the warnings. First-packed side="bottom" is bottommost: hint under warn.
+        self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
+        self.hint_lbl.pack(side="bottom", anchor="w", pady=(6, 0))
+        self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
+                                  justify="left")
+        self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
+
         ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
@@ -413,8 +423,6 @@ class DfitApp:
         ttk.Label(panel, text="Notes").pack(anchor="w")
         self.txt_notes = tk.Text(panel, height=5, width=36)
         self.txt_notes.pack(fill="x")
-        self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
-        self.hint_lbl.pack(anchor="w", pady=(6, 0))
 
     def _show_queue(self):
         """Pack the folder-mode sidebar leftmost, even though the center frame was already
@@ -428,12 +436,9 @@ class DfitApp:
         bar = ttk.Frame(self.root, padding=6)
         bar.pack(side="bottom", fill="x")
 
-        # Right side: Reset view, then Skip test, then the warning label at the far edge --
-        # Reset view and warn_lbl are pre-existing, just not previously placed in the stepbar.
-        # Packed right-to-left, so pack the rightmost-visually one (warn_lbl) first, giving
-        # "[Reset view] [Skip test] <warning text>" reading left to right.
-        self.warn_lbl = ttk.Label(bar, text="", foreground="red")
-        self.warn_lbl.pack(side="right")
+        # Right side: Reset view, then Skip test. Packed right-to-left, so pack the
+        # rightmost-visually one (Skip test) first, giving "[Reset view] [Skip test]"
+        # reading left to right.
         # Folder mode only: park the whole test as "skipped" regardless of how far its steps
         # got, an override no per-step Skip > can express. Disabled/labeled in single-file mode
         # and toggled by _update_skip_test_btn, the one sync point for this button's state/text.
@@ -591,7 +596,7 @@ class DfitApp:
             messagebox.showinfo("Open Folder", "No DFIT tests found in this folder.")
             return
 
-        # Surface scan warnings as a one-line summary rather than dialog-spamming per test.
+        # Surface scan warnings as a short summary rather than dialog-spamming per test.
         warn_count = sum(len(e.scan_warnings) for e in entries)
         entry_ids = {e.test_id for e in entries}
         orphan_ids = [tid for tid in log_df["test_id"].tolist() if tid not in entry_ids]
@@ -601,7 +606,7 @@ class DfitApp:
         if orphan_ids:
             parts.append(f"{len(orphan_ids)} orphaned log row(s) with no matching test")
         if parts:
-            self.warn_lbl.config(text=" | ".join(parts))
+            self.warn_lbl.config(text="\n".join(parts))
 
     def _populate_queue(self):
         self.queue_tree.delete(*self.queue_tree.get_children())
@@ -1483,7 +1488,7 @@ class DfitApp:
             owning_step = FIELD_STEP[k]
             visited = self.state.step_status.get(owning_step, "not_visited") != "not_visited"
             self.value_lbls[k].config(text=v if visited else "-")
-        self.warn_lbl.config(text=" | ".join(r.warnings[:2]) if r.warnings else "")
+        self.warn_lbl.config(text="\n".join(r.warnings) if r.warnings else "")
 
     # ---- persistence ----------------------------------------------------------------------------
     def _save_picks(self):

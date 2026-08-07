@@ -12,7 +12,8 @@ silently tightened the guard); the guard fired on a single over-tolerance sample
 mid-run didn't reset it, letting two unrelated excursions separated by missing data bridge into
 a false fire; sample count wasn't checked, so coarse (>= 60 s) sample spacing let a 2-sample
 excursion satisfy the duration window alone; a firing guard's warning was appended (not
-inserted), so earlier warnings could push it out of the UI's warnings[:2] display; and the
+inserted), so earlier warnings could push it below the fold in the UI's stacked warnings
+display; and the
 preview's decimation stride (``n // 500``) could leave up to 999 points, not <= 500. Tests
 called out below as "must fail against the pre-fix code" pin exactly those regressions.
 """
@@ -333,8 +334,8 @@ def _seeded_with_sustained_rise_and_two_earlier_warnings():
     disagrees with the rate integral by > 5% -- alongside the density/TVD warning that fires by
     default (pressure_is_bhp defaults False with no density/tvd set), this queues TWO warnings
     ahead of the guard's in compute_all's append order, which is what exposed the append-vs-
-    insert(0) bug (plain append pushed the guard's message to warnings[2], outside the UI's
-    warnings[:2] display)."""
+    insert(0) bug (plain append pushed the guard's message to warnings[2], below the top of the
+    UI's stacked warnings display)."""
     start_idx, shutin_idx = 50, 100
     decline_len = 200
     rise_len = 300
@@ -365,7 +366,7 @@ def _seeded_with_sustained_rise_and_two_earlier_warnings():
 def test_guard_warning_survives_two_earlier_warnings():
     """Must fail against the pre-fix code: with two warnings already queued ahead of it (density/
     TVD, volume disagreement), a plain `append` for the guard's own warning lands it at index 2,
-    outside warnings[:2] -- the UI's warn_lbl would never show it."""
+    below the top of the UI's stacked warn_lbl display -- insert(0) keeps it topmost instead."""
     res = _seeded_with_sustained_rise_and_two_earlier_warnings()
 
     assert res.resampled_full.guard_dt is not None

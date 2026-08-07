@@ -250,10 +250,12 @@ spike no longer trips it. A non-finite sample mid-run resets the run rather than
 through it -- continuity can't be confirmed across a dropout, so two excursions separated by
 missing data can't bridge into a false fire. When the guard does fire, the excluded raw tail is
 drawn as a faint gray preview (capped at 2x the kept G-range) alongside a warning inserted at
-the front of `DerivedResults.warnings` (not appended), so an earlier-queued warning can't push
-it out of the panel's two-slot display -- the truncation is never silent. A monotone crash to
-~0 psi (gauge pulled, well opened) still sails through it and pollutes the derivatives. The
-G-function step has a manual trim for this: a draggable dashed vline (`gid="tail_trim"`, a `DragLineController`
+the front of `DerivedResults.warnings` (not appended), so it stays the topmost line in the
+right panel's stacked warning display (under the Notes box, one warning per line, wrapped --
+`ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A monotone
+crash to ~0 psi (gauge pulled, well opened) still sails through it and pollutes the
+derivatives. The G-function step has a manual trim for this: a draggable dashed vline
+(`gid="tail_trim"`, a `DragLineController`
 sharing the step's `_CaptureGate`) commits `PickState.tail_trim_dt` (shut-in-relative seconds,
 `None` = no trim, logged to `tail_trim_s`). `compute_all` resamples the full post-shut-in
 record, keeps it on `DerivedResults.resampled_full`/`G_full`, then masks to
@@ -362,3 +364,4 @@ select their tab (`ui.py:_open_guide`).
 - When no rate is auto-detected, the start/shut-in vlines never appear
 - Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in
 - Make tail trimming tool hidden until toggled on by a button. It should then be used to trim then toggled back off to not clutter the G-function plot.
+- Rename overview tab to "Injectiom". Add new "Overview" tab showing entire dataset. Move the trim tool from the G-func tab to this tab.

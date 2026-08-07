@@ -75,8 +75,8 @@ def test_too_tight_trim_leaves_no_diagnostics_and_warns():
 
 
 def test_too_tight_trim_warning_is_inserted_first():
-    """warn_lbl only shows warnings[:2] -- the escape instruction for an otherwise-blank plot
-    must never be pushed out of those slots by other warnings queued ahead of it."""
+    """warn_lbl now stacks every warning, but the escape instruction for an otherwise-blank plot
+    must still land topmost, ahead of other warnings queued before it in compute_all."""
     td, st, res = _seeded_with_crash()
     st.pressure_is_bhp = False
     st.density_ppg = None  # also trips "Surface pressure selected but density/TVD not set"
