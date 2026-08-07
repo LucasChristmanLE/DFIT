@@ -433,7 +433,7 @@ def test_status_for_done_and_skipped_mix_is_skipped():
     # that as "skipped" rather than "done" (a step_status skip is a real user decision, unlike
     # the PC-F clause below, which is a scenario the workflow forces rather than chooses).
     st = PickState(step_status={
-        "injection": "done", "isip": "done", "gfunction": "skipped",
+        "overview": "done", "injection": "done", "isip": "done", "gfunction": "skipped",
         "tangent": "done", "loglog": "done", "porepressure": "done",
     })
     assert store.status_for(st) == "skipped"
@@ -461,7 +461,7 @@ def test_status_for_pcf_without_porepressure_step_is_done():
     st = PickState(
         postclosure_scenario="PC-F no peak",
         step_status={
-            "injection": "done", "isip": "done", "gfunction": "done",
+            "overview": "done", "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done",
         },
     )
@@ -475,7 +475,7 @@ def test_status_for_pcf_with_stale_porepressure_skip_entry_is_still_done():
     st = PickState(
         postclosure_scenario="PC-F no peak",
         step_status={
-            "injection": "done", "isip": "done", "gfunction": "done",
+            "overview": "done", "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done", "porepressure": "skipped",
         },
     )

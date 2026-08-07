@@ -176,6 +176,9 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     recorded", and treating it as "infer" is the safer default either way.
     """
     status: dict[str, str] = {}
+    # "overview" is deliberately absent from this backfill: it owns no picks of its own (it just
+    # mirrors the injection window), and this function only exists to reconstruct step_status for
+    # pre-step_status saves, which predate the "overview" step entirely.
     if state.start_idx is not None or state.shutin_idx is not None:
         status["injection"] = "done"
     if state.isip_tangent is not None:

@@ -7,17 +7,17 @@ from dfit_tool import picks, plots
 from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
 
 
-def test_save_all_step_pngs_writes_six_nonempty_files(tmp_path):
+def test_save_all_step_pngs_writes_seven_nonempty_files(tmp_path):
     td = make_testdata()
     state = injection_state(td)
     res = compute_all(state, td)
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 6
+    assert len(paths) == 7
     expected = [
-        "1_injection.png", "2_isip.png", "3_gfunction.png",
-        "4_tangent.png", "5_loglog.png", "6_porepressure.png",
+        "1_overview.png", "2_injection.png", "3_isip.png", "4_gfunction.png",
+        "5_tangent.png", "6_loglog.png", "7_porepressure.png",
     ]
     for name in expected:
         full = tmp_path / name
@@ -103,8 +103,8 @@ def test_save_all_step_pngs_smoke_test_with_d2_on(tmp_path):
     res = compute_all(state, td)
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
-    assert len(paths) == 6
-    full = tmp_path / "3_gfunction.png"
+    assert len(paths) == 7
+    full = tmp_path / "4_gfunction.png"
     assert full.exists()
     assert full.stat().st_size > 0
 
@@ -138,7 +138,7 @@ def test_save_all_step_pngs_smoke_test_with_trim_set(tmp_path):
     td, state, res = _crashed_and_trimmed_state()
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
-    assert len(paths) == 6
-    full = tmp_path / "3_gfunction.png"
+    assert len(paths) == 7
+    full = tmp_path / "4_gfunction.png"
     assert full.exists()
     assert full.stat().st_size > 0

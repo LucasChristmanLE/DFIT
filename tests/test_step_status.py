@@ -134,29 +134,32 @@ def test_step_index_matches_steps_order():
 
 
 def test_next_step_advances_and_clamps_at_last():
+    assert next_step("overview") == "injection"
     assert next_step("injection") == "isip"
     assert next_step("loglog") == "porepressure"
     assert next_step("porepressure") == "porepressure"  # no-op at last
 
 
 def test_prev_step_retreats_and_clamps_at_first():
+    assert prev_step("injection") == "overview"
     assert prev_step("isip") == "injection"
     assert prev_step("porepressure") == "loglog"
-    assert prev_step("injection") == "injection"  # no-op at first
+    assert prev_step("overview") == "overview"  # no-op at first
 
 
 # --------------------------------------------------------------------------------------------------
 # first_not_visited_step (post-_load_picks navigation)
 # --------------------------------------------------------------------------------------------------
-def test_first_not_visited_step_empty_status_returns_injection():
-    assert first_not_visited_step({}) == "injection"
+def test_first_not_visited_step_empty_status_returns_overview():
+    assert first_not_visited_step({}) == "overview"
 
 
 def test_first_not_visited_step_returns_first_gap():
-    status = {"injection": "done", "isip": "done", "gfunction": "not_visited"}
+    status = {"overview": "done", "injection": "done", "isip": "done",
+              "gfunction": "not_visited"}
     assert first_not_visited_step(status) == "gfunction"
 
 
-def test_first_not_visited_step_all_covered_falls_back_to_injection():
+def test_first_not_visited_step_all_covered_falls_back_to_overview():
     status = {k: "done" for k, _ in STEPS}
-    assert first_not_visited_step(status) == "injection"
+    assert first_not_visited_step(status) == "overview"

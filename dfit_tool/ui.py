@@ -31,6 +31,7 @@ from .questionnaire import find_questionnaire, parse_questionnaire
 _SLIDER_GID = "slider"
 
 STEPS = [
+    ("overview", "Overview"),
     ("injection", "Injection"),
     ("isip", "Apparent ISIP"),
     ("gfunction", "G-function"),
@@ -210,7 +211,7 @@ class DfitApp:
         self.td: io_load.TestData | None = None
         self.state = PickState()
         self.res = None
-        self.step = "injection"
+        self.step = "overview"
         self._controllers: list = []
         self._views: dict[str, Optional[ViewState]] = {}
         self._x_slider: Optional[sliders.PanRangeSlider] = None
@@ -536,7 +537,7 @@ class DfitApp:
         self.var_formation.set("")
         self._load_questionnaire(path)
         self._sync_state_from_widgets()
-        self._goto("injection")
+        self._goto("overview")
         return True
 
     def _load(self, path: str):
@@ -1060,13 +1061,13 @@ class DfitApp:
 
     def _seed_step(self, key: str) -> None:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
-        ``picks.SEEDERS``. "injection" and "isip" need ``self.td`` too; the rest take only
-        (state, res)."""
+        ``picks.SEEDERS``. "overview" and "injection" need ``self.td`` too (seed_overview just
+        delegates to seed_injection); "isip" needs both; the rest take only (state, res)."""
         if self.td is None:
             return
         res = compute_all(self.state, self.td)
         seeder = picks.SEEDERS[key]
-        if key == "injection":
+        if key in ("overview", "injection"):
             seeder(self.state, self.td)
         elif key == "isip":
             seeder(self.state, self.td, res)
@@ -1319,7 +1320,10 @@ class DfitApp:
         self._controllers = []
 
         step = self.step
-        if step == "injection":
+        if step == "overview":
+            self.hint_lbl.config(
+                text="Entire dataset. Use Next to zoom into the injection window.")
+        elif step == "injection":
             def _commit(idx_attr):
                 def on_release(x_hours):
                     idx = picks._nearest(self.td.t_s / 3600.0, x_hours)

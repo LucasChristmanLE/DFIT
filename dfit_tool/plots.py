@@ -88,6 +88,51 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
 
 
 # --------------------------------------------------------------------------------------------------
+def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
+    """Step 1: the entire dataset, unmasked -- BHP (or surface P) and rate vs time, for the whole
+    record from file start to its last raw sample.
+
+    ``render_injection`` (the next step) clamps its default view to the active-injection region so
+    a multi-week falloff tail doesn't dwarf it; that's useful once the analyst is working the
+    injection window, but it hides the tail's true length/shape up front. This step shows the full
+    record with no clamp, so that context is visible before the tool zooms in. The start/shut-in
+    picks are drawn here only as thin reference lines (gids "start_ref"/"shutin_ref", distinct from
+    Injection's draggable "start"/"shutin") -- they are owned and dragged on the Injection step;
+    this step draws no controllers of its own.
+    """
+    ax.clear()
+    p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
+    t_h = _hours(td.t_s)
+
+    xt, xp = _decimate(t_h, p)
+    press_color = "black" if res.pressure_is_bhp else "tab:red"
+    ax.plot(xt, xp, color=press_color, lw=0.8,
+            label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
+    ax.set_xlabel("time from file start (h)")
+    ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
+    ax.grid(True, alpha=0.3)
+
+    if res.rate_all is not None:
+        ax2 = ax.twinx()
+        _, xr = _decimate(t_h, res.rate_all)
+        ax2.plot(xt, xr, color="tab:blue", lw=0.7, alpha=0.7)
+        ax2.set_ylabel("rate (bpm)", color="tab:blue")
+        ax2.tick_params(axis="y", labelcolor="tab:blue")
+
+    if state.start_idx is not None:
+        ax.axvline(t_h[state.start_idx], color="tab:orange", ls=":", lw=1.0, alpha=0.6,
+                   label="injection start", gid="start_ref")
+    if state.shutin_idx is not None:
+        ax.axvline(t_h[state.shutin_idx], color="tab:red", ls=":", lw=1.0, alpha=0.6,
+                   label="shut-in", gid="shutin_ref")
+
+    ax.set_title("Overview — entire dataset", fontsize=10)
+    ax.legend(loc="upper right", fontsize=8)
+    # The full autoscaled extent IS the intended default view for this step.
+    return ViewDefaults()
+
+
 def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers.
 
@@ -457,6 +502,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
 
 
 RENDERERS = {
+    "overview": render_overview,
     "injection": render_injection,
     "isip": render_isip,
     "gfunction": render_gfunction,
@@ -517,12 +563,12 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
     """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
-    order: injection -> isip -> gfunction -> tangent -> loglog -> porepressure). Returns the
-    written paths in that order. Skips "porepressure" when ``porepressure_skipped(state)``
-    (PC-F: no postclosure line, nothing to render) -- the numbering from ``enumerate`` still
-    runs over all of RENDERERS so the other five filenames are unaffected; the pore-pressure
-    file is simply absent. Used by ``ui._finish``, but headless/Tkinter-free like the rest of
-    this module."""
+    order: overview -> injection -> isip -> gfunction -> tangent -> loglog -> porepressure).
+    Returns the written paths in that order. Skips "porepressure" when
+    ``porepressure_skipped(state)`` (PC-F: no postclosure line, nothing to render) -- the
+    numbering from ``enumerate`` still runs over all of RENDERERS so the other six filenames are
+    unaffected; the pore-pressure file is simply absent. Used by ``ui._finish``, but
+    headless/Tkinter-free like the rest of this module."""
     paths = []
     skip_pp = porepressure_skipped(state)
     for i, key in enumerate(RENDERERS, start=1):

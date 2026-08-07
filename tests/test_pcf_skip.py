@@ -99,8 +99,8 @@ def test_pickstate_from_json_roundtrip_migrates_label(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------------
-# plots.save_all_step_pngs: PC-F omits the porepressure PNG (five files, none named
-# "*porepressure*"); a non-PC-F scenario still writes all six.
+# plots.save_all_step_pngs: PC-F omits the porepressure PNG (six files, none named
+# "*porepressure*"); a non-PC-F scenario still writes all seven.
 # --------------------------------------------------------------------------------------------------
 def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
     td = make_testdata()
@@ -110,12 +110,12 @@ def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 5
+    assert len(paths) == 6
     assert not any("porepressure" in p for p in paths)
     assert not list(tmp_path.glob("*porepressure*"))
 
 
-def test_save_all_step_pngs_writes_all_six_for_non_pcf_scenario(tmp_path):
+def test_save_all_step_pngs_writes_all_seven_for_non_pcf_scenario(tmp_path):
     td = make_testdata()
     state = injection_state(td)
     state.postclosure_scenario = "PC-A linear"
@@ -123,7 +123,7 @@ def test_save_all_step_pngs_writes_all_six_for_non_pcf_scenario(tmp_path):
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 6
+    assert len(paths) == 7
     assert any("porepressure" in p for p in paths)
 
 

@@ -1008,6 +1008,14 @@ def suggest_pp_axis(scenario: str) -> Optional[str]:
 # needs (``res.t_shutin_s``, ``res.diagnostics``, etc.) aren't ready yet -- out-of-order entry into
 # a step whose prerequisites weren't picked simply seeds nothing.
 # --------------------------------------------------------------------------------------------------
+def seed_overview(state: PickState, td: TestData) -> None:
+    """The Overview step owns no picks of its own -- it just seeds the injection window early
+    (delegating to ``seed_injection``, which is non-destructive) so the start/shut-in reference
+    lines exist from step 1, not just once the analyst reaches Injection. Also gives a later
+    trim tool a shut-in anchor to work from."""
+    seed_injection(state, td)
+
+
 def seed_injection(state: PickState, td: TestData) -> None:
     """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
     falling back to the pressure shape when no usable rate channel exists -- the vlines must
@@ -1102,6 +1110,7 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
 
 
 SEEDERS = {
+    "overview": seed_overview,
     "injection": seed_injection,
     "isip": seed_isip,
     "gfunction": seed_gfunction,

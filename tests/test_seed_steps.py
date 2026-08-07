@@ -8,11 +8,55 @@ at a time as the user actually visits each step, rather than all at once at load
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 from dfit_tool import picks, ui
 from dfit_tool.model import PickState, TangentPick, compute_all
+from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
+
+
+# --------------------------------------------------------------------------------------------------
+# seed_overview: owns no picks of its own, just delegates to seed_injection
+# --------------------------------------------------------------------------------------------------
+def test_seed_overview_seeds_injection_window():
+    td = make_testdata()
+    st_overview = PickState(rate_col="RATE", volume_col="VOLUME")
+    st_injection = PickState(rate_col="RATE", volume_col="VOLUME")
+    assert st_overview.start_idx is None and st_overview.shutin_idx is None
+    picks.seed_overview(st_overview, td)
+    picks.seed_injection(st_injection, td)
+    assert st_overview.start_idx is not None
+    assert st_overview.shutin_idx is not None
+    assert (st_overview.start_idx, st_overview.shutin_idx) == \
+        (st_injection.start_idx, st_injection.shutin_idx)
+
+
+def test_seed_overview_non_destructive():
+    td = make_testdata()
+    st = PickState(rate_col="RATE", volume_col="VOLUME", start_idx=5, shutin_idx=9)
+    picks.seed_overview(st, td)
+    assert (st.start_idx, st.shutin_idx) == (5, 9)
+
+
+def test_dfit_app_seed_step_seeds_overview_without_visiting_injection():
+    """DfitApp._seed_step("overview", ...) via a duck-typed stand-in (same pattern as
+    test_step_gate.py's _nav_stub): the injection window is populated straight from "overview",
+    with the "injection" step never having been reached."""
+    td = make_testdata()
+    stub = types.SimpleNamespace()
+    stub.td = td
+    stub.state = injection_state(td)
+    stub.state.start_idx = None
+    stub.state.shutin_idx = None
+    stub._seed_step = types.MethodType(DfitApp._seed_step, stub)
+
+    stub._seed_step("overview")
+
+    assert stub.state.start_idx is not None
+    assert stub.state.shutin_idx is not None
+    assert stub.state.step_status == {}  # _seed_step itself never touches step_status
 
 
 # --------------------------------------------------------------------------------------------------
@@ -240,7 +284,7 @@ def test_seed_pp_non_destructive():
 # --------------------------------------------------------------------------------------------------
 # SEEDERS dict shape + seed_defaults is fully gone
 # --------------------------------------------------------------------------------------------------
-def test_seeders_covers_exactly_the_six_step_keys():
+def test_seeders_covers_exactly_the_seven_step_keys():
     assert set(picks.SEEDERS.keys()) == {k for k, _ in ui.STEPS}
 
 

@@ -87,6 +87,25 @@ def test_porepressure_does_not_force_axes_xlim_to_zero():
     assert ax.get_xlim()[0] != 0.0
 
 
+def test_render_overview_plots_full_dataset_unmasked():
+    # Same long-falloff-tail file that binds render_injection's "last nonzero rate + 15 min"
+    # clamp -- render_overview must plot the whole thing, unclamped, with the full autoscaled
+    # extent as its default view.
+    td = make_testdata(n=3000, dt=1.0)
+    state = injection_state(td)
+    res = compute_all(state, td)
+    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+
+    t_h = td.t_s / 3600.0
+    press_line = ax.get_lines()[0]
+    assert press_line.get_xdata().max() == pytest.approx(float(t_h[-1]))
+    assert defaults == ViewDefaults()
+
+    gids = {ln.get_gid() for ln in ax.get_lines()}
+    assert "start_ref" in gids
+    assert "shutin_ref" in gids
+
+
 def test_injection_returns_injection_window_instead_of_setting_it():
     td = make_testdata()
     state = injection_state(td)
