@@ -360,7 +360,6 @@ select their tab (`ui.py:_open_guide`).
   `_update_stepbar` -> `_update_skip_test_btn` chain).
 
 ## TODO
-- Would like to be able to resize both sidebars. Field names in right sidebar are getting cut off, even though there's lots of space.
 - When no rate is auto-detected, the start/shut-in vlines never appear
 - Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in
 - Make tail trimming tool hidden until toggled on by a button. It should then be used to trim then toggled back off to not clutter the G-function plot.

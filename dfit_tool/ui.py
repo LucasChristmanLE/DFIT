@@ -312,14 +312,19 @@ class DfitApp:
         self.quest_lbl.pack(fill="x", anchor="w")
 
     def _build_body(self):
-        body = ttk.Frame(self.root)
-        body.pack(side="top", fill="both", expand=True)
+        # sashrelief="raised" makes the drag affordance visible; a flat sash is
+        # indistinguishable from the surrounding ttk frames.
+        self.body = tk.PanedWindow(self.root, orient="horizontal", sashwidth=5, bd=0,
+                                   sashrelief="raised")
+        self.body.pack(side="top", fill="both", expand=True)
+        body = self.body
+        self._queue_width = 240  # remembered pane width; see _show_queue/_hide_queue
 
-        # left: folder-mode test queue -- built but never packed here. _show_queue()/_hide_queue()
-        # (folder open / _load's exit-folder-mode path) own its visibility; single-file mode must
-        # stay pixel-identical to today, so this frame starts hidden.
-        self.queue_frame = ttk.Frame(body, width=240)
-        self.queue_frame.pack_propagate(False)  # same fixed-width pattern as the right panel
+        # left: folder-mode test queue -- built here but not added to the paned window yet.
+        # _show_queue()/_hide_queue() (folder open / _load's exit-folder-mode path) own its
+        # pane membership; single-file mode must stay pixel-identical to today, so this frame
+        # starts absent from the paned window (no left pane at all, not just zero-width).
+        self.queue_frame = ttk.Frame(body)
 
         self.progress_lbl = ttk.Label(self.queue_frame, text="0/0", padding=(4, 4))
         self.progress_lbl.pack(side="top", fill="x")
@@ -329,8 +334,8 @@ class DfitApp:
         self.queue_tree = ttk.Treeview(tree_frame, columns=("status",), show="tree headings")
         self.queue_tree.heading("#0", text="Test")
         self.queue_tree.heading("status", text="Status")
-        self.queue_tree.column("#0", width=140)
-        self.queue_tree.column("status", width=90, anchor="w")
+        self.queue_tree.column("#0", width=140, stretch=True)
+        self.queue_tree.column("status", width=90, anchor="w", stretch=False)
         queue_vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.queue_tree.yview)
         self.queue_tree.configure(yscrollcommand=queue_vsb.set)
         self.queue_tree.pack(side="left", fill="both", expand=True)
@@ -345,33 +350,43 @@ class DfitApp:
 
         # center: canvas
         center = ttk.Frame(body)
-        center.pack(side="left", fill="both", expand=True)
-        self._center_frame = center  # so _show_queue can pack the sidebar before= it
+        self.body.add(center, stretch="always", minsize=400)
+        self._center_frame = center  # so _show_queue can add the sidebar before= it
         self.fig = Figure(figsize=(9, 6))
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=center)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
 
         # right: pick panel
-        panel = ttk.Frame(body, padding=8, width=320)
-        panel.pack(side="right", fill="y")
-        panel.pack_propagate(False)
+        panel = ttk.Frame(body, padding=8)
+        self.body.add(panel, width=320, minsize=220, stretch="never")
 
         # Bottom-packed first so these two keep their full height when a scenario frame
-        # overfills the fixed panel -- the squeeze then falls on the notes box instead
-        # of clipping the warnings. First-packed side="bottom" is bottommost: hint under warn.
+        # overfills the panel -- the squeeze then falls on the notes box instead of clipping
+        # the warnings. First-packed side="bottom" is bottommost: hint under warn.
         self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
         self.hint_lbl.pack(side="bottom", anchor="w", pady=(6, 0))
         self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
 
+        # Panel is now a resizable pane (sash-draggable), so wraplength must track its actual
+        # width instead of a value pinned to the old fixed width=320.
+        def _on_panel_configure(event):
+            wrap = max(event.width - 20, 100)
+            self.hint_lbl.configure(wraplength=wrap)
+            self.warn_lbl.configure(wraplength=wrap)
+        panel.bind("<Configure>", _on_panel_configure)
+
         ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
+            # Value packed first: pane minsize only binds sash drags, so a too-narrow
+            # window can still squeeze this pane -- the later-packed name label loses
+            # pixels then, keeping the number readable.
             row = ttk.Frame(panel); row.pack(fill="x")
-            ttk.Label(row, text=key, width=16).pack(side="left")
             v = ttk.Label(row, text="-", width=14, anchor="e"); v.pack(side="right")
+            ttk.Label(row, text=key).pack(side="left")
             self.value_lbls[key] = v
 
         ttk.Separator(panel).pack(fill="x", pady=6)
@@ -425,12 +440,27 @@ class DfitApp:
         self.txt_notes.pack(fill="x")
 
     def _show_queue(self):
-        """Pack the folder-mode sidebar leftmost, even though the center frame was already
-        packed -- `before=` re-slots it ahead regardless of pack order."""
-        self.queue_frame.pack(side="left", fill="y", before=self._center_frame)
+        """Add the folder-mode sidebar as the leftmost pane -- `before=` re-slots it ahead
+        of the center pane regardless of add order. No-op when the pane is already present
+        (folder-to-folder open): re-adding would reconfigure width= and snap a sash-dragged
+        sidebar back to the remembered value."""
+        if str(self.queue_frame) in (str(p) for p in self.body.panes()):
+            return
+        self.body.add(self.queue_frame, before=self._center_frame,
+                      width=self._queue_width, minsize=140, stretch="never")
 
     def _hide_queue(self):
-        self.queue_frame.pack_forget()
+        # No-op when the queue pane isn't currently added (_load calls this even in
+        # single-file mode). PanedWindow.panes() returns Tcl_Obj path names, so compare
+        # by str() on both sides rather than relying on cross-type equality.
+        if str(self.queue_frame) not in (str(p) for p in self.body.panes()):
+            return
+        # Remember the (possibly sash-dragged) width for re-entry this session. An unmapped
+        # widget reports winfo_width()==1, so only trust it above that.
+        w = self.queue_frame.winfo_width()
+        if w > 1:
+            self._queue_width = w
+        self.body.forget(self.queue_frame)
 
     def _build_stepbar(self):
         bar = ttk.Frame(self.root, padding=6)
