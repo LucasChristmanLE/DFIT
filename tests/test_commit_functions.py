@@ -7,12 +7,12 @@ import pytest
 
 from dfit_tool import interpret, picks
 from dfit_tool.model import PickState, TangentPick, compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 def _res():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     return td, st, compute_all(st, td)
 
 

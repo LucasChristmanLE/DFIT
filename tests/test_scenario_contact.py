@@ -332,12 +332,12 @@ def test_gfunction_hint_text_per_scenario():
 import matplotlib.pyplot as plt
 
 from dfit_tool import plots
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 def _gfunction_fixture(**state_kw):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     for k, v in state_kw.items():
         setattr(state, k, v)
     res = compute_all(state, td)
@@ -371,7 +371,7 @@ def test_render_gfunction_d2_toggle():
 
 def _gfunction_defaults(**state_kw):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     for k, v in state_kw.items():
         setattr(state, k, v)
     res = compute_all(state, td)
@@ -416,7 +416,7 @@ def test_render_gfunction_y3lim_ignores_early_spike():
     densest across the early water-hammer spike, so unmasked percentiles would blow up the
     (slider-less) default view."""
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.show_d2pdg2 = True
     res = compute_all(state, td)
     dg = res.diagnostics

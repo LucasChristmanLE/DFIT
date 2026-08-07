@@ -34,7 +34,7 @@ from dfit_tool.resample import (
     RISE_GUARD_SUSTAIN_SAMPLES,
     resample_pressure_increment,
 )
-from tests.helpers import PRESSURE_COL, make_testdata, overview_state
+from tests.helpers import PRESSURE_COL, make_testdata, injection_state
 
 _WARNING_SNIPPET = "Tail guard stopped resampling"
 
@@ -317,8 +317,8 @@ def test_compute_all_populates_guard_excluded_preview_and_warns():
 
 def test_compute_all_no_rise_no_preview_no_warning():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -400,8 +400,8 @@ def test_render_gfunction_draws_guard_excluded_when_guard_fired():
 
 def test_render_gfunction_no_guard_excluded_when_guard_did_not_fire():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)

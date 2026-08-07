@@ -6,7 +6,7 @@ import json
 
 from dfit_tool.model import PickState, _decode, compute_all
 
-from tests.helpers import overview_state, make_testdata
+from tests.helpers import injection_state, make_testdata
 
 
 def test_decode_migrates_old_eff_isip_line_anchor_to_min_dpdg_g(tmp_path):
@@ -54,7 +54,7 @@ def test_decode_coerces_null_scenario_fields_to_empty_string(tmp_path):
     assert loaded.postclosure_scenario == ""
 
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.closure_scenario = loaded.closure_scenario
     state.postclosure_scenario = loaded.postclosure_scenario
     compute_all(state, td)  # must not raise

@@ -31,7 +31,7 @@ from .questionnaire import find_questionnaire, parse_questionnaire
 _SLIDER_GID = "slider"
 
 STEPS = [
-    ("overview", "Overview"),
+    ("injection", "Injection"),
     ("isip", "Apparent ISIP"),
     ("gfunction", "G-function"),
     ("tangent", "Tangent"),
@@ -76,9 +76,9 @@ PANEL_FIELDS = [
 # stay None (and display "-") until the gfunction step has actually been visited -- same
 # precedent as "delta closure" owning only "tangent".
 FIELD_STEP = {
-    "te (min)": "overview",
-    "Vinj (bbl)": "overview",
-    "qmax (bpm)": "overview",
+    "te (min)": "injection",
+    "Vinj (bbl)": "injection",
+    "qmax (bpm)": "injection",
     "apparent ISIP": "isip",
     "eff ISIP (compliance)": "gfunction",
     # Needs the isip pick (apparent ISIP) and the gfunction pick (the reference eff ISIP);
@@ -122,11 +122,11 @@ def first_not_visited_step(step_status: dict[str, str]) -> str:
     step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
     left off. If every step already has some status -- an old file whose picks cover the whole
     workflow -- there is no natural "resume point", so the simplest sensible fallback is the
-    first step, "overview"."""
+    first step, "injection"."""
     for key, _ in STEPS:
         if step_status.get(key, "not_visited") == "not_visited":
             return key
-    return "overview"
+    return STEPS[0][0]
 
 
 def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> str:
@@ -210,7 +210,7 @@ class DfitApp:
         self.td: io_load.TestData | None = None
         self.state = PickState()
         self.res = None
-        self.step = "overview"
+        self.step = "injection"
         self._controllers: list = []
         self._views: dict[str, Optional[ViewState]] = {}
         self._x_slider: Optional[sliders.PanRangeSlider] = None
@@ -504,7 +504,7 @@ class DfitApp:
             self._load(path)
 
     def _load_common(self, path: str) -> bool:
-        """Load `path` into a fresh PickState and land on "overview" -- shared by single-file
+        """Load `path` into a fresh PickState and land on "injection" -- shared by single-file
         _load and folder-mode _load_test. Returns False (leaving the previous self.td/state
         untouched) if the load failed, True on success."""
         try:
@@ -536,7 +536,7 @@ class DfitApp:
         self.var_formation.set("")
         self._load_questionnaire(path)
         self._sync_state_from_widgets()
-        self._goto("overview")
+        self._goto("injection")
         return True
 
     def _load(self, path: str):
@@ -1060,13 +1060,13 @@ class DfitApp:
 
     def _seed_step(self, key: str) -> None:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
-        ``picks.SEEDERS``. "overview" and "isip" need ``self.td`` too; the rest take only
+        ``picks.SEEDERS``. "injection" and "isip" need ``self.td`` too; the rest take only
         (state, res)."""
         if self.td is None:
             return
         res = compute_all(self.state, self.td)
         seeder = picks.SEEDERS[key]
-        if key == "overview":
+        if key == "injection":
             seeder(self.state, self.td)
         elif key == "isip":
             seeder(self.state, self.td, res)
@@ -1319,7 +1319,7 @@ class DfitApp:
         self._controllers = []
 
         step = self.step
-        if step == "overview":
+        if step == "injection":
             def _commit(idx_attr):
                 def on_release(x_hours):
                     idx = picks._nearest(self.td.t_s / 3600.0, x_hours)
@@ -1626,7 +1626,7 @@ class DfitApp:
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
         # workflow left off; if every step already has some status, there is no natural resume
-        # point, so land on "overview" (first_not_visited_step's fallback).
+        # point, so land on "injection" (first_not_visited_step's fallback).
         self._goto(first_not_visited_step(self.state.step_status))
 
     def _load_picks(self):

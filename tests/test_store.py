@@ -17,7 +17,7 @@ import pytest
 
 from dfit_tool import store
 from dfit_tool.model import PickState, _decode, compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -419,7 +419,7 @@ def test_status_for_empty_step_status_is_new():
 
 
 def test_status_for_partial_is_in_progress():
-    st = PickState(step_status={"overview": "done", "isip": "done"})
+    st = PickState(step_status={"injection": "done", "isip": "done"})
     assert store.status_for(st) == "in_progress"
 
 
@@ -433,14 +433,14 @@ def test_status_for_done_and_skipped_mix_is_skipped():
     # that as "skipped" rather than "done" (a step_status skip is a real user decision, unlike
     # the PC-F clause below, which is a scenario the workflow forces rather than chooses).
     st = PickState(step_status={
-        "overview": "done", "isip": "done", "gfunction": "skipped",
+        "injection": "done", "isip": "done", "gfunction": "skipped",
         "tangent": "done", "loglog": "done", "porepressure": "done",
     })
     assert store.status_for(st) == "skipped"
 
 
 def test_status_for_one_step_skipped_others_not_visited_is_in_progress():
-    st = PickState(step_status={"overview": "skipped"})
+    st = PickState(step_status={"injection": "skipped"})
     assert store.status_for(st) == "in_progress"
 
 
@@ -453,7 +453,7 @@ def test_status_for_legacy_explicit_status_done_does_not_override():
 
 
 def test_status_for_explicit_status_skipped_overrides():
-    st = PickState(step_status={"overview": "done"}, explicit_status="skipped")
+    st = PickState(step_status={"injection": "done"}, explicit_status="skipped")
     assert store.status_for(st) == "skipped"
 
 
@@ -461,7 +461,7 @@ def test_status_for_pcf_without_porepressure_step_is_done():
     st = PickState(
         postclosure_scenario="PC-F no peak",
         step_status={
-            "overview": "done", "isip": "done", "gfunction": "done",
+            "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done",
         },
     )
@@ -475,7 +475,7 @@ def test_status_for_pcf_with_stale_porepressure_skip_entry_is_still_done():
     st = PickState(
         postclosure_scenario="PC-F no peak",
         step_status={
-            "overview": "done", "isip": "done", "gfunction": "done",
+            "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done", "porepressure": "skipped",
         },
     )
@@ -486,7 +486,7 @@ def test_status_for_same_step_status_without_pcf_is_in_progress():
     st = PickState(
         postclosure_scenario="PC-A linear",
         step_status={
-            "overview": "done", "isip": "done", "gfunction": "done",
+            "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done",
         },
     )
@@ -641,7 +641,7 @@ def test_list_tests_recomputes_status_from_picks(tmp_path):
 # --------------------------------------------------------------------------------------------------
 def _built_row(tmp_path, **state_kwargs):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     for k, v in state_kwargs.items():
         setattr(state, k, v)
     res = compute_all(state, td)
@@ -705,7 +705,7 @@ def test_build_log_row_pp_confidence_empty_otherwise(tmp_path):
 
 def test_build_log_row_closure_time_seconds_to_minutes(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     res.closure_time_compliance_s = 120.0
     res.closure_time_tangent_s = 60.0
@@ -732,7 +732,7 @@ def test_build_log_row_pressure_source_bhp_vs_whp(tmp_path):
 
 def test_log_row_has_net_pressure_isip_source(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     res.net_pressure_isip_source = "compliance"
     entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
@@ -746,7 +746,7 @@ def test_log_row_has_net_pressure_isip_source(tmp_path):
 
 def test_log_row_has_near_wellbore_complexity(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     res.near_wellbore_complexity = 107.0
     entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
@@ -760,7 +760,7 @@ def test_log_row_has_near_wellbore_complexity(tmp_path):
 
 def test_log_row_has_tail_trim_s(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.tail_trim_dt = 1234.5
     res = compute_all(state, td)
     entry = store.TestEntry(test_id="well1", folder=str(tmp_path))

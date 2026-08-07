@@ -9,8 +9,8 @@ picking layer is reusable if the shell is ported.
 Interaction model: drag-to-move for lines/points (snap-to-sample where a backing curve exists),
 drag-select for windows. Every controller hit-tests through its own Axes' pixel transforms
 (``_axes_contains_pixel`` / ``_data_from_pixel``) rather than ``event.inaxes`` -- a twinned Axes
-(e.g. the overview's rate ``twinx``) owns ``inaxes`` over the shared region, so an identity check
-against a specific Axes would never match. See ``test_overview_rate_twin_owns_inaxes_regression``.
+(e.g. the injection's rate ``twinx``) owns ``inaxes`` over the shared region, so an identity check
+against a specific Axes would never match. See ``test_injection_rate_twin_owns_inaxes_regression``.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ class DragLineController:
 
     Hit-tests and reads the cursor through ``_axes_contains_pixel``/``_data_from_pixel`` (this
     axes' own transforms) rather than ``event.inaxes``/``event.xdata``: an overlaid twin axes
-    (e.g. the overview's rate ``twinx``) owns ``inaxes`` over the shared region, so an identity
+    (e.g. the injection's rate ``twinx``) owns ``inaxes`` over the shared region, so an identity
     check against ``self.ax`` would never match. Twinned axes share the x-scale, so converting the
     event pixel through ``self.ax.transData`` yields the correct data-x regardless.
 
@@ -155,7 +155,7 @@ class DragLineController:
     press finds a line, and released on button-release -- same claim-after-hit-test contract as
     ``AnchorLineController``/``DraggablePointController``, so this controller can share a gate
     with them (e.g. the G-function step's tail-trim line and its contact-point marker). Defaults
-    to a private gate (no sharing) when omitted, so the overview step's existing solo usage is
+    to a private gate (no sharing) when omitted, so the injection step's existing solo usage is
     unaffected.
     """
 
@@ -1008,7 +1008,7 @@ def suggest_pp_axis(scenario: str) -> Optional[str]:
 # needs (``res.t_shutin_s``, ``res.diagnostics``, etc.) aren't ready yet -- out-of-order entry into
 # a step whose prerequisites weren't picked simply seeds nothing.
 # --------------------------------------------------------------------------------------------------
-def seed_overview(state: PickState, td: TestData) -> None:
+def seed_injection(state: PickState, td: TestData) -> None:
     """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
     falling back to the pressure shape when no usable rate channel exists -- the vlines must
     always exist for the analyst to drag, rate or not."""
@@ -1102,7 +1102,7 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
 
 
 SEEDERS = {
-    "overview": seed_overview,
+    "injection": seed_injection,
     "isip": seed_isip,
     "gfunction": seed_gfunction,
     "tangent": seed_tangent,

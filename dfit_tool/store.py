@@ -27,7 +27,7 @@ PICKS_SUFFIX = ".dfit_picks.json"  # <test_folder>/<test_id>.dfit_picks.json
 
 # Deliberately duplicated from ui.py's STEPS keys, not imported -- ui.py imports tkinter at
 # module level, and store.py must stay importable with no Tk on the path (see module docstring).
-STEP_KEYS = ("overview", "isip", "gfunction", "tangent", "loglog", "porepressure")
+STEP_KEYS = ("injection", "isip", "gfunction", "tangent", "loglog", "porepressure")
 
 # Column order: the 33 original schema columns, then the appended per-method columns the tool
 # computes beyond that schema. CSV only for now; a parquet mirror alongside dfit_log.csv is a

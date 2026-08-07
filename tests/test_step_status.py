@@ -24,13 +24,13 @@ from dfit_tool.ui import (
 # PickState.step_status persistence
 # --------------------------------------------------------------------------------------------------
 def test_to_json_from_json_round_trips_step_status(tmp_path):
-    state = PickState(pressure_col="P", step_status={"overview": "done", "isip": "visited"})
+    state = PickState(pressure_col="P", step_status={"injection": "done", "isip": "visited"})
     path = str(tmp_path / "picks.json")
     state.to_json(path)
 
     loaded = PickState.from_json(path)
 
-    assert loaded.step_status == {"overview": "done", "isip": "visited"}
+    assert loaded.step_status == {"injection": "done", "isip": "visited"}
 
 
 def test_from_json_missing_step_status_key_defaults_empty(tmp_path):
@@ -46,14 +46,14 @@ def test_from_json_missing_step_status_key_defaults_empty(tmp_path):
 
 
 def test_from_json_unknown_key_is_tolerated(tmp_path):
-    d = {"pressure_col": "P", "some_future_field": "abc", "step_status": {"overview": "done"}}
+    d = {"pressure_col": "P", "some_future_field": "abc", "step_status": {"injection": "done"}}
     path = tmp_path / "picks.json"
     path.write_text(json.dumps(d), encoding="utf-8")
 
     loaded = PickState.from_json(str(path))
 
     assert loaded.pressure_col == "P"
-    assert loaded.step_status == {"overview": "done"}
+    assert loaded.step_status == {"injection": "done"}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def test_infer_step_status_marks_done_per_picks_present():
     )
 
     assert infer_step_status(state) == {
-        "overview": "done",
+        "injection": "done",
         "isip": "done",
         "gfunction": "done",
         "tangent": "done",
@@ -88,9 +88,9 @@ def test_infer_step_status_gfunction_from_contact_g_alone():
     assert infer_step_status(state) == {"gfunction": "done"}
 
 
-def test_infer_step_status_overview_from_shutin_idx_alone():
+def test_infer_step_status_injection_from_shutin_idx_alone():
     state = PickState(shutin_idx=20)
-    assert infer_step_status(state) == {"overview": "done"}
+    assert infer_step_status(state) == {"injection": "done"}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -102,9 +102,9 @@ def test_field_step_covers_exactly_the_panel_fields():
 
 def test_field_step_mapping_matches_spec():
     expected = {
-        "te (min)": "overview",
-        "Vinj (bbl)": "overview",
-        "qmax (bpm)": "overview",
+        "te (min)": "injection",
+        "Vinj (bbl)": "injection",
+        "qmax (bpm)": "injection",
         "apparent ISIP": "isip",
         "eff ISIP (compliance)": "gfunction",
         "NWB complexity": "gfunction",
@@ -134,29 +134,29 @@ def test_step_index_matches_steps_order():
 
 
 def test_next_step_advances_and_clamps_at_last():
-    assert next_step("overview") == "isip"
+    assert next_step("injection") == "isip"
     assert next_step("loglog") == "porepressure"
     assert next_step("porepressure") == "porepressure"  # no-op at last
 
 
 def test_prev_step_retreats_and_clamps_at_first():
-    assert prev_step("isip") == "overview"
+    assert prev_step("isip") == "injection"
     assert prev_step("porepressure") == "loglog"
-    assert prev_step("overview") == "overview"  # no-op at first
+    assert prev_step("injection") == "injection"  # no-op at first
 
 
 # --------------------------------------------------------------------------------------------------
 # first_not_visited_step (post-_load_picks navigation)
 # --------------------------------------------------------------------------------------------------
-def test_first_not_visited_step_empty_status_returns_overview():
-    assert first_not_visited_step({}) == "overview"
+def test_first_not_visited_step_empty_status_returns_injection():
+    assert first_not_visited_step({}) == "injection"
 
 
 def test_first_not_visited_step_returns_first_gap():
-    status = {"overview": "done", "isip": "done", "gfunction": "not_visited"}
+    status = {"injection": "done", "isip": "done", "gfunction": "not_visited"}
     assert first_not_visited_step(status) == "gfunction"
 
 
-def test_first_not_visited_step_all_covered_falls_back_to_overview():
+def test_first_not_visited_step_all_covered_falls_back_to_injection():
     status = {k: "done" for k, _ in STEPS}
-    assert first_not_visited_step(status) == "overview"
+    assert first_not_visited_step(status) == "injection"

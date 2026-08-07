@@ -1,7 +1,7 @@
-"""Task 6: per-step seed-on-entry functions in picks.py (seed_overview/seed_isip/seed_gfunction/
+"""Task 6: per-step seed-on-entry functions in picks.py (seed_injection/seed_isip/seed_gfunction/
 seed_tangent/seed_loglog/seed_pp + SEEDERS), replacing the old load-time seed_defaults.
 
-Each seeder is exercised progressively -- seed_overview -> compute_all -> seed_isip -> compute_all
+Each seeder is exercised progressively -- seed_injection -> compute_all -> seed_isip -> compute_all
 -> seed_gfunction/seed_tangent -> ... -- mirroring how ui.DfitApp._seed_step calls them one step
 at a time as the user actually visits each step, rather than all at once at load.
 """
@@ -12,17 +12,17 @@ from pathlib import Path
 
 from dfit_tool import picks, ui
 from dfit_tool.model import PickState, TangentPick, compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
 # progressive happy-path seeding: each seeder sets exactly its own field(s)
 # --------------------------------------------------------------------------------------------------
-def test_seed_overview_sets_only_the_injection_window():
+def test_seed_injection_sets_only_the_injection_window():
     td = make_testdata()
     st = PickState(rate_col="RATE", volume_col="VOLUME")
     assert st.start_idx is None and st.shutin_idx is None
-    picks.seed_overview(st, td)
+    picks.seed_injection(st, td)
     assert st.start_idx is not None
     assert st.shutin_idx is not None
     # nothing else on the state was touched
@@ -32,8 +32,8 @@ def test_seed_overview_sets_only_the_injection_window():
 
 def test_seed_isip_sets_only_isip_tangent():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     assert st.isip_tangent is None
     picks.seed_isip(st, td, res)
@@ -46,8 +46,8 @@ def test_seed_isip_sets_only_isip_tangent():
 
 def test_seed_gfunction_sets_min_dpdg_g_and_contact_g_only():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -62,8 +62,8 @@ def test_seed_gfunction_sets_min_dpdg_g_and_contact_g_only():
 
 def test_seed_tangent_sets_closure_slope_and_closure_g_only():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -79,8 +79,8 @@ def test_seed_tangent_sets_closure_slope_and_closure_g_only():
 
 def test_seed_loglog_sets_loglog_window_only():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -94,8 +94,8 @@ def test_seed_loglog_sets_loglog_window_only():
 
 def test_seed_pp_sets_pp_window_only():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -113,7 +113,7 @@ def test_seed_pp_sets_pp_window_only():
 # --------------------------------------------------------------------------------------------------
 def test_seed_isip_no_op_when_no_injection_window_picked():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None  # no shut-in -> res.t_shutin_s stays None
     res = compute_all(st, td)
     assert res.t_shutin_s is None
@@ -123,7 +123,7 @@ def test_seed_isip_no_op_when_no_injection_window_picked():
 
 def test_seed_gfunction_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None  # no te -> no diagnostics
     res = compute_all(st, td)
     assert res.diagnostics is None
@@ -134,7 +134,7 @@ def test_seed_gfunction_no_op_when_diagnostics_missing():
 
 def test_seed_tangent_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None
     res = compute_all(st, td)
     assert res.diagnostics is None
@@ -145,7 +145,7 @@ def test_seed_tangent_no_op_when_diagnostics_missing():
 
 def test_seed_loglog_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None
     res = compute_all(st, td)
     assert res.diagnostics is None
@@ -155,7 +155,7 @@ def test_seed_loglog_no_op_when_diagnostics_missing():
 
 def test_seed_pp_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None
     res = compute_all(st, td)
     assert res.diagnostics is None
@@ -166,16 +166,16 @@ def test_seed_pp_no_op_when_diagnostics_missing():
 # --------------------------------------------------------------------------------------------------
 # non-destructive: an already-set pick is left unchanged
 # --------------------------------------------------------------------------------------------------
-def test_seed_overview_non_destructive():
+def test_seed_injection_non_destructive():
     td = make_testdata()
     st = PickState(rate_col="RATE", volume_col="VOLUME", start_idx=5, shutin_idx=9)
-    picks.seed_overview(st, td)
+    picks.seed_injection(st, td)
     assert (st.start_idx, st.shutin_idx) == (5, 9)
 
 
 def test_seed_isip_non_destructive():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     pre = TangentPick(anchor_x=1.0, anchor_y=2.0, slope=3.0)
     st.isip_tangent = pre
@@ -185,8 +185,8 @@ def test_seed_isip_non_destructive():
 
 def test_seed_gfunction_non_destructive():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -199,8 +199,8 @@ def test_seed_gfunction_non_destructive():
 
 def test_seed_tangent_non_destructive():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -213,8 +213,8 @@ def test_seed_tangent_non_destructive():
 
 def test_seed_loglog_non_destructive():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -226,8 +226,8 @@ def test_seed_loglog_non_destructive():
 
 def test_seed_pp_non_destructive():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)

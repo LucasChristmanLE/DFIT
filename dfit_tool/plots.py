@@ -88,7 +88,7 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
 
 
 # --------------------------------------------------------------------------------------------------
-def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
+def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers.
 
     The falloff tail can run for weeks and would otherwise dwarf the active-injection region in
@@ -143,7 +143,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     if xlim is not None and t_end_h is not None:
         xlim = (xlim[0], min(xlim[1], t_end_h))
 
-    title = "Overview"
+    title = "Injection"
     if res.te_s:
         title += f"   te={res.te_s/60:.2f} min"
         if res.vinj is not None:
@@ -457,7 +457,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
 
 
 RENDERERS = {
-    "overview": render_overview,
+    "injection": render_injection,
     "isip": render_isip,
     "gfunction": render_gfunction,
     "tangent": render_tangent,
@@ -517,7 +517,7 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
     """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
-    order: overview -> isip -> gfunction -> tangent -> loglog -> porepressure). Returns the
+    order: injection -> isip -> gfunction -> tangent -> loglog -> porepressure). Returns the
     written paths in that order. Skips "porepressure" when ``porepressure_skipped(state)``
     (PC-F: no postclosure line, nothing to render) -- the numbering from ``enumerate`` still
     runs over all of RENDERERS so the other five filenames are unaffected; the pore-pressure

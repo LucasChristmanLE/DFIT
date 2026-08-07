@@ -9,7 +9,7 @@ import pytest
 
 from dfit_tool import picks
 from dfit_tool.model import PickState, compute_all
-from tests.helpers import make_testdata, overview_state, pre_crash_trim_dt
+from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
 
 
 def _seeded_with_crash(zero_crash_at: float = 0.5):
@@ -17,8 +17,8 @@ def _seeded_with_crash(zero_crash_at: float = 0.5):
     the motivating bug: the tail guard in resample.resample_pressure_increment only stops on a
     late *rise*, so a monotone crash sails through untouched."""
     td = make_testdata(n=1200, zero_crash_at=zero_crash_at)
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -104,8 +104,8 @@ def test_stale_pick_warning_absent_when_no_trim_set():
     """Gated on state.tail_trim_dt being set -- a reloaded save against a shorter *source* (no
     trim) must not be misreported as "beyond the tail trim"."""
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)

@@ -25,7 +25,7 @@ from matplotlib.patches import Rectangle
 from dfit_tool import interpret, picks, plots
 from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.resample import Diagnostics
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def _pp_diagnostics(t: np.ndarray, p: np.ndarray) -> Diagnostics:
 # --------------------------------------------------------------------------------------------------
 def test_seed_pp_copies_loglog_window_when_present():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     st.loglog_window = (11.0, 22.0)
     picks.seed_pp(st, res)
@@ -93,7 +93,7 @@ def test_seed_pp_copies_loglog_window_when_present():
 
 def test_seed_pp_falls_back_to_last_decade_of_shutin_time():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     assert st.loglog_window is None
     picks.seed_pp(st, res)
@@ -153,7 +153,7 @@ def test_compute_all_round_trip_with_open_ended_window_from_lo_zero_drag():
     produced the way the UI actually produces it: a span dragged from the plot's x origin
     (lo=0) out to some finite x."""
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     dg = res.diagnostics
     assert dg is not None

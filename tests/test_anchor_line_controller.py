@@ -8,7 +8,7 @@ from matplotlib.backend_bases import MouseEvent
 
 from dfit_tool import picks, plots
 from dfit_tool.model import TangentPick, compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 XLIM = (-5.0, 25.0)
 YLIM = (-20.0, 120.0)
@@ -260,15 +260,15 @@ def test_default_mode_body_press_is_still_body_not_end():
 
 def test_twinx_regression_still_captures_via_pixel_not_inaxes():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     fig = Figure()
     ax = fig.add_subplot(111)
     canvas = FigureCanvasAgg(fig)
-    plots.render_overview(ax, td, st, res)
+    plots.render_injection(ax, td, st, res)
     canvas.draw()
     twins = [a for a in canvas.figure.axes if a is not ax]
-    assert twins, "expected a twinx rate axis on the overview"
+    assert twins, "expected a twinx rate axis on the injection"
 
     xlo, xhi = ax.get_xlim()
     anchor_x, anchor_y = xlo + 0.25 * (xhi - xlo), 0.0

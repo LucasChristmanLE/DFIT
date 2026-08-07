@@ -4,19 +4,19 @@ from matplotlib.figure import Figure
 
 from dfit_tool.model import compute_all
 from dfit_tool import picks, plots
-from tests.helpers import make_testdata, overview_state, pre_crash_trim_dt
+from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
 
 
 def test_save_all_step_pngs_writes_six_nonempty_files(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
     assert len(paths) == 6
     expected = [
-        "1_overview.png", "2_isip.png", "3_gfunction.png",
+        "1_injection.png", "2_isip.png", "3_gfunction.png",
         "4_tangent.png", "5_loglog.png", "6_porepressure.png",
     ]
     for name in expected:
@@ -27,11 +27,11 @@ def test_save_all_step_pngs_writes_six_nonempty_files(tmp_path):
 
 def test_render_step_figure_applies_stored_view():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
 
     fig = plots.render_step_figure(
-        "overview", td, state, res,
+        "injection", td, state, res,
         stored_view=((0.0, 5.0), (100.0, 200.0), None))
 
     ax = fig.axes[0]
@@ -41,7 +41,7 @@ def test_render_step_figure_applies_stored_view():
 
 def test_render_step_figure_gfunction_clamps_default_view():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
 
     # Reproduce the renderer's own defaults to compare against.
@@ -59,7 +59,7 @@ def test_render_step_figure_gfunction_clamps_default_view():
 
 def test_render_step_figure_applies_stored_view_twin():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
 
     fig = plots.render_step_figure(
@@ -77,7 +77,7 @@ def test_render_step_figure_builds_d2_axis_and_applies_fresh_y3lim():
     always applies the renderer's own fresh y3lim, even when a stored_view (for the primary +
     dP/dG twin) is supplied."""
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.show_d2pdg2 = True
     res = compute_all(state, td)
 
@@ -98,7 +98,7 @@ def test_render_step_figure_builds_d2_axis_and_applies_fresh_y3lim():
 
 def test_save_all_step_pngs_smoke_test_with_d2_on(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.show_d2pdg2 = True
     res = compute_all(state, td)
 
@@ -113,8 +113,8 @@ def _crashed_and_trimmed_state():
     """A post-shut-in record that crashes monotonically to ~0 psi, trimmed just before the
     crash starts -- exercises the gray-excluded-tail rendering with a real trim in place."""
     td = make_testdata(n=1200, zero_crash_at=0.5)
-    state = overview_state(td)
-    picks.seed_overview(state, td)
+    state = injection_state(td)
+    picks.seed_injection(state, td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)

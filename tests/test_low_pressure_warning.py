@@ -14,15 +14,15 @@ import pandas as pd
 from dfit_tool import picks
 from dfit_tool.io_load import TestData as IoTestData
 from dfit_tool.model import PickState, compute_all
-from tests.helpers import PRESSURE_COL, make_testdata, overview_state, pre_crash_trim_dt
+from tests.helpers import PRESSURE_COL, make_testdata, injection_state, pre_crash_trim_dt
 
 _WARNING_SNIPPET = "Surface pressure fell below 100 psi"
 
 
 def _seeded_with_crash(zero_crash_at: float = 0.5):
     td = make_testdata(n=1200, zero_crash_at=zero_crash_at)
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -54,8 +54,8 @@ def test_absent_when_pressure_is_bhp():
 
 def test_absent_when_pressure_stays_high():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -64,7 +64,7 @@ def test_absent_when_pressure_stays_high():
 
 def test_absent_when_shutin_unpicked():
     td = make_testdata(n=1200, zero_crash_at=0.5)
-    st = overview_state(td)
+    st = injection_state(td)
     st.shutin_idx = None
     res = compute_all(st, td)
     assert not any(_WARNING_SNIPPET in w for w in res.warnings)
@@ -75,8 +75,8 @@ def test_post_shutin_only_mask_low_reading_before_start_does_not_fire():
     dt_ws >= 0 (post-shut-in only)."""
     td = make_testdata()
     td.df.loc[10, PRESSURE_COL] = 5.0  # before injection even starts
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)

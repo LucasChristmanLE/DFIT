@@ -23,7 +23,7 @@ def test_loglog_gate_blocks_without_postclosure_scenario():
 
 def test_other_steps_never_gated():
     st = PickState()
-    for step in ("overview", "isip", "tangent", "porepressure"):
+    for step in ("injection", "isip", "tangent", "porepressure"):
         assert step_gate_error(st, step) is None
 
 

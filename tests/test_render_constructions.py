@@ -18,15 +18,15 @@ from matplotlib.backend_bases import MouseEvent
 from dfit_tool import picks, plots, resample, ui
 from dfit_tool.model import DerivedResults, PickState, TangentPick, compute_all
 from dfit_tool.ui import DfitApp
-from tests.helpers import make_testdata, overview_state, pre_crash_trim_dt
+from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
 
 
 def _seeded():
     """A PickState with every step-3/5/6 pick populated via the real seeding logic, so the
     tangent constructions under test actually have something to draw."""
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -105,8 +105,8 @@ def test_render_tangent_closure_vline_on_primary_axis():
 
 def test_render_tangent_no_closure_vline_when_no_closure_pick():
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -121,7 +121,7 @@ def test_render_tangent_no_closure_vline_when_no_closure_pick():
 
 def test_render_tangent_early_return_still_returns_view_defaults():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None  # no te -> no diagnostics
     res = compute_all(st, td)
     fig = Figure()
@@ -177,8 +177,8 @@ def test_render_isip_solid_segment_ends_inside_default_view_extension_visible():
 def test_render_isip_clamps_view_and_plotted_data_to_shutin_window():
     # n=1800 gives a 25-min falloff tail (shut-in at 300 s), so the +15-min clamp is binding.
     td = make_testdata(n=1800)
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -196,7 +196,7 @@ def test_render_isip_clamps_view_and_plotted_data_to_shutin_window():
 
 def test_render_isip_early_return_still_returns_view_defaults():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.shutin_idx = None
     res = compute_all(st, td)
     fig = Figure()
@@ -253,8 +253,8 @@ def _seeded_with_crash(trim_dt=None):
     """Like _seeded() but with a monotone zero-crash in the post-shut-in tail (helpers.
     make_testdata's zero_crash_at), optionally trimmed."""
     td = make_testdata(n=1200, zero_crash_at=0.5)
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
@@ -343,8 +343,8 @@ def test_render_gfunction_recovery_path_draws_vline_when_diagnostics_none():
 def test_gfunction_dpdg_twin_owns_inaxes_but_contact_point_controller_still_hit_tests_by_pixel():
     """The contact-point DraggablePointController lives on the primary (P-vs-G) axis, but the
     later-created dP/dG twin sits on top and owns ``event.inaxes`` over the shared region -- the
-    same twin-owns-inaxes hazard ``test_overview_rate_twin_owns_inaxes_regression`` guards for
-    the overview's start/shut-in lines. The controller must still capture via its own pixel bbox."""
+    same twin-owns-inaxes hazard ``test_injection_rate_twin_owns_inaxes_regression`` guards for
+    the injection's start/shut-in lines. The controller must still capture via its own pixel bbox."""
     td, st, res = _seeded()
     fig = Figure()
     ax = fig.add_subplot(111)
@@ -478,7 +478,7 @@ def test_isip_wiring_get_pick_and_commit_round_trip_seconds_through_axes_minutes
 
 def test_isip_wiring_no_op_when_bhp_or_shutin_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.shutin_idx = None
     res = compute_all(st, td)
     stub = _stub(td, st, res, "isip")
@@ -510,7 +510,7 @@ def test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate():
 
 def test_gfunction_wiring_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None
     res = compute_all(st, td)
     stub = _stub(td, st, res, "gfunction")
@@ -673,7 +673,7 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
 
 def test_tangent_wiring_no_op_when_diagnostics_missing():
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     st.start_idx = st.shutin_idx = None
     res = compute_all(st, td)
     stub = _stub(td, st, res, "tangent")

@@ -73,7 +73,7 @@ def make_testdata(n: int = 600, dt: float = 1.0, zero_crash_at: Optional[float] 
     )
 
 
-def overview_state(td: TestData) -> PickState:
+def injection_state(td: TestData) -> PickState:
     """A minimal `PickState` pointing at the synthetic channels with start/shut-in picked."""
     return PickState(
         pressure_col=PRESSURE_COL,

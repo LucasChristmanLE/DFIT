@@ -14,7 +14,7 @@ from dfit_tool.resample import Diagnostics, Resampled
 from dfit_tool import plots
 from dfit_tool.plots import ViewDefaults
 from dfit_tool.ui import DfitApp, ViewState, _resolve_view
-from tests.helpers import PRESSURE_COL, make_testdata, overview_state
+from tests.helpers import PRESSURE_COL, make_testdata, injection_state
 
 
 def _render(renderer, td, state, res):
@@ -26,7 +26,7 @@ def _render(renderer, td, state, res):
 
 def test_all_renderers_return_view_defaults():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     for name, renderer in plots.RENDERERS.items():
         _, _, defaults = _render(renderer, td, state, res)
@@ -35,7 +35,7 @@ def test_all_renderers_return_view_defaults():
 
 def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     fig, ax, defaults = _render(plots.render_gfunction, td, state, res)
     dg = res.diagnostics
@@ -75,7 +75,7 @@ def test_gfunction_y2lim_default_capped_at_50_for_spiky_dpdg():
 
 def test_porepressure_does_not_force_axes_xlim_to_zero():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     fig, ax, defaults = _render(plots.render_porepressure, td, state, res)
 
@@ -87,11 +87,11 @@ def test_porepressure_does_not_force_axes_xlim_to_zero():
     assert ax.get_xlim()[0] != 0.0
 
 
-def test_overview_returns_injection_window_instead_of_setting_it():
+def test_injection_returns_injection_window_instead_of_setting_it():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
-    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+    fig, ax, defaults = _render(plots.render_injection, td, state, res)
 
     t_h = td.t_s / 3600.0
     span_h = max(t_h[state.shutin_idx] - t_h[state.start_idx], 0.25)
@@ -108,12 +108,12 @@ def test_overview_returns_injection_window_instead_of_setting_it():
     assert actual[1] < float(t_h[-1]) + 0.05
 
 
-def test_overview_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
+def test_injection_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
     # A long falloff tail (dt=1s, n=3000 -> ~50 min) so the +15-min-past-last-rate clamp binds.
     td = make_testdata(n=3000, dt=1.0)
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
-    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+    fig, ax, defaults = _render(plots.render_injection, td, state, res)
 
     t_h = td.t_s / 3600.0
     last_active = int(np.where(res.rate_all > 0)[0][-1])
@@ -128,12 +128,12 @@ def test_overview_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
     assert defaults.xlim[1] == pytest.approx(t_end_h)
 
 
-def test_overview_no_clamp_when_rate_is_none():
+def test_injection_no_clamp_when_rate_is_none():
     td = make_testdata()
     state = PickState(pressure_col=PRESSURE_COL)
     res = compute_all(state, td)
     assert res.rate_all is None
-    fig, ax, defaults = _render(plots.render_overview, td, state, res)
+    fig, ax, defaults = _render(plots.render_injection, td, state, res)
 
     t_h = td.t_s / 3600.0
     press_line = ax.get_lines()[0]
@@ -160,7 +160,7 @@ def test_gfunction_ylim_default_scales_from_pressure_data_only():
     # The effective-ISIP tangent's dashed extension can swing far outside the real BHP range;
     # defaults.ylim must come from the pressure data alone, not the Axes' full autoscale.
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)
@@ -212,7 +212,7 @@ def _refresh_stub(td, state, step):
 
 def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)
@@ -241,7 +241,7 @@ def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500()
 # --------------------------------------------------------------------------------------------------
 def test_refresh_applies_fresh_y3lim_to_d2_axis():
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)
@@ -265,7 +265,7 @@ def test_refresh_builds_no_third_slider_for_d2_axis():
     """No y3 slider exists at all -- _build_sliders only ever makes x/y/y2, and _twin_axes
     (which the y2 slider is built from) excludes the d2 axis (D2_AXIS_GID)."""
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)
@@ -287,7 +287,7 @@ def test_refresh_d2_ylim_not_persisted_across_refreshes():
     changed between refreshes the axis must show the renderer's current default, never a value
     left over from ``_views`` (which never stores it, per decision D3)."""
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
     picks.seed_isip(state, td, res)
     res = compute_all(state, td)

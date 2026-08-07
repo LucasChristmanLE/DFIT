@@ -172,12 +172,12 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     step being unreached and lock the whole breadcrumb. Mark a step "done" when the pick(s) that
     define it are present; steps with no picks are left absent ("not_visited"). Used by
     ``DfitApp._load_picks`` only when the loaded ``step_status`` is empty -- an explicitly saved
-    ``{}`` from a workflow that never advanced past overview is indistinguishable from "never
+    ``{}`` from a workflow that never advanced past injection is indistinguishable from "never
     recorded", and treating it as "infer" is the safer default either way.
     """
     status: dict[str, str] = {}
     if state.start_idx is not None or state.shutin_idx is not None:
-        status["overview"] = "done"
+        status["injection"] = "done"
     if state.isip_tangent is not None:
         status["isip"] = "done"
     if state.min_dpdg_G is not None or state.contact_G is not None:

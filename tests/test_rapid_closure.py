@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from dfit_tool import interpret, picks
 from dfit_tool.model import compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 def _seeded_isip(closure_scenario: str = ""):
     td = make_testdata()
-    st = overview_state(td)
-    picks.seed_overview(st, td)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
     st.closure_scenario = closure_scenario

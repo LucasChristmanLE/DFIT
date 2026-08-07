@@ -16,7 +16,7 @@ import pytest
 from dfit_tool import picks, plots, ui
 from dfit_tool.model import PickState, _decode, compute_all, porepressure_skipped
 from dfit_tool.ui import DfitApp
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -24,7 +24,7 @@ from tests.helpers import make_testdata, overview_state
 # with the same window still produces a value.
 # --------------------------------------------------------------------------------------------------
 def _state_with_pp_window(td) -> PickState:
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     picks.seed_pp(st, res)
     assert st.pp_window is not None
@@ -104,7 +104,7 @@ def test_pickstate_from_json_roundtrip_migrates_label(tmp_path):
 # --------------------------------------------------------------------------------------------------
 def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.postclosure_scenario = "PC-F no peak"
     res = compute_all(state, td)
 
@@ -117,7 +117,7 @@ def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
 
 def test_save_all_step_pngs_writes_all_six_for_non_pcf_scenario(tmp_path):
     td = make_testdata()
-    state = overview_state(td)
+    state = injection_state(td)
     state.postclosure_scenario = "PC-A linear"
     res = compute_all(state, td)
 
@@ -188,7 +188,7 @@ def _goto_stub(postclosure_scenario):
     stub.td = object()
     stub.state = PickState(postclosure_scenario=postclosure_scenario,
                            step_status={k: "visited" for k, _ in ui.STEPS})
-    stub.step = "overview"
+    stub.step = "injection"
     stub._seed_step = lambda key: None
     stub._refresh_calls = []
     stub.refresh = lambda: stub._refresh_calls.append(True)

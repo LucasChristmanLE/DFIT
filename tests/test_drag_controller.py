@@ -4,14 +4,14 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backend_bases import MouseEvent
 from dfit_tool.model import compute_all
 from dfit_tool import plots, picks
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
-def _built_overview():
-    td = make_testdata(); st = overview_state(td); res = compute_all(st, td)
+def _built_injection():
+    td = make_testdata(); st = injection_state(td); res = compute_all(st, td)
     fig = Figure(); ax = fig.add_subplot(111)
     canvas = FigureCanvasAgg(fig)
-    plots.render_overview(ax, td, st, res)
+    plots.render_injection(ax, td, st, res)
     canvas.draw()  # realize transforms / bboxes
     return td, st, ax, canvas
 
@@ -30,18 +30,18 @@ def _event(name, canvas, ax, xdata, button=1):
     return MouseEvent(name, canvas, px, py, button=button)
 
 
-def test_overview_rate_twin_owns_inaxes_regression():
+def test_injection_rate_twin_owns_inaxes_regression():
     # The rate twinx overlays the primary axis; a real event resolves inaxes to the twin.
     # This guards the bug where the controller checked event.inaxes is self.ax and never captured.
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     twins = [a for a in canvas.figure.axes if a is not ax]
-    assert twins, "expected a twinx rate axis on the overview"
+    assert twins, "expected a twinx rate axis on the injection"
     ev = _event("button_press_event", canvas, ax, _line(ax, "start").get_xdata()[0])
     assert ev.inaxes is not ax  # matplotlib assigns the topmost (twin) axis
 
 
 def test_press_captures_and_release_commits_over_twin():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     got = {}
     ctrl = picks.DragLineController(
         canvas, ax, handlers={"start": lambda xd: got.__setitem__("start", xd),
@@ -59,7 +59,7 @@ def test_press_captures_and_release_commits_over_twin():
 
 
 def test_guard_blocks_capture():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None},
                                     guard=lambda: True)
     x0 = _line(ax, "start").get_xdata()[0]
@@ -68,7 +68,7 @@ def test_guard_blocks_capture():
 
 
 def test_press_far_from_any_line_captures_nothing():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None,
                                                           "shutin": lambda xd: None})
     sx = _pixel_of(ax, _line(ax, "start").get_xdata()[0])[0]
@@ -80,7 +80,7 @@ def test_press_far_from_any_line_captures_nothing():
 
 
 def test_disconnect_unbinds_all_callbacks():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None})
     assert ctrl._cids
     ctrl.disconnect()
@@ -88,14 +88,14 @@ def test_disconnect_unbinds_all_callbacks():
 
 
 def test_default_gate_is_private_per_instance():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     ctrl1 = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None})
     ctrl2 = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None})
     assert ctrl1.gate is not ctrl2.gate
 
 
 def test_press_denied_when_shared_gate_pre_claimed():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     gate = picks._CaptureGate()
     other_owner = object()
     gate.try_claim(other_owner)  # simulate a sibling controller already holding the gate
@@ -106,7 +106,7 @@ def test_press_denied_when_shared_gate_pre_claimed():
 
 
 def test_release_frees_the_gate():
-    td, st, ax, canvas = _built_overview()
+    td, st, ax, canvas = _built_injection()
     gate = picks._CaptureGate()
     ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None}, gate=gate)
     x0 = _line(ax, "start").get_xdata()[0]

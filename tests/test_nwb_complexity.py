@@ -12,7 +12,7 @@ import pytest
 
 from dfit_tool import model, picks
 from dfit_tool.model import DerivedResults, TangentPick, compute_all
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 def _res(**kw):
@@ -72,7 +72,7 @@ def test_cd_complexity_falls_back_to_tangent_reference():
     # real pipeline behavior so the CLAUDE.md/spec correction (docs previously claimed C-D
     # gets no complexity at all) can never silently regress.
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
 
     picks.seed_gfunction(st, res)
@@ -80,7 +80,7 @@ def test_cd_complexity_falls_back_to_tangent_reference():
     picks.apply_closure_scenario(st, res)
     picks.seed_tangent(st, res)
 
-    # apparent_isip needs a stored shut-in tangent; overview_state sets none. Anchoring at the
+    # apparent_isip needs a stored shut-in tangent; injection_state sets none. Anchoring at the
     # shut-in instant makes apparent_isip == anchor_y (same stand-in as
     # tests/test_variable_compliance.py::test_net_pressure_none_when_no_effective_isip_available).
     st.isip_tangent = TangentPick(anchor_x=res.t_shutin_s, anchor_y=4500.0, slope=-10.0)
@@ -99,7 +99,7 @@ def test_identity_shmin_plus_net_plus_complexity_equals_apparent_isip():
     # End-to-end through compute_all on synthetic data: the identity must close for each of
     # the three Shmin methods.
     td = make_testdata()
-    st = overview_state(td)
+    st = injection_state(td)
     res = compute_all(st, td)
     dg = res.diagnostics
 
@@ -107,7 +107,7 @@ def test_identity_shmin_plus_net_plus_complexity_equals_apparent_isip():
     contact_G = float(dg.G[dg.G.size // 4])
     closure_G = float(dg.G[3 * dg.G.size // 4])
 
-    # apparent_isip needs a stored shut-in tangent; overview_state sets none. Anchoring at the
+    # apparent_isip needs a stored shut-in tangent; injection_state sets none. Anchoring at the
     # shut-in instant makes apparent_isip == anchor_y (same stand-in as
     # tests/test_variable_compliance.py::test_net_pressure_none_when_no_effective_isip_available).
     st.isip_tangent = TangentPick(anchor_x=res.t_shutin_s, anchor_y=4500.0, slope=-10.0)

@@ -19,7 +19,7 @@ from dfit_tool import store, ui
 from dfit_tool.model import PickState, compute_all, infer_step_status
 from dfit_tool.ui import (STEPS, DfitApp, _next_new_index, _resolve_load_source,
                           first_not_visited_step)
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def _save_stub(current_entry, td, notes="some notes"):
     stub = types.SimpleNamespace()
     stub.current_entry = current_entry
     stub.td = td
-    stub.state = PickState(step_status={"overview": "done"})
+    stub.state = PickState(step_status={"injection": "done"})
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: notes)
     # Widget stand-ins for _sync_state_from_widgets, defaulted to match PickState's own
     # defaults so existing assertions (which only look at notes/status) are unaffected.
@@ -461,12 +461,12 @@ def test_apply_loaded_state_infers_step_status_when_missing():
 
 def test_apply_loaded_state_preserves_existing_step_status():
     stub = _apply_stub()
-    state = PickState(pressure_col="P", step_status={"overview": "done"})
+    state = PickState(pressure_col="P", step_status={"injection": "done"})
 
     stub._apply_loaded_state(state)
 
-    assert stub.state.step_status == {"overview": "done"}
-    assert stub._goto_calls == [first_not_visited_step({"overview": "done"})]
+    assert stub.state.step_status == {"injection": "done"}
+    assert stub._goto_calls == [first_not_visited_step({"injection": "done"})]
 
 
 def test_apply_loaded_state_reflects_widgets_and_resets_views():
@@ -475,7 +475,7 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
                       density_ppg=8.5, tvd_ft=9000.0, well_name="Foo State 1H",
                       formation="Eagle Ford", alpha=0.5, resample_step=15.0,
                       closure_scenario="C-A clear", postclosure_scenario="PC-A linear",
-                      pp_axis="tm1", show_d2pdg2=True, notes="hi", step_status={"overview": "done"})
+                      pp_axis="tm1", show_d2pdg2=True, notes="hi", step_status={"injection": "done"})
 
     stub._apply_loaded_state(state)
 
@@ -713,7 +713,7 @@ def _finish_stub(tmp_path, folder_mode, monkeypatch, second_status="new"):
 
     td = make_testdata()
     td.path = str(csv_path)
-    state = overview_state(td)
+    state = injection_state(td)
     res = compute_all(state, td)
 
     stub = types.SimpleNamespace()
@@ -927,7 +927,7 @@ def _skip_test_real_refresh_stub(tmp_path):
 
     td = make_testdata()
     td.path = str(csv1)
-    state = overview_state(td)
+    state = injection_state(td)
     state.active_source = "csv"
     res = compute_all(state, td)
 
@@ -936,7 +936,7 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub.td = td
     stub.state = state
     stub.res = res
-    stub.step = "overview"
+    stub.step = "injection"
     stub.folder_root = str(tmp_path)
     stub.log_df = store.load_log(str(tmp_path))
     stub.queue_entries = [entry1, entry2]
