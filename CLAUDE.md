@@ -319,7 +319,6 @@ select their tab (`ui.py:_open_guide`).
   `_update_stepbar` -> `_update_skip_test_btn` chain).
 
 ## TODO
-- Apparent ISIP tool needs to be a perfect tangent to pressure. Seems maybe it's taking an average slope over interval instead.
 - Some tests suddenly drop off to zero pressure towards end, need to be able to trim tail, probably on G-function plot.
 - 0 surface pressure means bottom hole can no longer be calc'd accurately because the head falls. After trimming tail, warn user if surface pressure ever falls below 100 psi.
 - Would like to be able to resize both sidebars. Field names in right sidebar are getting cut off, even though there's lots of space.
