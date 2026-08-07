@@ -25,6 +25,12 @@ class Resampled:
     p: np.ndarray    # BHP at those points (psi), monotonically decreasing
     n_raw: int       # number of raw post-shut-in samples considered
     guarded_at: int | None = None  # resampled index where the tail guard stopped, if it did
+    # Raw dt of the sample that tripped the rise guard (the first non-monotonic sample itself,
+    # one past the last kept point) -- None if the guard never fired. This is the true boundary
+    # of what the resampler actually consumed: the last *kept* point (dt[-1]) can sit up to one
+    # resample step below it, so callers that need "everything the resampler looked at" (e.g. the
+    # low-surface-pressure scan) should bound by guard_dt, not dt[-1].
+    guard_dt: float | None = None
 
 
 def resample_pressure_increment(
@@ -48,6 +54,7 @@ def resample_pressure_increment(
     keep_dt: list[float] = []
     keep_p: list[float] = []
     guarded_at: int | None = None
+    guard_dt: float | None = None
 
     running_min = np.inf
     last_kept = np.inf
@@ -65,6 +72,7 @@ def resample_pressure_increment(
         # Tail guard: sustained rise above the running minimum -> stop.
         if pi > running_min + rise_tol:
             guarded_at = len(keep_p)
+            guard_dt = float(dt[i])
             break
         running_min = min(running_min, pi)
         if pi <= last_kept - step:
@@ -77,6 +85,7 @@ def resample_pressure_increment(
         p=np.array(keep_p),
         n_raw=int(len(p)),
         guarded_at=guarded_at,
+        guard_dt=guard_dt,
     )
 
 

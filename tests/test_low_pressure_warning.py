@@ -1,10 +1,10 @@
 """Low-surface-pressure warning (CLAUDE.md TODO #4): a surface-pressure channel whose post-
 shut-in reading falls below interpret.MIN_SURFACE_PRESSURE_PSI makes BHP unreliable there
 (whether or not a hydrostatic conversion is even happening). Only fires when the mapped channel
-is surface pressure (state.pressure_is_bhp is False); the mask's upper bound is the actually-
-kept resampled window (trim, if any, already applied there -- and it also respects the
-resampler's own rise guard), so a low reading the rise guard already excluded from every
-computed value never triggers a warning that trimming would change nothing."""
+is surface pressure (state.pressure_is_bhp is False); the mask's upper bound is where the
+resampler actually stopped consuming raw samples (resampled_full.guard_dt, when the rise guard
+fired) intersected with the trim, if any -- NOT the last *kept* resampled point, which can sit
+up to one resample_step above the true minimum and so miss a crash sitting just past it."""
 
 from __future__ import annotations
 
@@ -117,3 +117,17 @@ def test_absent_when_rise_guard_excludes_the_low_reading():
     # Sanity: confirm the rise guard actually fired, so this test exercises what it claims to.
     assert res.resampled_full.guarded_at is not None
     assert not any(_WARNING_SNIPPET in w for w in res.warnings)
+
+
+def test_fires_with_a_coarse_resample_step_that_would_have_missed_it():
+    """Regression: bounding the scan by the last *kept* resampled point (rather than where the
+    resampler actually stopped) let a coarse resample_step silently swallow the warning even
+    with no rise guard and no trim -- e.g. resample_step=400 on the standard crashed dataset."""
+    td, st, res = _seeded_with_crash()
+    st.resample_step = 400.0
+    res2 = compute_all(st, td)
+
+    # Sanity: the crash is monotonic, so the rise guard never fires here -- this is testing the
+    # coarse-step gap, not the rise-guard exclusion covered above.
+    assert res2.resampled_full.guard_dt is None
+    assert any(_WARNING_SNIPPET in w for w in res2.warnings)

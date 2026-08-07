@@ -249,13 +249,22 @@ record, keeps it on `DerivedResults.resampled_full`/`G_full`, then masks to
 downstream value (effective ISIP, Shmin, log-log, pore pressure) with no other plumbing. The
 renderer draws the excluded tail grayed out (`gid="tail_excluded"`) so the line can be dragged
 back right; releasing at/past the last point clears the trim, and the commit clamps to >=3
-kept points (a pathological saved trim hits a renderer/controller recovery path plus a warning
-instead of a dead plot). The trim is manual-only (no seeder) and is never touched by scenario
-changes or the G-function reset button. Warnings: WHP below 100 psi
-(`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere in the kept post-shut-in window flags BHP as
-unreliable (only when the mapped channel is surface pressure); picks (contact, min-dP/dG,
-closure, pp window) left beyond a trim get a stale-pick warning instead of silently
-interp-clamping.
+kept points -- a record whose full resample already yields <=3 points can therefore only ever
+clear the trim, never set one (a pathological saved trim hits a renderer/controller recovery
+path plus a warning instead of a dead plot). The trim is manual-only (no seeder) and is never
+touched by scenario changes or the G-function reset button. Warnings: WHP below 100 psi
+(`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler actually consumed post-shut-in
+data -- up to where its own rise guard stopped it (`resample.Resampled.guard_dt`), further
+narrowed by a trim if one is set, deliberately *not* bounded by the last resampled point kept
+(which can sit up to one `resample_step` above the true minimum and so miss a crash just past
+it) -- flags BHP as unreliable there (only when the mapped channel is surface pressure). A
+stale-pick warning (gated on a trim actually being set) covers two distinct failure modes: the
+G-function picks (contact, min-dP/dG, closure) left beyond the trim would otherwise silently
+interp-clamp to the trimmed edge, while a pore-pressure window affected by the trim gets the
+same warning by outcome -- a finite upper bound beyond the trimmed edge just shrinks its fit
+(still returns a value), and a window with fewer than 2 surviving samples empties it and blanks
+`pore_pressure` outright (an open-ended upper bound shrinks benignly with the trim and is
+exempt from the shrunk check) -- so neither failure mode goes silent.
 
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 

@@ -358,7 +358,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if state.tail_trim_dt is not None:
             mask = rs_full.dt <= state.tail_trim_dt
             rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,
-                                    guarded_at=rs_full.guarded_at)
+                                    guarded_at=rs_full.guarded_at, guard_dt=rs_full.guard_dt)
         else:
             rs = rs_full
         res.resampled = rs
@@ -378,18 +378,20 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # Low-surface-pressure warning: only when the mapped channel is surface pressure
     # (state.pressure_is_bhp, not res.pressure_is_bhp -- that flips True after hydrostatic
     # conversion too, which would hide the very condition that makes the conversion unreliable).
-    # The upper bound is the actually-*kept* window -- res.resampled.dt[-1] when diagnostics
-    # exist (the trim, if any, is already applied there, and this also respects the resampler's
-    # own rise guard) -- so a low reading the rise guard already excluded from every computed
-    # value doesn't trigger a warning that trimming would change nothing. Falls back to the raw
-    # tail_trim_dt (or no upper bound at all) when the resample block above never ran.
+    # The upper bound is where the resampler actually STOPPED CONSUMING raw samples
+    # (resampled_full.guard_dt, strict < to exclude the rising sample itself), not the last
+    # *kept* point -- dt[-1] can sit up to one resample_step below guard_dt, so bounding there
+    # would leave a gap of un-scanned raw samples right where a crash typically lives (the
+    # literal motivating case: a record bottoming out just above the last kept point never
+    # warned). A trim, if set, narrows the window further on top of that. Falls back to trim-
+    # only (or no upper bound at all) when the resample block above never ran.
     if not state.pressure_is_bhp and res.t_shutin_s is not None:
         surf = td.pressure_surface(cfg)          # raw WHP column -- NOT res.bhp_all (converted)
         dt_ws = td.t_s - res.t_shutin_s
         m = dt_ws >= 0
-        if res.resampled is not None and len(res.resampled.dt):
-            m &= dt_ws <= float(res.resampled.dt[-1])
-        elif state.tail_trim_dt is not None:
+        if res.resampled_full is not None and res.resampled_full.guard_dt is not None:
+            m &= dt_ws < res.resampled_full.guard_dt
+        if state.tail_trim_dt is not None:
             m &= dt_ws <= state.tail_trim_dt
         surf_kept = surf[m]
         finite = np.isfinite(surf_kept)
@@ -407,13 +409,21 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", state.min_dpdg_G),
                                       ("closure", state.closure_G)) if g is not None and g > edge]
         # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
-        # array (dg.t), not G -- see the pp block below -- so a finite pp_window upper bound
-        # beyond the trimmed tail silently shrinks (or blanks) that fit with no other warning.
-        # An open-ended window (t_hi = inf, "to the end of the data") naturally shrinks with the
-        # trim instead, so it is never stale.
+        # array (dg.t), not G -- see the pp block below -- so a pp_window affected by the trim
+        # can silently shrink (still fits, just off fewer samples) or empty outright (blanking
+        # pore_pressure) with no other warning. Checked by outcome, not bound-vs-edge: a lower
+        # bound sitting inside the data but in the last inter-sample gap is still "<= edge" yet
+        # leaves the same <2-sample mask the pp block itself requires to fit at all, so the
+        # emptied case is the pp block's own `m.sum() >= 2` guard, mirrored here. An open-ended
+        # *upper* bound (t_hi = inf, "to the end of the data") naturally shrinks with the trim
+        # instead of emptying, so it's exempt from the shrunk-but-still-fitting check.
         if state.pp_window is not None and len(res.diagnostics.t):
-            pp_hi = state.pp_window[1]
-            if np.isfinite(pp_hi) and pp_hi > res.diagnostics.t[-1]:
+            pp_lo, pp_hi = state.pp_window
+            t = res.diagnostics.t
+            edge_t = t[-1]
+            emptied = int(((t >= pp_lo) & (t <= pp_hi)).sum()) < 2
+            shrunk = np.isfinite(pp_hi) and pp_hi > edge_t
+            if emptied or shrunk:
                 stale.append("pore-pressure window")
         if stale:
             res.warnings.append(f"{', '.join(stale)} pick(s) lie beyond the tail trim -- values "

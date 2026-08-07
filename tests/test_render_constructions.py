@@ -596,17 +596,18 @@ def test_gfunction_trim_commit_drag_below_index_2_clamps():
 def test_gfunction_trim_commit_recovery_state_two_point_resample_never_indexerrors():
     """Regression: with an exactly-2-point resampled_full (diagnostics None -- the recovery
     path), clamping to index 2 BEFORE the clear check must never index past the end of
-    dt_full. A mid-plot drag on a record this short can only ever clear the trim."""
+    dt_full. A mid-plot drag on a record this short can only ever clear the trim -- pinned here
+    by pre-setting a real trim and asserting it's actually cleared, not just that nothing raised."""
     G_full = np.array([0.0, 1.0])
     dt_full = np.array([0.0, 10.0])
     res = DerivedResults(diagnostics=None, resampled=None,
                          resampled_full=resample.Resampled(dt=dt_full, p=np.array([500.0, 300.0]),
                                                             n_raw=2),
                          G_full=G_full)
-    st = PickState()
+    st = PickState(tail_trim_dt=5.0)
     stub, commit = _trim_commit(None, st, res)
 
-    commit(0.5)  # a mid-plot x -- must not raise
+    commit(0.5)  # a mid-plot x -- must not raise, and must clear the pre-set trim
 
     assert st.tail_trim_dt is None
 
