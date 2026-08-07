@@ -380,7 +380,7 @@ git commit -m "Fall back te to the wall-clock pump duration when no usable rate 
 **Interfaces:**
 - Consumes: a `DerivedResults` with `te_s` set but `vinj`/`qmax_bpm` `None` (Task 3's no-rate path).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_no_rate_fallback.py` (extend imports):
 
@@ -406,12 +406,12 @@ def test_render_overview_title_with_fallback_te_and_no_rate():
     assert "Vinj" not in title and "qmax" not in title
 ```
 
-- [ ] **Step 2: Run the new test to verify it fails**
+- [x] **Step 2: Run the new test to verify it fails**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py -k render_overview -v`
 Expected: FAIL with `TypeError` (formatting `None` with `:.1f`).
 
-- [ ] **Step 3: Build the title from conditional pieces**
+- [x] **Step 3: Build the title from conditional pieces**
 
 In `dfit_tool/plots.py`, replace lines 146-148:
 
@@ -425,12 +425,12 @@ In `dfit_tool/plots.py`, replace lines 146-148:
             title += f"   qmax={res.qmax_bpm:.2f} bpm"
 ```
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest`
 Expected: all PASS, no new warnings about the overview renderer.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/plots.py tests/test_no_rate_fallback.py

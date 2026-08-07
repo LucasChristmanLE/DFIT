@@ -17,6 +17,9 @@ from dfit_tool.model import PickState
 from tests.helpers import RATE_COL
 from dfit_tool.model import compute_all
 from tests.helpers import overview_state
+from matplotlib.figure import Figure
+
+from dfit_tool import plots
 
 
 # --------------------------------------------------------------------------------------------------
@@ -131,3 +134,18 @@ def test_compute_all_dead_rate_channel_falls_back_to_pump_duration():
     res = compute_all(st, td)
     assert res.te_s == pytest.approx(float(td.t_s[SHUTIN_IDX] - td.t_s[START_IDX]))
     assert any("pump duration" in w for w in res.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
+# plots.render_overview: title must not assume te implies Vinj/qmax
+# --------------------------------------------------------------------------------------------------
+def test_render_overview_title_with_fallback_te_and_no_rate():
+    td = make_testdata()
+    st = PickState(pressure_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
+    res = compute_all(st, td)
+    assert res.te_s is not None and res.vinj is None  # the crash precondition
+    ax = Figure().add_subplot(111)
+    plots.render_overview(ax, td, st, res)  # must not raise
+    title = ax.get_title()
+    assert "te=" in title
+    assert "Vinj" not in title and "qmax" not in title

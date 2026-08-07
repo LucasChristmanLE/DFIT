@@ -145,7 +145,11 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
 
     title = "Overview"
     if res.te_s:
-        title += f"   te={res.te_s/60:.2f} min   Vinj={res.vinj:.1f} bbl   qmax={res.qmax_bpm:.2f} bpm"
+        title += f"   te={res.te_s/60:.2f} min"
+        if res.vinj is not None:
+            title += f"   Vinj={res.vinj:.1f} bbl"
+        if res.qmax_bpm is not None:
+            title += f"   qmax={res.qmax_bpm:.2f} bpm"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
     return ViewDefaults(xlim=xlim)
