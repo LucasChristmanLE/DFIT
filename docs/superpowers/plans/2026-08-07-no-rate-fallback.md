@@ -273,7 +273,7 @@ git commit -m "Seed the overview start/shut-in vlines from pressure when no usab
 - Consumes: nothing new (pure restructure inside `compute_all`).
 - Produces: `res.t_shutin_s` set whenever both picks exist (rate no longer required); `res.te_s` = wall-clock pump duration + an appended warning containing `"pump duration"` when the effective te is unavailable; `res.qmax_bpm`/`res.vinj*` stay `None` without rate. Task 4's test relies on the te-set/vinj-None combination.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_no_rate_fallback.py` (extend imports):
 
@@ -318,12 +318,12 @@ def test_compute_all_dead_rate_channel_falls_back_to_pump_duration():
     assert any("pump duration" in w for w in res.warnings)
 ```
 
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [x] **Step 2: Run the new tests to verify they fail**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py -k compute_all -v`
 Expected: `no_rate` and `dead_rate` FAIL (te_s/t_shutin_s are None); `with_rate` PASSES.
 
-- [ ] **Step 3: Restructure the block**
+- [x] **Step 3: Restructure the block**
 
 In `dfit_tool/model.py`, replace lines 331-344 (the `# Injection window + te` block) with:
 
@@ -357,12 +357,12 @@ In `dfit_tool/model.py`, replace lines 331-344 (the `# Injection window + te` bl
                     "te = pump duration (shut-in - start); no usable rate for Vinj/qmax")
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py tests/test_model.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/model.py tests/test_no_rate_fallback.py

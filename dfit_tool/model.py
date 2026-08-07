@@ -328,20 +328,33 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if cfg.rate_col:
         res.rate_all = td.column(cfg.rate_col)
 
-    # Injection window + te
-    if state.start_idx is not None and state.shutin_idx is not None and res.rate_all is not None:
+    # Injection window + te. t_shutin_s needs only the two picks; qmax/Vinj (and the
+    # effective te = Vinj/qmax) need a rate channel. When the effective te is unavailable
+    # (no rate channel, or a degenerate one), te falls back to the wall-clock pump duration
+    # (TODO pair: rate-less datasets), with a warning so the analyst knows te is not the
+    # Vinj/qmax effective time.
+    if state.start_idx is not None and state.shutin_idx is not None:
         start, shutin = state.start_idx, state.shutin_idx
         res.t_shutin_s = float(td.t_s[shutin])
-        res.qmax_bpm = state.qmax_bpm or interpret.max_sustained_rate(res.rate_all, start, shutin)
-        vol = td.column(cfg.volume_col) if cfg.volume_col else None
-        vr = interpret.injected_volume(td.t_s, res.rate_all, start, shutin, volume=vol)
-        res.vinj, res.vinj_delta = vr.vinj, vr.vinj_delta
-        res.vinj_integral, res.vinj_source = vr.vinj_integral, vr.source
-        res.vinj_disagreement = vr.disagreement_frac
-        if vr.disagreement_frac is not None and vr.disagreement_frac > 0.05:
-            res.warnings.append(f"Volume delta vs rate-integral disagree {vr.disagreement_frac:.0%}")
-        if res.qmax_bpm and res.qmax_bpm > 0:
-            res.te_s = interpret.effective_te_seconds(res.vinj, res.qmax_bpm)
+        if res.rate_all is not None:
+            res.qmax_bpm = state.qmax_bpm or interpret.max_sustained_rate(res.rate_all, start, shutin)
+            vol = td.column(cfg.volume_col) if cfg.volume_col else None
+            vr = interpret.injected_volume(td.t_s, res.rate_all, start, shutin, volume=vol)
+            res.vinj, res.vinj_delta = vr.vinj, vr.vinj_delta
+            res.vinj_integral, res.vinj_source = vr.vinj_integral, vr.source
+            res.vinj_disagreement = vr.disagreement_frac
+            if vr.disagreement_frac is not None and vr.disagreement_frac > 0.05:
+                res.warnings.append(f"Volume delta vs rate-integral disagree {vr.disagreement_frac:.0%}")
+            if res.qmax_bpm and res.qmax_bpm > 0:
+                res.te_s = interpret.effective_te_seconds(res.vinj, res.qmax_bpm)
+        if res.te_s is not None and not (np.isfinite(res.te_s) and res.te_s > 0):
+            res.te_s = None  # a NaN/<=0 effective te must not leak into the truthy te gate below
+        if res.te_s is None and shutin > start:
+            dur = float(td.t_s[shutin] - td.t_s[start])
+            if dur > 0:
+                res.te_s = dur
+                res.warnings.append(
+                    "te = pump duration (shut-in - start); no usable rate for Vinj/qmax")
 
     # Apparent ISIP (needs shut-in time)
     if state.isip_tangent and res.t_shutin_s is not None:

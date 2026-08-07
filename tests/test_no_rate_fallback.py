@@ -15,6 +15,8 @@ from tests.helpers import make_testdata, PRESSURE_COL, START_IDX, SHUTIN_IDX
 from dfit_tool import picks
 from dfit_tool.model import PickState
 from tests.helpers import RATE_COL
+from dfit_tool.model import compute_all
+from tests.helpers import overview_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -94,3 +96,38 @@ def test_seed_overview_no_pressure_col_is_a_noop():
     st = PickState()  # neither rate nor pressure mapped
     picks.seed_overview(st, td)
     assert st.start_idx is None and st.shutin_idx is None
+
+
+# --------------------------------------------------------------------------------------------------
+# compute_all: te falls back to pump duration without rate
+# --------------------------------------------------------------------------------------------------
+def test_compute_all_no_rate_sets_t_shutin_and_fallback_te():
+    td = make_testdata()
+    st = PickState(pressure_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
+    res = compute_all(st, td)
+    assert res.t_shutin_s == pytest.approx(float(td.t_s[SHUTIN_IDX]))
+    assert res.te_s == pytest.approx(float(td.t_s[SHUTIN_IDX] - td.t_s[START_IDX]))
+    assert res.qmax_bpm is None and res.vinj is None
+    assert any("pump duration" in w for w in res.warnings)
+    # te works end to end: the resample + diagnostics pipeline runs
+    assert res.resampled is not None
+    assert res.diagnostics is not None
+
+
+def test_compute_all_with_rate_is_unchanged():
+    td = make_testdata()
+    st = overview_state(td)
+    res = compute_all(st, td)
+    # effective te = Vinj/qmax, not the wall-clock duration
+    assert res.te_s == pytest.approx(interpret.effective_te_seconds(res.vinj, res.qmax_bpm))
+    assert res.vinj is not None and res.qmax_bpm is not None
+    assert not any("pump duration" in w for w in res.warnings)
+
+
+def test_compute_all_dead_rate_channel_falls_back_to_pump_duration():
+    td = make_testdata()
+    td.df[RATE_COL] = 0.0  # rate present but never pumps: qmax = 0 -> no effective te
+    st = overview_state(td)
+    res = compute_all(st, td)
+    assert res.te_s == pytest.approx(float(td.t_s[SHUTIN_IDX] - td.t_s[START_IDX]))
+    assert any("pump duration" in w for w in res.warnings)
