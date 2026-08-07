@@ -54,8 +54,19 @@ def test_render_overview_trim_set_show_false_draws_excluded_not_trim_line():
     ax = fig.add_subplot(111)
     plots.render_overview(ax, td, st, res2, show_trim=False)
 
+    t_trim_h = (last_normal_dt + res2.t_shutin_s) / 3600.0
+    # The main pressure trace (no gid) is split at the trim time -- it never reaches past it.
+    main = next(l for l in ax.get_lines() if l.get_gid() is None)
+    assert main.get_xdata().max() <= t_trim_h
+
+    # The excluded tail is the real raw trace's remainder, not a hidden overlay: it starts right
+    # at the trim boundary and runs all the way to the record's last raw sample.
     tail = _gid(ax, "tail_excluded")
-    assert len(tail.get_xdata())
+    tail_x = tail.get_xdata()
+    assert len(tail_x)
+    last_raw_h = float(td.t_s[-1]) / 3600.0
+    assert t_trim_h < tail_x.min() < t_trim_h + 0.01
+    assert tail_x.max() == pytest.approx(last_raw_h)
     assert not any(l.get_gid() == "tail_trim" for l in ax.get_lines())
 
 
@@ -84,6 +95,10 @@ def test_render_overview_no_trim_show_true_vline_at_last_sample_no_excluded_tail
     expected_x = (float(res.resampled_full.dt[-1]) + res.t_shutin_s) / 3600.0
     assert vline.get_xdata()[0] == pytest.approx(expected_x)
     assert not any(l.get_gid() == "tail_excluded" for l in ax.get_lines())
+    # With no trim, the main trace is unsplit and reaches the full record's last raw sample.
+    main = next(l for l in ax.get_lines() if l.get_gid() is None)
+    last_raw_h = float(td.t_s[-1]) / 3600.0
+    assert main.get_xdata().max() == pytest.approx(last_raw_h)
 
 
 def test_render_overview_no_resampled_full_no_gids_no_crash():

@@ -11,7 +11,7 @@ from __future__ import annotations
 import types
 from pathlib import Path
 
-from dfit_tool import picks, ui
+from dfit_tool import picks, plots, store, ui
 from dfit_tool.model import PickState, TangentPick, compute_all
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
@@ -286,6 +286,15 @@ def test_seed_pp_non_destructive():
 # --------------------------------------------------------------------------------------------------
 def test_seeders_covers_exactly_the_seven_step_keys():
     assert set(picks.SEEDERS.keys()) == {k for k, _ in ui.STEPS}
+
+
+def test_renderers_and_store_step_keys_match_ui_steps_order():
+    """The four hand-duplicated step-key lists (ui.STEPS, picks.SEEDERS, plots.RENDERERS,
+    store.STEP_KEYS) must all agree. SEEDERS is pinned above by set equality; RENDERERS and
+    STEP_KEYS are pinned here by order too, since PNG numbering (save_all_step_pngs) depends
+    on RENDERERS' insertion order matching STEPS."""
+    assert list(plots.RENDERERS.keys()) == [k for k, _ in ui.STEPS]
+    assert list(store.STEP_KEYS) == [k for k, _ in ui.STEPS]
 
 
 def test_seed_defaults_no_longer_exists():

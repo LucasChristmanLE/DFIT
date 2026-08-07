@@ -486,7 +486,7 @@ def test_status_for_same_step_status_without_pcf_is_in_progress():
     st = PickState(
         postclosure_scenario="PC-A linear",
         step_status={
-            "injection": "done", "isip": "done", "gfunction": "done",
+            "overview": "done", "injection": "done", "isip": "done", "gfunction": "done",
             "tangent": "done", "loglog": "done",
         },
     )

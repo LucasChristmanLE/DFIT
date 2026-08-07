@@ -105,17 +105,33 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     tool moved here off the G-function step. It is an ephemeral session toggle (``ui.py``'s
     ``self.show_trim``), never part of ``PickState``, so ``render_step_figure``/
     ``save_all_step_pngs`` never pass it and an exported PNG never carries the interactive line.
-    The excluded-tail preview (gid "tail_excluded"), by contrast, is drawn whenever a trim is
-    actually set, regardless of ``show_trim`` -- it's informational, not the interactive control.
+    The raw pressure trace itself, by contrast, is split and grayed out beyond the trim time (gid
+    "tail_excluded") whenever a trim is actually set, regardless of ``show_trim`` -- it's the
+    trim's visible effect, not the interactive control, so an exported PNG DOES show the gray
+    tail but never the draggable vline. It is drawn as its own segment of the real raw trace (not
+    an overlay of the coarser post-shut-in resample), so it is visible in front of, not under, the
+    kept portion.
     """
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
-
-    xt, xp = _decimate(t_h, p)
     press_color = "black" if res.pressure_is_bhp else "tab:red"
-    ax.plot(xt, xp, color=press_color, lw=0.8,
-            label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
+    press_label = "bottomhole pressure" if res.pressure_is_bhp else "pressure"
+
+    has_trim_context = (res.resampled_full is not None and res.t_shutin_s is not None
+                        and len(res.resampled_full.dt))
+    kept = np.ones_like(t_h, dtype=bool)
+    if has_trim_context and state.tail_trim_dt is not None:
+        t_trim_s = res.t_shutin_s + state.tail_trim_dt
+        kept = td.t_s <= t_trim_s
+
+    xt, xp = _decimate(t_h[kept], p[kept])
+    ax.plot(xt, xp, color=press_color, lw=0.8, label=press_label)
+    excluded = ~kept
+    if excluded.any():
+        xte, xpe = _decimate(t_h[excluded], p[excluded])
+        ax.plot(xte, xpe, color="0.75", lw=0.8, gid="tail_excluded")
+
     ax.set_xlabel("time from file start (h)")
     ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
@@ -123,8 +139,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
 
     if res.rate_all is not None:
         ax2 = ax.twinx()
-        _, xr = _decimate(t_h, res.rate_all)
-        ax2.plot(xt, xr, color="tab:blue", lw=0.7, alpha=0.7)
+        xrt, xr = _decimate(t_h, res.rate_all)
+        ax2.plot(xrt, xr, color="tab:blue", lw=0.7, alpha=0.7)
         ax2.set_ylabel("rate (bpm)", color="tab:blue")
         ax2.tick_params(axis="y", labelcolor="tab:blue")
 
@@ -135,18 +151,11 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         ax.axvline(t_h[state.shutin_idx], color="tab:red", ls=":", lw=1.0, alpha=0.6,
                    label="shut-in", gid="shutin_ref")
 
-    if res.resampled_full is not None and res.t_shutin_s is not None and len(res.resampled_full.dt):
+    if show_trim and has_trim_context:
         dt_full = res.resampled_full.dt
-        t_full_h = (dt_full + res.t_shutin_s) / 3600.0
-        if state.tail_trim_dt is not None:
-            excluded = dt_full > state.tail_trim_dt
-            if excluded.any():
-                ax.plot(t_full_h[excluded], res.resampled_full.p[excluded], color="0.75",
-                        alpha=0.6, gid="tail_excluded", zorder=1)
-        if show_trim:
-            trim_dt = state.tail_trim_dt if state.tail_trim_dt is not None else float(dt_full[-1])
-            ax.axvline((trim_dt + res.t_shutin_s) / 3600.0, color="tab:blue", ls="--", lw=1.4,
-                       gid="tail_trim")
+        trim_dt = state.tail_trim_dt if state.tail_trim_dt is not None else float(dt_full[-1])
+        ax.axvline((trim_dt + res.t_shutin_s) / 3600.0, color="tab:blue", ls="--", lw=1.4,
+                   gid="tail_trim")
 
     ax.set_title("Overview — entire dataset", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
@@ -268,7 +277,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 5: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
+    """Step 4: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("G-function -- need te and a falloff", fontsize=10)
@@ -377,7 +386,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 6: BHP and G*dP/dG vs G-time -- mirrors ``render_gfunction``'s twinx layout (BHP on
+    """Step 5: BHP and G*dP/dG vs G-time -- mirrors ``render_gfunction``'s twinx layout (BHP on
     the primary/left axis, G*dP/dG on the twin/right). The through-origin line is still picked
     on the G*dP/dG curve and lives on the twin axis, but the closure marker now rides the BHP
     curve on the primary axis."""
@@ -420,7 +429,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 7: log-log dp and t*dP/dt vs shut-in time; selected window + fitted slope."""
+    """Step 6: log-log dp and t*dP/dt vs shut-in time; selected window + fitted slope."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Log-log -- need a falloff", fontsize=10)
@@ -451,7 +460,7 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
 
 
 def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
-    """Step 8: P vs t^-1/2 or t^-1 with the fitted line extended to the intercept."""
+    """Step 7: P vs t^-1/2 or t^-1 with the fitted line extended to the intercept."""
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("Pore pressure -- need a falloff", fontsize=10)

@@ -284,8 +284,8 @@ grayed out (`gid="tail_excluded"`) whenever a trim is set, regardless of the tog
 effect of a trim stays visible even with the tool hidden; releasing the drag at/past the last
 point clears the trim, and the commit clamps to >=3 kept points -- a record whose full
 resample already yields <=3 points can therefore only ever clear the trim, never set one (a
-pathological saved trim hits a renderer/controller recovery path on the G-function step, plus
-a warning directing the analyst back to the Overview tab, instead of a dead plot). The
+pathological saved trim hits a warning directing the analyst back to the Overview tab's trim
+line, instead of a dead plot). The
 G-function plot itself carries no trim artifacts at all -- only the rise guard's own
 `guard_excluded` preview remains there. The trim is manual-only (no seeder) and is never
 touched by scenario changes or the G-function reset button. Warnings: WHP below 100 psi

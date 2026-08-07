@@ -123,7 +123,7 @@ def first_not_visited_step(step_status: dict[str, str]) -> str:
     step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
     left off. If every step already has some status -- an old file whose picks cover the whole
     workflow -- there is no natural "resume point", so the simplest sensible fallback is the
-    first step, "injection"."""
+    first step, "overview"."""
     for key, _ in STEPS:
         if step_status.get(key, "not_visited") == "not_visited":
             return key
@@ -516,7 +516,7 @@ class DfitApp:
             self._load(path)
 
     def _load_common(self, path: str) -> bool:
-        """Load `path` into a fresh PickState and land on "injection" -- shared by single-file
+        """Load `path` into a fresh PickState and land on "overview" -- shared by single-file
         _load and folder-mode _load_test. Returns False (leaving the previous self.td/state
         untouched) if the load failed, True on success."""
         try:
@@ -1369,6 +1369,9 @@ class DfitApp:
                 self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
                 self.hint_lbl.config(text="Drag the blue dashed line to trim a bad tail; release "
                                           "it at the last point to clear the trim.")
+            elif self.show_trim:
+                self.hint_lbl.config(
+                    text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists.")
             else:
                 self.hint_lbl.config(
                     text="Entire dataset. Use Next to zoom into the injection window. Toggle "
@@ -1656,7 +1659,7 @@ class DfitApp:
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
         # workflow left off; if every step already has some status, there is no natural resume
-        # point, so land on "injection" (first_not_visited_step's fallback).
+        # point, so land on "overview" (first_not_visited_step's fallback).
         self._goto(first_not_visited_step(self.state.step_status))
 
     def _load_picks(self):

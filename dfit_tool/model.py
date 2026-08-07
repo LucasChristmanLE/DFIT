@@ -419,10 +419,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 res.warnings.append(f"Only {len(rs.p)} resampled points; consider a smaller step")
         elif state.tail_trim_dt is not None:
             # A pathological trim leaves too few points to diagnose -- warn rather than let it be
-            # a silent dead end (the renderer/controller recovery path still lets the analyst drag
-            # the trim line back right from here). Inserted at the front so it stays the topmost
-            # line in warn_lbl's stacked display even when other warnings already queued ahead of
-            # it -- this is the escape instruction for an otherwise-blank plot.
+            # a silent dead end (the trim tool lives on the Overview tab now, so the recovery is
+            # this warning text plus dragging that tab's trim line back right, not anything on
+            # this step). Inserted at the front so it stays the topmost line in warn_lbl's stacked
+            # display even when other warnings already queued ahead of it -- this is the escape
+            # instruction for an otherwise-blank plot.
             res.warnings.insert(0, f"Tail trim leaves only {len(rs.p)} resampled point(s); drag "
                                    "the trim line back right on the Overview tab")
 
