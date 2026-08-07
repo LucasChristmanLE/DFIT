@@ -207,6 +207,12 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # plot. Still draw the untrimmed tail + trim vline so the analyst isn't stranded --
         # dragging the line back right is the only way out of this state.
         ylim = None
+        # A guard fire severe enough to leave <3 kept points lands here too (no trim needed) --
+        # draw its excluded-tail preview the same as the main path, so it isn't silent just
+        # because there were too few points left to diagnose.
+        if res.guard_excluded_G is not None and len(res.guard_excluded_G):
+            ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
+                    gid="guard_excluded", zorder=0.5)
         if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
             ax.plot(res.G_full, res.resampled_full.p, color="0.75", alpha=0.6,
                     gid="tail_excluded", zorder=1)
@@ -222,6 +228,12 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         return ViewDefaults(ylim=ylim)
     dg = res.diagnostics
     rs = res.resampled
+    # Fainter still, and drawn under everything else: the raw tail the rise guard itself threw
+    # away (never entered resampled_full at all). Left in autoscale on purpose -- the 2x-G cap
+    # applied in compute_all is what bounds a runaway tail, not a view-limit clamp here.
+    if res.guard_excluded_G is not None and len(res.guard_excluded_G):
+        ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
+                gid="guard_excluded", zorder=0.5)
     # Gray excluded tail drawn *before* the black trimmed curve so the kept portion paints over
     # it. With no trim set, resampled_full is identical to rs -- harmless, just an extra plot.
     if res.resampled_full is not None and res.G_full is not None:

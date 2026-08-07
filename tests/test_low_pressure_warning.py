@@ -84,9 +84,10 @@ def test_post_shutin_only_mask_low_reading_before_start_does_not_fire():
 
 
 def test_absent_when_rise_guard_excludes_the_low_reading():
-    """A late reading below 100 psi that the resampler's own rise guard (a >30 psi rise above
-    the running minimum) already excludes from resampled/resampled_full must not trigger the
-    warning -- trimming wouldn't change any computed value, since that data was never used."""
+    """A late reading below 100 psi that the resampler's own rise guard (a sustained >30 psi
+    rise above the running minimum, held >= 60 s) already excludes from resampled/resampled_full
+    must not trigger the warning -- trimming wouldn't change any computed value, since that data
+    was never used."""
     n = 400
     t_s = np.arange(n, dtype=float)
     start_idx, shutin_idx = 50, 100
@@ -99,13 +100,17 @@ def test_absent_when_rise_guard_excludes_the_low_reading():
     # Phase 1: a normal smooth decline that feeds the resampler.
     phase1_len = post // 2
     pressure[shutin_idx:shutin_idx + phase1_len] = np.linspace(5000.0, 500.0, phase1_len)
-    # Rise: a +100 psi jump (> the 30 psi rise_tol) trips the tail guard right here.
+    # Rise: a +100 psi jump (> the fixed 30 psi RISE_GUARD_PSI), held for >= 60 s so the
+    # sustained-rise guard (resample.RISE_GUARD_SUSTAIN_S) still fires here, not just a single
+    # over-tolerance sample.
     rise_idx = shutin_idx + phase1_len
-    pressure[rise_idx] = pressure[rise_idx - 1] + 100.0
+    rise_len = 70
+    pressure[rise_idx:rise_idx + rise_len] = pressure[rise_idx - 1] + 100.0
     # Phase 2: falls well below 100 psi -- must never count; the rise guard already stopped
     # resampling at rise_idx, so nothing from here on feeds resampled/resampled_full.
-    phase2_len = n - rise_idx - 1
-    pressure[rise_idx + 1:] = np.linspace(pressure[rise_idx], 5.0, phase2_len)
+    phase2_start = rise_idx + rise_len
+    phase2_len = n - phase2_start
+    pressure[phase2_start:] = np.linspace(pressure[phase2_start - 1], 5.0, phase2_len)
 
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,

@@ -264,6 +264,12 @@ class DerivedResults:
     resampled_full: Optional[resample.Resampled] = field(default=None, repr=False)
     G_full: Optional[np.ndarray] = field(default=None, repr=False)  # g_time over resampled_full.dt
     diagnostics: Optional[resample.Diagnostics] = field(default=None, repr=False)
+    # A gray preview of the raw tail the rise guard excluded, in G-time -- None unless the guard
+    # actually fired. Built from raw (not resampled) post-shut-in samples past guard_dt, capped
+    # at 2x the kept G-range and decimated to <= 500 points so a runaway tail can't blow out the
+    # plot or the point count. See the resample block in compute_all.
+    guard_excluded_G: Optional[np.ndarray] = field(default=None, repr=False)
+    guard_excluded_p: Optional[np.ndarray] = field(default=None, repr=False)
 
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
@@ -355,6 +361,35 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                                                         step=state.resample_step)
         res.resampled_full = rs_full
         res.G_full = g_time(rs_full.dt, res.te_s, state.alpha)
+        if rs_full.guard_dt is not None:
+            # A gray preview of what the guard threw away, in G-time -- built from the raw (not
+            # resampled) samples past guard_dt, since the resampler itself kept none of them.
+            # Non-finite pressures are left in on purpose: matplotlib skips NaN when drawing, so
+            # filtering here would just be extra work for the same visual result. Capped at 2x
+            # the kept G-range so a runaway crash-to-zero tail can't blow out the plot's
+            # autoscale, and decimated (ceiling stride, so the result is always <= 500 -- a
+            # floor stride via `n // 500` can leave up to 999) so a very long raw tail can't
+            # blow out the point count.
+            dt_raw, p_raw = dt_all[post], res.bhp_all[post]
+            tail_dt = dt_raw[dt_raw > rs_full.guard_dt]
+            tail_p = p_raw[dt_raw > rs_full.guard_dt]
+            if len(res.G_full):
+                tail_G = g_time(tail_dt, res.te_s, state.alpha)
+                within = tail_G <= 2.0 * res.G_full[-1]
+                tail_G, tail_p = tail_G[within], tail_p[within]
+                n = len(tail_G)
+                if n:
+                    stride = -(-n // 500)
+                    res.guard_excluded_G = tail_G[::stride]
+                    res.guard_excluded_p = tail_p[::stride]
+            # Inserted at the front (not appended) so an earlier-queued warning (density/TVD,
+            # volume disagreement, ...) can't push this out of warn_lbl's warnings[:2] slots --
+            # a firing guard must never be silent in the UI. The tail-trim escape warning below
+            # (its own insert(0), for a diagnostics-starving trim) runs after this in code order,
+            # so it still lands frontmost of the two when both fire.
+            res.warnings.insert(0,
+                f"Tail guard stopped resampling {rs_full.guard_dt/60:.0f} min after shut-in "
+                "(sustained pressure rise); later data excluded")
         if state.tail_trim_dt is not None:
             mask = rs_full.dt <= state.tail_trim_dt
             rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,

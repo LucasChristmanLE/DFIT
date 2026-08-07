@@ -236,12 +236,24 @@ no reported identity.
 **Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
 ≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense
 early and sparse late, which stabilizes the numerical derivatives. It replaces time-domain
-smoothing. A tail guard stops resampling once the pressure rises above its running minimum
-(non-monotonic late data).
+smoothing. A tail guard stops resampling once the pressure sustains a rise above its running
+minimum (non-monotonic late data) for long enough, and in enough samples, to rule out noise --
+see Tail trim below for the exact thresholds.
 
-**Tail trim.** The tail guard only catches a late rise; a monotone crash to ~0 psi (gauge
-pulled, well opened) sails through it and pollutes the derivatives. The G-function step has a
-manual trim for this: a draggable dashed vline (`gid="tail_trim"`, a `DragLineController`
+**Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it
+fires when a run of samples stays continuously more than a fixed 30 psi
+(`resample.RISE_GUARD_PSI`, independent of the resample step) above the running minimum for
+both >= 60 s and >= 5 samples (`resample.RISE_GUARD_SUSTAIN_S`/`RISE_GUARD_SUSTAIN_SAMPLES` --
+the sample-count floor matters at coarse (>= 60 s) sample spacing, where duration alone would
+already be satisfied by the run's second sample), so a brief water-hammer rebound or noise
+spike no longer trips it. A non-finite sample mid-run resets the run rather than being skipped
+through it -- continuity can't be confirmed across a dropout, so two excursions separated by
+missing data can't bridge into a false fire. When the guard does fire, the excluded raw tail is
+drawn as a faint gray preview (capped at 2x the kept G-range) alongside a warning inserted at
+the front of `DerivedResults.warnings` (not appended), so an earlier-queued warning can't push
+it out of the panel's two-slot display -- the truncation is never silent. A monotone crash to
+~0 psi (gauge pulled, well opened) still sails through it and pollutes the derivatives. The
+G-function step has a manual trim for this: a draggable dashed vline (`gid="tail_trim"`, a `DragLineController`
 sharing the step's `_CaptureGate`) commits `PickState.tail_trim_dt` (shut-in-relative seconds,
 `None` = no trim, logged to `tail_trim_s`). `compute_all` resamples the full post-shut-in
 record, keeps it on `DerivedResults.resampled_full`/`G_full`, then masks to
@@ -349,3 +361,4 @@ select their tab (`ui.py:_open_guide`).
 - Would like to be able to resize both sidebars. Field names in right sidebar are getting cut off, even though there's lots of space.
 - When no rate is auto-detected, the start/shut-in vlines never appear
 - Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in
+- Make tail trimming tool hidden until toggled on by a button. It should then be used to trim then toggled back off to not clutter the G-function plot.

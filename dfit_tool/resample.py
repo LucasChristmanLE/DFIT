@@ -18,6 +18,16 @@ import numpy as np
 
 from .gfunction import g_time
 
+# Tail rise guard defaults. Fixed rather than derived from ``step`` -- a smaller resample step
+# (endorsed by the reference methodology) must not silently tighten the guard and start
+# discarding ordinary water-hammer ringing.
+RISE_GUARD_PSI = 30.0
+RISE_GUARD_SUSTAIN_S = 60.0
+# On its own, RISE_GUARD_SUSTAIN_S can be satisfied by just two samples at >= 60 s spacing --
+# effectively the old single-excursion behavior. Also require this many above-tolerance samples
+# in the run (counting its first) before the duration check is allowed to fire.
+RISE_GUARD_SUSTAIN_SAMPLES = 5
+
 
 @dataclass
 class Resampled:
@@ -25,10 +35,11 @@ class Resampled:
     p: np.ndarray    # BHP at those points (psi), monotonically decreasing
     n_raw: int       # number of raw post-shut-in samples considered
     guarded_at: int | None = None  # resampled index where the tail guard stopped, if it did
-    # Raw dt of the sample that tripped the rise guard (the first non-monotonic sample itself,
-    # one past the last kept point) -- None if the guard never fired. This is the true boundary
-    # of what the resampler actually consumed: the last *kept* point (dt[-1]) can sit up to one
-    # resample step below it, so callers that need "everything the resampler looked at" (e.g. the
+    # dt of the FIRST sample of the sustained run that tripped the rise guard -- not the
+    # confirming sample -- or None if the guard never fired. This is still the true boundary of
+    # what the resampler actually consumed: the run itself contributes nothing to keep_dt, so up
+    # to a full sustain window (minus one sample) can separate the last *kept* point (dt[-1])
+    # from this boundary. Callers that need "everything the resampler looked at" (e.g. the
     # low-surface-pressure scan) should bound by guard_dt, not dt[-1].
     guard_dt: float | None = None
 
@@ -38,18 +49,30 @@ def resample_pressure_increment(
     p: np.ndarray,
     step: float = 30.0,
     rise_tol: float | None = None,
+    sustain_s: float = RISE_GUARD_SUSTAIN_S,
+    sustain_samples: int = RISE_GUARD_SUSTAIN_SAMPLES,
 ) -> Resampled:
     """Keep a point each time BHP has dropped >= ``step`` psi below the last kept point.
 
     ``dt`` and ``p`` are the post-shut-in samples (dt >= 0, increasing). ``rise_tol`` (default =
-    ``step``) is the tail guard: once the pressure rises more than ``rise_tol`` above the running
-    minimum, the late data has gone non-monotonic (gauge noise floor / temperature drift) and
-    resampling stops there.
+    ``RISE_GUARD_PSI``, independent of ``step``) is the tail guard's tolerance above the running
+    minimum. A single sample past that tolerance is not enough on its own -- gauge noise and
+    water-hammer rebounds routinely poke above it for a few seconds. The guard only fires once a
+    run of samples stays continuously above tolerance for >= ``sustain_s`` seconds AND contains
+    >= ``sustain_samples`` such samples (counting the run's first) -- the sample-count floor
+    matters at coarse (>= ``sustain_s``) sample spacing, where duration alone would already be
+    satisfied by the run's second sample. Any sample at or below tolerance resets the run (and is
+    itself processed normally); so does a non-finite sample -- continuity can't be confirmed
+    across a dropout, so two excursions separated by missing data must not bridge into one fire.
+    On fire, ``guard_dt`` is the dt of the FIRST sample of the run (not the confirming sample) and
+    ``guarded_at`` is the count of points already kept at that moment -- both stay ``None`` unless
+    a run actually satisfies both conditions before the record ends. Samples inside a candidate
+    run are neither kept nor allowed to lower ``running_min``.
     """
     dt = np.asarray(dt, dtype=float)
     p = np.asarray(p, dtype=float)
     if rise_tol is None:
-        rise_tol = step
+        rise_tol = RISE_GUARD_PSI
 
     keep_dt: list[float] = []
     keep_p: list[float] = []
@@ -58,9 +81,17 @@ def resample_pressure_increment(
 
     running_min = np.inf
     last_kept = np.inf
+    run_start_dt: float | None = None
+    run_start_guarded_at: int | None = None
+    run_count = 0
     for i in range(len(p)):
         pi = p[i]
         if not np.isfinite(pi):
+            # A dropout mid-run breaks continuity -- can't confirm the rise stayed sustained
+            # across it, so reset conservatively rather than let two spikes separated by missing
+            # data bridge into a false fire. Outside a run this is a no-op, same as always.
+            run_start_dt = None
+            run_count = 0
             continue
         # First finite point is always kept as the reference.
         if not keep_dt:
@@ -69,11 +100,23 @@ def resample_pressure_increment(
             last_kept = pi
             running_min = pi
             continue
-        # Tail guard: sustained rise above the running minimum -> stop.
         if pi > running_min + rise_tol:
-            guarded_at = len(keep_p)
-            guard_dt = float(dt[i])
-            break
+            # Above tolerance: extend the current run, or start a new one. Either way this
+            # sample is excluded from keep_p/running_min -- it can't satisfy either condition.
+            if run_start_dt is None:
+                run_start_dt = float(dt[i])
+                run_start_guarded_at = len(keep_p)
+                run_count = 1
+            else:
+                run_count += 1
+                if dt[i] - run_start_dt >= sustain_s and run_count >= sustain_samples:
+                    guard_dt = run_start_dt
+                    guarded_at = run_start_guarded_at
+                    break
+            continue
+        # At or below tolerance: reset any in-progress run and fall through to normal processing.
+        run_start_dt = None
+        run_count = 0
         running_min = min(running_min, pi)
         if pi <= last_kept - step:
             keep_dt.append(dt[i])
