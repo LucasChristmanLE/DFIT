@@ -1323,7 +1323,7 @@ class DfitApp:
                 step_ctrls.append(picks.AnchorLineController(
                     self.canvas, self.ax,
                     gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
-                          "extension": "isip_tangent_extension"},
+                          "extension": "isip_tangent_extension", "point": "isip_value_dot"},
                     get_pick=get_pick, commit_fn=commit, curve=(t_min, res.bhp_all),
                     anchor_half=interpret.ISIP_ANCHOR_HALF, readout_fn=readout, gate=gate,
                     pin_x=0.0))

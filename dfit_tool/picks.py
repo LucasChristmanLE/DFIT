@@ -267,7 +267,9 @@ class AnchorLineController:
       and is left untouched during "end" motion, since the anchor -- and so the tick's position --
       does not move while rotating. When ``pin_x`` is set, the dashed extension is instead
       re-anchored to that x every motion event rather than replaying its press-time offsets, so
-      it stays glued to a reference vertical (e.g. shut-in) throughout the drag.
+      it stays glued to a reference vertical (e.g. shut-in) throughout the drag; an optional
+      "point" gid (e.g. a value dot) rides along too, redrawn each motion at
+      (``pin_x``, the drag's current line value there) instead of freezing at its press position.
 
     On release, ``commit_fn(kind, anchor_x, anchor_y, slope)`` is called exactly once with the
     *final* geometry -- never the raw cursor position -- where ``kind`` is one of "anchor" /
@@ -417,7 +419,8 @@ class AnchorLineController:
         if getattr(self.canvas, "supports_blit", False):
             self._blit_artists = [a for a in (
                 segment, self._artist(self.gids.get("tick")),
-                self._artist(self.gids.get("extension")), self._readout) if a is not None]
+                self._artist(self.gids.get("extension")), self._artist(self.gids.get("point")),
+                self._readout) if a is not None]
             for artist in self._blit_artists:
                 artist.set_animated(True)
             self.canvas.draw()
@@ -501,6 +504,12 @@ class AnchorLineController:
             dx, dy = ax1 - ax0, ay1 - ay0
             txo, tyo = self._tick_orig
             tick.set_data([x + dx for x in txo], [y + dy for y in tyo])
+        point = self._artist(self.gids.get("point"))
+        if point is not None and self.pin_x is not None:
+            # A value dot pinned to the same reference x as the extension (e.g. the apparent-ISIP
+            # dot): its y is the drag's current line evaluated at pin_x, for every drag kind --
+            # anchor, body, and rotate all change that value.
+            point.set_data([self.pin_x], [ay1 + slope1 * (self.pin_x - ax1)])
 
     def _on_release(self, event):
         if self._active is None:

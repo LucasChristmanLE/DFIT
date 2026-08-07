@@ -188,7 +188,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
             gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                   "extension": "isip_tangent_extension"},
             tick_half_y=0.04 * y_span, label="ISIP tangent")
-        ax.plot(0.0, res.apparent_isip, "o", color="tab:purple")
+        ax.plot(0.0, res.apparent_isip, "o", color="tab:purple", gid="isip_value_dot")
     if res.apparent_isip is not None:
         ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi", fontsize=10)
     else:

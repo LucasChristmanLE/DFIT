@@ -14,9 +14,12 @@ XLIM = (-5.0, 25.0)
 YLIM = (-20.0, 120.0)
 
 
-def _build_axes(anchor_x, anchor_y, slope, half_len=5.0, with_tick=True, with_extension=True):
+def _build_axes(anchor_x, anchor_y, slope, half_len=5.0, with_tick=True, with_extension=True,
+                with_point=False):
     """A gid-tagged tangent construction: segment anchor->far-end, an anchor tick, and a dashed
-    extension past the far end -- the shape AnchorLineController expects from a renderer."""
+    extension past the far end -- the shape AnchorLineController expects from a renderer.
+    ``with_point`` adds a single-point artist (gid "point") at a stale position, standing in for
+    a value dot that rides along the pinned extension (e.g. the ISIP dot)."""
     fig = Figure(figsize=(6.4, 4.8), dpi=100)
     ax = fig.add_subplot(111)
     canvas = FigureCanvasAgg(fig)
@@ -32,6 +35,8 @@ def _build_axes(anchor_x, anchor_y, slope, half_len=5.0, with_tick=True, with_ex
         ext_x = far_x + half_len
         ext_y = far_y + slope * half_len
         ax.plot([far_x, ext_x], [far_y, ext_y], ls="--", gid="extension")
+    if with_point:
+        ax.plot([0.0], [-9999.0], "o", gid="point")  # stale value, must be recomputed on drag
     canvas.draw()
     return fig, ax, canvas
 
@@ -470,3 +475,65 @@ def test_anchor_drag_cached_index_matches_nearest_index_by_pixel():
     expected_idx = picks._nearest_index_by_pixel(ax, x_arr, ev)
     _, ax1, _, _ = ctrl._final
     assert ax1 == pytest.approx(x_arr[expected_idx])
+
+
+def test_pin_x_point_tracks_line_value_during_body_drag():
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0, with_point=True)
+    calls, commit = _recorder()
+    gids = {"segment": "segment", "tick": "tick", "extension": "extension", "point": "point"}
+    ctrl = picks.AnchorLineController(canvas, ax, gids, get_pick=lambda: pick, commit_fn=commit,
+                                      pin_x=0.0)
+
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    ctrl._on_press(_event("button_press_event", canvas, ax, mid_x, mid_y))
+    assert ctrl._active == "body"
+
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, mid_x + 3.0, mid_y + 4.0))
+    _, ax1, ay1, slope1 = ctrl._final
+    point = _line(ax, "point")
+    assert list(point.get_xdata()) == pytest.approx([0.0])
+    assert list(point.get_ydata()) == pytest.approx([ay1 + slope1 * (0.0 - ax1)])
+
+
+def test_pin_x_point_tracks_line_value_during_rotate_drag():
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0, with_point=True)
+    calls, commit = _recorder()
+    gids = {"segment": "segment", "tick": "tick", "extension": "extension", "point": "point"}
+    ctrl = picks.AnchorLineController(canvas, ax, gids, get_pick=lambda: pick, commit_fn=commit,
+                                      pin_x=0.0)
+
+    far_x, far_y = anchor_x0 + 5.0, anchor_y0 + slope0 * 5.0
+    ctrl._on_press(_event("button_press_event", canvas, ax, far_x, far_y))
+    assert ctrl._active == "end"
+
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, far_x + 2.0, far_y - 20.0))
+    _, ax1, ay1, slope1 = ctrl._final
+    assert slope1 != pytest.approx(slope0)
+    point = _line(ax, "point")
+    assert list(point.get_xdata()) == pytest.approx([0.0])
+    assert list(point.get_ydata()) == pytest.approx([ay1 + slope1 * (0.0 - ax1)])
+
+
+def test_pin_x_none_leaves_point_artist_untouched():
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0, with_point=True)
+    calls, commit = _recorder()
+    gids = {"segment": "segment", "tick": "tick", "extension": "extension", "point": "point"}
+    ctrl = picks.AnchorLineController(canvas, ax, gids, get_pick=lambda: pick, commit_fn=commit)
+
+    point_before_x = list(_line(ax, "point").get_xdata())
+    point_before_y = list(_line(ax, "point").get_ydata())
+
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    ctrl._on_press(_event("button_press_event", canvas, ax, mid_x, mid_y))
+    assert ctrl._active == "body"
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, mid_x + 3.0, mid_y + 4.0))
+
+    point = _line(ax, "point")
+    assert list(point.get_xdata()) == point_before_x
+    assert list(point.get_ydata()) == point_before_y
