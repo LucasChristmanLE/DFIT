@@ -446,7 +446,7 @@ git commit -m "Render the overview title without assuming te implies Vinj/qmax"
 
 **Interfaces:** none (docs only).
 
-- [ ] **Step 1: Update CLAUDE.md**
+- [x] **Step 1: Update CLAUDE.md**
 
 Remove the two completed TODO bullets:
 
@@ -468,7 +468,7 @@ te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj
 blank without rate; the overview title shows only the pieces that exist.
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add CLAUDE.md

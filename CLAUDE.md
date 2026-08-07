@@ -240,6 +240,15 @@ smoothing. A tail guard stops resampling once the pressure sustains a rise above
 minimum (non-monotonic late data) for long enough, and in enough samples, to rule out noise --
 see Tail trim below for the exact thresholds.
 
+**No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
+the detection threshold), `picks.seed_overview` seeds the start/shut-in vlines from the
+pressure shape instead (`interpret.suggest_injection_window_pressure`: shut-in at the
+pressure max, start at the last upcross of a 10%-of-rise threshold, positional defaults for
+degenerate shapes), so the draggable lines always exist. `compute_all` sets `t_shutin_s`
+from the picks alone and, when the effective te (Vinj/qmax) is unavailable, falls back to
+te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj and qmax stay
+blank without rate; the overview title shows only the pieces that exist.
+
 **Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it
 fires when a run of samples stays continuously more than a fixed 30 psi
 (`resample.RISE_GUARD_PSI`, independent of the resample step) above the running minimum for
@@ -360,7 +369,5 @@ select their tab (`ui.py:_open_guide`).
   `_update_stepbar` -> `_update_skip_test_btn` chain).
 
 ## TODO
-- When no rate is auto-detected, the start/shut-in vlines never appear
-- Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in
 - Make tail trimming tool hidden until toggled on by a button. It should then be used to trim then toggled back off to not clutter the G-function plot.
 - Rename overview tab to "Injectiom". Add new "Overview" tab showing entire dataset. Move the trim tool from the G-func tab to this tab.
