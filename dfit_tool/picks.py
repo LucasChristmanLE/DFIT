@@ -1009,15 +1009,24 @@ def suggest_pp_axis(scenario: str) -> Optional[str]:
 # a step whose prerequisites weren't picked simply seeds nothing.
 # --------------------------------------------------------------------------------------------------
 def seed_overview(state: PickState, td: TestData) -> None:
-    """Injection window (start/shut-in indices) from the rate (+ optional volume) curve."""
+    """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
+    falling back to the pressure shape when no usable rate channel exists -- the vlines must
+    always exist for the analyst to drag, rate or not."""
     if state.start_idx is not None or state.shutin_idx is not None:
         return
-    if not state.rate_col:
+    if state.rate_col:
+        rate = td.column(state.rate_col)
+        vol = td.column(state.volume_col) if state.volume_col else None
+        try:
+            state.start_idx, state.shutin_idx = interpret.suggest_injection_window(rate, vol)
+            return
+        except ValueError:
+            pass  # e.g. an all-zero rate channel -- fall through to the pressure fallback
+    if not state.pressure_col:
         return
-    rate = td.column(state.rate_col)
-    vol = td.column(state.volume_col) if state.volume_col else None
     try:
-        state.start_idx, state.shutin_idx = interpret.suggest_injection_window(rate, vol)
+        state.start_idx, state.shutin_idx = interpret.suggest_injection_window_pressure(
+            td.column(state.pressure_col))
     except ValueError:
         pass
 

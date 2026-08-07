@@ -171,7 +171,7 @@ git commit -m "Add pressure-based injection-window suggester for rate-less datas
 - Consumes: `interpret.suggest_injection_window_pressure(p) -> tuple[int, int]` (Task 1).
 - Produces: `seed_overview(state, td)` now seeds `state.start_idx`/`state.shutin_idx` when `state.rate_col` is empty (or the rate suggestion raises `ValueError`), provided `state.pressure_col` is set. Signature unchanged.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_no_rate_fallback.py` (extend the imports at the top):
 
@@ -216,12 +216,12 @@ def test_seed_overview_no_pressure_col_is_a_noop():
     assert st.start_idx is None and st.shutin_idx is None
 ```
 
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [x] **Step 2: Run the new tests to verify they fail**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py -k seed_overview -v`
 Expected: `test_seed_overview_no_rate_col_seeds_from_pressure` and `test_seed_overview_dead_rate_channel_falls_back_to_pressure` FAIL (picks stay None); the other two PASS (existing behavior).
 
-- [ ] **Step 3: Replace `seed_overview`**
+- [x] **Step 3: Replace `seed_overview`**
 
 In `dfit_tool/picks.py`, replace the whole function (currently lines 1011-1022):
 
@@ -249,12 +249,12 @@ def seed_overview(state: PickState, td: TestData) -> None:
         pass
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py tests/test_seed_steps.py -v`
 Expected: all PASS (test_seed_steps.py guards the rate-present path against regression).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/picks.py tests/test_no_rate_fallback.py

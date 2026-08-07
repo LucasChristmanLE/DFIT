@@ -12,6 +12,9 @@ import pytest
 
 from dfit_tool import interpret
 from tests.helpers import make_testdata, PRESSURE_COL, START_IDX, SHUTIN_IDX
+from dfit_tool import picks
+from dfit_tool.model import PickState
+from tests.helpers import RATE_COL
 
 
 # --------------------------------------------------------------------------------------------------
@@ -57,3 +60,37 @@ def test_pressure_window_declining_record_falls_back_to_positional():
 def test_pressure_window_too_few_finite_samples_raises():
     with pytest.raises(ValueError):
         interpret.suggest_injection_window_pressure(np.array([np.nan, np.nan, 5.0]))
+
+
+# --------------------------------------------------------------------------------------------------
+# picks.seed_overview fallback
+# --------------------------------------------------------------------------------------------------
+def test_seed_overview_no_rate_col_seeds_from_pressure():
+    td = make_testdata()
+    st = PickState(pressure_col=PRESSURE_COL)  # no rate_col
+    picks.seed_overview(st, td)
+    assert st.start_idx is not None and st.shutin_idx is not None
+    assert st.start_idx < st.shutin_idx
+
+
+def test_seed_overview_dead_rate_channel_falls_back_to_pressure():
+    td = make_testdata()
+    td.df[RATE_COL] = 0.0  # rate never exceeds threshold -> suggest_injection_window raises
+    st = PickState(pressure_col=PRESSURE_COL, rate_col=RATE_COL)
+    picks.seed_overview(st, td)
+    assert st.start_idx is not None and st.shutin_idx is not None
+    assert st.start_idx < st.shutin_idx
+
+
+def test_seed_overview_fallback_never_clobbers_existing_picks():
+    td = make_testdata()
+    st = PickState(pressure_col=PRESSURE_COL, start_idx=5, shutin_idx=7)
+    picks.seed_overview(st, td)
+    assert (st.start_idx, st.shutin_idx) == (5, 7)
+
+
+def test_seed_overview_no_pressure_col_is_a_noop():
+    td = make_testdata()
+    st = PickState()  # neither rate nor pressure mapped
+    picks.seed_overview(st, td)
+    assert st.start_idx is None and st.shutin_idx is None
