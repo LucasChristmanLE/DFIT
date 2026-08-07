@@ -212,6 +212,9 @@ class DfitApp:
         self.state = PickState()
         self.res = None
         self.step = "overview"
+        # Ephemeral session UI state for the Overview step's tail-trim tool toggle -- NOT part of
+        # PickState, never serialized. Reset to False on every fresh file load (_load_common).
+        self.show_trim = False
         self._controllers: list = []
         self._views: dict[str, Optional[ViewState]] = {}
         self._x_slider: Optional[sliders.PanRangeSlider] = None
@@ -392,6 +395,14 @@ class DfitApp:
 
         ttk.Separator(panel).pack(fill="x", pady=6)
 
+        # Overview-step-only widget: the tail-trim tool's ephemeral show/hide toggle (moved off
+        # the G-function step, see CLAUDE.md TODO). Built/packed the same way as
+        # frm_cscen/frm_pcscen below -- not packed here, _update_panel_visibility owns that.
+        self.frm_overview = ttk.Frame(panel)
+        self.var_show_trim = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_overview, text="Show trim tool", variable=self.var_show_trim,
+                        command=self._on_show_trim).pack(anchor="w")
+
         # Closure-scenario and postclosure/pp-axis widgets are step-aware: only relevant once the
         # user has reached the step that produces the pick they annotate. Each cluster lives in
         # its own frame so _update_panel_visibility can pack/pack_forget it as a unit without
@@ -528,6 +539,8 @@ class DfitApp:
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
+        self.show_trim = False
+        self.var_show_trim.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -914,6 +927,12 @@ class DfitApp:
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
 
+    def _on_show_trim(self):
+        """The Overview step's "Show trim tool" checkbox: a discrete click, so (unlike a slider
+        callback) refresh() is safe here."""
+        self.show_trim = self.var_show_trim.get()
+        self.refresh()
+
     def _on_reset_gfunction_picks(self):
         """The G-function step's adaptive "Reset picks" button: re-run the active scenario's
         auto-pick, discarding any manual drags (decision 3)."""
@@ -1135,7 +1154,11 @@ class DfitApp:
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
-        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
+        # Overview is the one step whose renderer takes an extra kwarg -- the ephemeral
+        # show-trim toggle (self.show_trim, never part of PickState). Same step-special-case
+        # precedent as the gfunction clamps just below.
+        kwargs = {"show_trim": self.show_trim} if self.step == "overview" else {}
+        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res, **kwargs)
 
         full_x = self.ax.get_xlim()
         full_y = self.ax.get_ylim()
@@ -1201,11 +1224,14 @@ class DfitApp:
         self._update_skip_test_btn()
 
     def _update_panel_visibility(self):
-        """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
-        widgets only on "loglog"/"porepressure" -- both packed relative to sep_before_notes so
-        re-showing never reorders the panel."""
+        """Show the closure-scenario widgets only on "gfunction", the postclosure/pp-axis
+        widgets only on "loglog"/"porepressure", and the trim-tool toggle only on "overview" --
+        all packed relative to sep_before_notes so re-showing never reorders the panel."""
+        self.frm_overview.pack_forget()
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
+        if self.step == "overview":
+            self.frm_overview.pack(fill="x", before=self.sep_before_notes)
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
             self.btn_gfunction_reset.configure(
@@ -1321,8 +1347,32 @@ class DfitApp:
 
         step = self.step
         if step == "overview":
-            self.hint_lbl.config(
-                text="Entire dataset. Use Next to zoom into the injection window.")
+            res = self.res
+            if (self.show_trim and res.resampled_full is not None
+                    and res.t_shutin_s is not None and len(res.resampled_full.dt)):
+                dt_full = res.resampled_full.dt
+                t_shutin_s = res.t_shutin_s
+
+                def commit_trim(x_hours):
+                    dt_target = x_hours * 3600.0 - t_shutin_s
+                    idx = picks._nearest(dt_full, dt_target)
+                    idx = max(idx, 2)   # never trim below 3 kept points; clamp before the clear
+                                        # check so a <=3-point record can only clear, never index
+                                        # past the end
+                    dt = None if idx >= len(dt_full) - 1 else float(dt_full[idx])
+                    picks.commit_tail_trim(self.state, dt)
+                    self.refresh()
+
+                ctrl = picks.DragLineController(self.canvas, self.ax,
+                                                handlers={"tail_trim": commit_trim})
+                self._controllers.append(ctrl)
+                self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
+                self.hint_lbl.config(text="Drag the blue dashed line to trim a bad tail; release "
+                                          "it at the last point to clear the trim.")
+            else:
+                self.hint_lbl.config(
+                    text="Entire dataset. Use Next to zoom into the injection window. Toggle "
+                         '"Show trim tool" to trim a bad tail.')
         elif step == "injection":
             def _commit(idx_attr):
                 def on_release(x_hours):
@@ -1377,9 +1427,8 @@ class DfitApp:
             ax2 = self._twin_axes()
             step_ctrls = []
             scenario = self.state.closure_scenario
-            # One gate shared by every gfunction controller, including the tail-trim line below
-            # -- declared before both branches so the trim controller does not require
-            # res.diagnostics (it must still work on the recovery path, see plots.render_gfunction).
+            # One gate shared by the two point controllers below (e.g. the min-dP/dG triangle and
+            # the contact marker, whose hit zones can sit close together on screen).
             gate = picks._CaptureGate()
             if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
                 G, p, dPdG = res.diagnostics.G, res.resampled.p, res.diagnostics.dPdG
@@ -1412,33 +1461,10 @@ class DfitApp:
                     step_ctrls.append(picks.DraggablePointController(
                         self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
                         gate=gate))
-            # Manual-only tail trim: wired independently of the diagnostics/scenario gate above
-            # (a pathological saved trim that leaves <3 resampled points still needs to be
-            # draggable back right -- see plots.render_gfunction's recovery path).
-            trim_attached = False
-            if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
-                G_full, dt_full = res.G_full, res.resampled_full.dt
-
-                def commit_trim(x_g):
-                    idx = picks._nearest(G_full, x_g)
-                    idx = max(idx, 2)   # never trim below 3 kept points; clamp before the clear
-                                        # check so a <=3-point record can only clear, never index
-                                        # past the end
-                    dt = None if idx >= len(G_full) - 1 else float(dt_full[idx])
-                    picks.commit_tail_trim(self.state, dt)
-                    self.refresh()
-
-                step_ctrls.append(picks.DragLineController(
-                    self.canvas, self.ax, handlers={"tail_trim": commit_trim}, gate=gate))
-                trim_attached = True
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            hint = picks.gfunction_hint_text(scenario)
-            if trim_attached:
-                hint += (" Drag the blue dashed line to trim a bad tail; release it at the last "
-                        "point to clear the trim.")
-            self.hint_lbl.config(text=hint)
+            self.hint_lbl.config(text=picks.gfunction_hint_text(scenario))
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()

@@ -424,7 +424,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # line in warn_lbl's stacked display even when other warnings already queued ahead of
             # it -- this is the escape instruction for an otherwise-blank plot.
             res.warnings.insert(0, f"Tail trim leaves only {len(rs.p)} resampled point(s); drag "
-                                   "the trim line back right")
+                                   "the trim line back right on the Overview tab")
 
     # Low-surface-pressure warning: only when the mapped channel is surface pressure
     # (state.pressure_is_bhp, not res.pressure_is_bhp -- that flips True after hydrostatic

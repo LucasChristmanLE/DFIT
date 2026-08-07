@@ -88,7 +88,8 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
 
 
 # --------------------------------------------------------------------------------------------------
-def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
+def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
+                    show_trim: bool = False) -> ViewDefaults:
     """Step 1: the entire dataset, unmasked -- BHP (or surface P) and rate vs time, for the whole
     record from file start to its last raw sample.
 
@@ -99,6 +100,13 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     picks are drawn here only as thin reference lines (gids "start_ref"/"shutin_ref", distinct from
     Injection's draggable "start"/"shutin") -- they are owned and dragged on the Injection step;
     this step draws no controllers of its own.
+
+    ``show_trim`` (default False) draws the draggable tail-trim vline (gid "tail_trim") -- the
+    tool moved here off the G-function step. It is an ephemeral session toggle (``ui.py``'s
+    ``self.show_trim``), never part of ``PickState``, so ``render_step_figure``/
+    ``save_all_step_pngs`` never pass it and an exported PNG never carries the interactive line.
+    The excluded-tail preview (gid "tail_excluded"), by contrast, is drawn whenever a trim is
+    actually set, regardless of ``show_trim`` -- it's informational, not the interactive control.
     """
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
@@ -126,6 +134,19 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults) -> 
     if state.shutin_idx is not None:
         ax.axvline(t_h[state.shutin_idx], color="tab:red", ls=":", lw=1.0, alpha=0.6,
                    label="shut-in", gid="shutin_ref")
+
+    if res.resampled_full is not None and res.t_shutin_s is not None and len(res.resampled_full.dt):
+        dt_full = res.resampled_full.dt
+        t_full_h = (dt_full + res.t_shutin_s) / 3600.0
+        if state.tail_trim_dt is not None:
+            excluded = dt_full > state.tail_trim_dt
+            if excluded.any():
+                ax.plot(t_full_h[excluded], res.resampled_full.p[excluded], color="0.75",
+                        alpha=0.6, gid="tail_excluded", zorder=1)
+        if show_trim:
+            trim_dt = state.tail_trim_dt if state.tail_trim_dt is not None else float(dt_full[-1])
+            ax.axvline((trim_dt + res.t_shutin_s) / 3600.0, color="tab:blue", ls="--", lw=1.4,
+                       gid="tail_trim")
 
     ax.set_title("Overview — entire dataset", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
@@ -252,29 +273,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if res.diagnostics is None:
         ax.set_title("G-function -- need te and a falloff", fontsize=10)
         # Recovery path: a pathological saved tail trim can leave <3 resampled points (the
-        # diagnostics guard in compute_all fails) with no picks reachable on this scenario-free
-        # plot. Still draw the untrimmed tail + trim vline so the analyst isn't stranded --
-        # dragging the line back right is the only way out of this state.
-        ylim = None
+        # diagnostics guard in compute_all fails), so there is nothing left to diagnose here.
+        # The trim tool itself now lives on the Overview tab -- dragging it back right there is
+        # the way out of this state.
         # A guard fire severe enough to leave <3 kept points lands here too (no trim needed) --
         # draw its excluded-tail preview the same as the main path, so it isn't silent just
         # because there were too few points left to diagnose.
         if res.guard_excluded_G is not None and len(res.guard_excluded_G):
             ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
                     gid="guard_excluded", zorder=0.5)
-        if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
-            ax.plot(res.G_full, res.resampled_full.p, color="0.75", alpha=0.6,
-                    gid="tail_excluded", zorder=1)
-            trim_x = (float(np.interp(state.tail_trim_dt, res.resampled_full.dt, res.G_full))
-                      if state.tail_trim_dt is not None else float(res.G_full[-1]))
-            ax.axvline(trim_x, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
-            finite_full = np.isfinite(res.resampled_full.p)
-            if finite_full.any():
-                p_lo = float(np.nanmin(res.resampled_full.p[finite_full]))
-                p_hi = float(np.nanmax(res.resampled_full.p[finite_full]))
-                pad = 0.05 * max(p_hi - p_lo, 1.0)
-                ylim = (p_lo - pad, p_hi + pad)
-        return ViewDefaults(ylim=ylim)
+        return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
     # Fainter still, and drawn under everything else: the raw tail the rise guard itself threw
@@ -283,11 +291,6 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if res.guard_excluded_G is not None and len(res.guard_excluded_G):
         ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
                 gid="guard_excluded", zorder=0.5)
-    # Gray excluded tail drawn *before* the black trimmed curve so the kept portion paints over
-    # it. With no trim set, resampled_full is identical to rs -- harmless, just an extra plot.
-    if res.resampled_full is not None and res.G_full is not None:
-        ax.plot(res.G_full, res.resampled_full.p, color="0.75", alpha=0.6, gid="tail_excluded",
-                zorder=1)
     ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
     ax.set_xlabel("G-time")
     ax.set_ylabel("BHP (psi)")
@@ -359,15 +362,6 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                gid="contact_point")
     if state.contact_G is not None:
         ax.axvline(state.contact_G, color="black", ls=":", lw=1.2, gid="contact_vline")
-
-    # Tail-trim line: drawn regardless of closure scenario. Sits at the last data point (no
-    # trim) until dragged left; axvline doesn't participate in y-autoscale, and the pressure-
-    # axis ylim above is keyed to the trimmed rs.p, so the gray zero-crash tail can never
-    # stretch it.
-    if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
-        trim_x = (float(np.interp(state.tail_trim_dt, res.resampled_full.dt, res.G_full))
-                  if state.tail_trim_dt is not None else float(res.G_full[-1]))
-        ax.axvline(trim_x, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
 
     title = "G-function"
     if res.effective_isip_compliance is not None:
