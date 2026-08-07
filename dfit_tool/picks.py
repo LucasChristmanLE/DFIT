@@ -257,7 +257,9 @@ class AnchorLineController:
       live anchor+slope) -- this reproduces pure translation exactly and gives rotation a stable
       visual length. "tick" translates by the anchor's data-delta during "anchor"/"body" motion
       and is left untouched during "end" motion, since the anchor -- and so the tick's position --
-      does not move while rotating.
+      does not move while rotating. When ``pin_x`` is set, the dashed extension is instead
+      re-anchored to that x every motion event rather than replaying its press-time offsets, so
+      it stays glued to a reference vertical (e.g. shut-in) throughout the drag.
 
     On release, ``commit_fn(kind, anchor_x, anchor_y, slope)`` is called exactly once with the
     *final* geometry -- never the raw cursor position -- where ``kind`` is one of "anchor" /
@@ -285,7 +287,7 @@ class AnchorLineController:
                  commit_fn: Callable[[str, float, float, float], None], curve=None,
                  anchor_half: int = 4, allow_anchor: bool = True, allow_body: bool = True,
                  allow_rotate: bool = True, tol_px: float = 12.0, readout_fn=None,
-                 gate: Optional[_CaptureGate] = None):
+                 gate: Optional[_CaptureGate] = None, pin_x: Optional[float] = None):
         self.canvas = canvas
         self.ax = ax
         self.gids = gids
@@ -299,6 +301,7 @@ class AnchorLineController:
         self.tol_px = tol_px
         self.readout_fn = readout_fn
         self.gate = gate if gate is not None else _CaptureGate()
+        self.pin_x = pin_x
 
         self._active: Optional[str] = None
         self._press_anchor = None   # (anchor_x, anchor_y, slope) snapshot at press
@@ -430,13 +433,22 @@ class AnchorLineController:
 
     def _apply_geometry(self, ax1, ay1, slope1):
         segment = self._artist(self.gids.get("segment"))
+        seg_xs = None
         if segment is not None and self._seg_offsets is not None:
-            segment.set_data([ax1 + t for t in self._seg_offsets],
-                             [ay1 + slope1 * t for t in self._seg_offsets])
+            seg_xs = [ax1 + t for t in self._seg_offsets]
+            segment.set_data(seg_xs, [ay1 + slope1 * t for t in self._seg_offsets])
         ext = self._artist(self.gids.get("extension"))
-        if ext is not None and self._ext_offsets is not None:
-            ext.set_data([ax1 + t for t in self._ext_offsets],
-                         [ay1 + slope1 * t for t in self._ext_offsets])
+        if ext is not None:
+            if self.pin_x is not None and seg_xs is not None:
+                # Mirror plots._draw_tangent_construction: run the dashed extension from the
+                # pinned reference to the *current* dragged segment's nearest endpoint, so it
+                # never drifts off the reference vertical mid-drag.
+                near_x = min(seg_xs, key=lambda x: abs(x - self.pin_x))
+                ext_x = [self.pin_x, near_x]
+                ext.set_data(ext_x, [ay1 + slope1 * (x - ax1) for x in ext_x])
+            elif self._ext_offsets is not None:
+                ext.set_data([ax1 + t for t in self._ext_offsets],
+                             [ay1 + slope1 * t for t in self._ext_offsets])
         tick = self._artist(self.gids.get("tick"))
         if tick is not None and self._tick_orig is not None and self._active in ("anchor", "body"):
             ax0, ay0, _ = self._press_anchor

@@ -383,3 +383,40 @@ def test_tick_slide_grabs_whole_tick_not_just_the_anchor_point():
     ctrl._on_release(ev)
     assert len(calls) == 1
     assert calls[0][0] == "anchor"  # the old bug's fallthrough result ("body") must not occur
+
+
+def test_pin_x_keeps_extension_pinned_to_shutin_during_body_drag():
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0, half_len=5.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit,
+                                      pin_x=0.0)
+
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    ctrl._on_press(_event("button_press_event", canvas, ax, mid_x, mid_y))
+    assert ctrl._active == "body"
+
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, mid_x + 3.0, mid_y + 4.0))
+    ext = _line(ax, "extension")
+    assert 0.0 in ext.get_xdata()
+
+
+def test_pin_x_keeps_extension_pinned_to_shutin_during_anchor_drag():
+    x_arr = np.linspace(0.0, 20.0, 41)
+    y_arr = 100.0 - 3.0 * x_arr
+    anchor_x0, anchor_y0 = float(x_arr[10]), float(y_arr[10])
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=0.0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope=0.0)
+    calls, commit = _recorder()
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick, commit_fn=commit,
+                                      curve=(x_arr, y_arr), anchor_half=4, pin_x=0.0)
+
+    ctrl._on_press(_event("button_press_event", canvas, ax, anchor_x0, anchor_y0))
+    assert ctrl._active == "anchor"
+
+    target_idx = 25
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax,
+                           float(x_arr[target_idx]), float(y_arr[target_idx])))
+    ext = _line(ax, "extension")
+    assert 0.0 in ext.get_xdata()
