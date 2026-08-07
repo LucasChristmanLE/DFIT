@@ -106,6 +106,8 @@ def test_seed_overview_dead_rate_channel_falls_back_to_pressure():
     picks.seed_overview(st, td)
     assert st.start_idx is not None and st.shutin_idx is not None
     assert st.start_idx < st.shutin_idx
+    exp = interpret.suggest_injection_window_pressure(td.column(PRESSURE_COL))
+    assert (st.start_idx, st.shutin_idx) == exp
 
 
 def test_seed_overview_fallback_never_clobbers_existing_picks():
