@@ -88,3 +88,37 @@ def test_gate_released_after_gesture_lets_the_other_controller_win_next_press():
     assert gate.try_claim(ctrl_b) is True
     gate.release()
     assert gate._owner is None
+
+
+def test_drag_line_controller_and_draggable_point_controller_share_a_gate():
+    """The G-function step's tail-trim line (DragLineController) shares a gate with the contact-
+    point marker (DraggablePointController) -- same first-hit-wins contract as two
+    DraggablePointControllers above."""
+    fig, ax, canvas = _build_shared_marker_axes()
+    ax.axvline(5.0, gid="tail_trim")
+    canvas.draw()
+    curve_x = np.linspace(0.0, 10.0, 11)
+    curve_y = np.linspace(0.0, 10.0, 11)
+    gate = picks._CaptureGate()
+    got_point, got_line = [], []
+
+    point_ctrl = picks.DraggablePointController(canvas, ax, "pt_a", curve_x, curve_y,
+                                                commit_fn=got_point.append, gate=gate)
+    line_ctrl = picks.DragLineController(canvas, ax, handlers={"tail_trim": got_line.append},
+                                         gate=gate)
+
+    ev = _press_event(canvas, ax, 5.0, 5.0)
+    point_ctrl._on_press(ev)
+    assert point_ctrl._dragging is True
+    assert gate._owner is point_ctrl
+
+    line_ctrl._on_press(ev)
+    assert line_ctrl._active is None  # gate already claimed by point_ctrl -- no-op
+
+    rel = _release_event(canvas, ax, 5.0, 5.0)
+    point_ctrl._on_release(rel)
+    line_ctrl._on_release(rel)  # no-op: was never active
+
+    assert gate._owner is None  # freed for the next contest
+    assert got_point == [5.0]
+    assert got_line == []

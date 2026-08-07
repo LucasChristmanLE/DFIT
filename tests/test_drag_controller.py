@@ -85,3 +85,32 @@ def test_disconnect_unbinds_all_callbacks():
     assert ctrl._cids
     ctrl.disconnect()
     assert ctrl._cids == []
+
+
+def test_default_gate_is_private_per_instance():
+    td, st, ax, canvas = _built_overview()
+    ctrl1 = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None})
+    ctrl2 = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None})
+    assert ctrl1.gate is not ctrl2.gate
+
+
+def test_press_denied_when_shared_gate_pre_claimed():
+    td, st, ax, canvas = _built_overview()
+    gate = picks._CaptureGate()
+    other_owner = object()
+    gate.try_claim(other_owner)  # simulate a sibling controller already holding the gate
+    ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None}, gate=gate)
+    x0 = _line(ax, "start").get_xdata()[0]
+    ctrl._on_press(_event("button_press_event", canvas, ax, x0))
+    assert ctrl._active is None  # hit-test found the line, but the gate denied the claim
+
+
+def test_release_frees_the_gate():
+    td, st, ax, canvas = _built_overview()
+    gate = picks._CaptureGate()
+    ctrl = picks.DragLineController(canvas, ax, handlers={"start": lambda xd: None}, gate=gate)
+    x0 = _line(ax, "start").get_xdata()[0]
+    ctrl._on_press(_event("button_press_event", canvas, ax, x0))
+    assert gate._owner is ctrl
+    ctrl._on_release(_event("button_release_event", canvas, ax, x0))
+    assert gate._owner is None

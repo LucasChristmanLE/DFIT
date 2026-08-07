@@ -1338,9 +1338,12 @@ class DfitApp:
             ax2 = self._twin_axes()
             step_ctrls = []
             scenario = self.state.closure_scenario
+            # One gate shared by every gfunction controller, including the tail-trim line below
+            # -- declared before both branches so the trim controller does not require
+            # res.diagnostics (it must still work on the recovery path, see plots.render_gfunction).
+            gate = picks._CaptureGate()
             if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
                 G, p, dPdG = res.diagnostics.G, res.resampled.p, res.diagnostics.dPdG
-                gate = picks._CaptureGate()
 
                 def commit_min_dpdg(x):
                     # The triangle is the analyst's control point (decision D4): committing its
@@ -1370,10 +1373,33 @@ class DfitApp:
                     step_ctrls.append(picks.DraggablePointController(
                         self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
                         gate=gate))
+            # Manual-only tail trim: wired independently of the diagnostics/scenario gate above
+            # (a pathological saved trim that leaves <3 resampled points still needs to be
+            # draggable back right -- see plots.render_gfunction's recovery path).
+            trim_attached = False
+            if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
+                G_full, dt_full = res.G_full, res.resampled_full.dt
+
+                def commit_trim(x_g):
+                    idx = picks._nearest(G_full, x_g)
+                    idx = max(idx, 2)   # never trim below 3 kept points; clamp before the clear
+                                        # check so a <=3-point record can only clear, never index
+                                        # past the end
+                    dt = None if idx >= len(G_full) - 1 else float(dt_full[idx])
+                    picks.commit_tail_trim(self.state, dt)
+                    self.refresh()
+
+                step_ctrls.append(picks.DragLineController(
+                    self.canvas, self.ax, handlers={"tail_trim": commit_trim}, gate=gate))
+                trim_attached = True
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(text=picks.gfunction_hint_text(scenario))
+            hint = picks.gfunction_hint_text(scenario)
+            if trim_attached:
+                hint += (" Drag the blue dashed line to trim a bad tail; release it at the last "
+                        "point to clear the trim.")
+            self.hint_lbl.config(text=hint)
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()

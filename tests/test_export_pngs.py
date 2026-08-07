@@ -3,8 +3,8 @@ import os
 from matplotlib.figure import Figure
 
 from dfit_tool.model import compute_all
-from dfit_tool import plots
-from tests.helpers import make_testdata, overview_state
+from dfit_tool import picks, plots
+from tests.helpers import make_testdata, overview_state, pre_crash_trim_dt
 
 
 def test_save_all_step_pngs_writes_six_nonempty_files(tmp_path):
@@ -101,6 +101,41 @@ def test_save_all_step_pngs_smoke_test_with_d2_on(tmp_path):
     state = overview_state(td)
     state.show_d2pdg2 = True
     res = compute_all(state, td)
+
+    paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
+    assert len(paths) == 6
+    full = tmp_path / "3_gfunction.png"
+    assert full.exists()
+    assert full.stat().st_size > 0
+
+
+def _crashed_and_trimmed_state():
+    """A post-shut-in record that crashes monotonically to ~0 psi, trimmed just before the
+    crash starts -- exercises the gray-excluded-tail rendering with a real trim in place."""
+    td = make_testdata(n=1200, zero_crash_at=0.5)
+    state = overview_state(td)
+    picks.seed_overview(state, td)
+    res = compute_all(state, td)
+    picks.seed_isip(state, td, res)
+    res = compute_all(state, td)
+    last_normal_dt = pre_crash_trim_dt(res)
+    state.tail_trim_dt = last_normal_dt
+    res = compute_all(state, td)
+    return td, state, res
+
+
+def test_render_step_figure_gfunction_ylim_shielded_from_gray_tail_with_trim():
+    td, state, res = _crashed_and_trimmed_state()
+
+    fig = plots.render_step_figure("gfunction", td, state, res)
+    ylim = fig.axes[0].get_ylim()
+    # The excluded gray tail crashes toward 0 psi; the exported PNG's pressure axis must stay
+    # keyed to the trimmed data, not stretched down to include it.
+    assert ylim[0] > 100.0
+
+
+def test_save_all_step_pngs_smoke_test_with_trim_set(tmp_path):
+    td, state, res = _crashed_and_trimmed_state()
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
     assert len(paths) == 6

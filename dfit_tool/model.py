@@ -18,6 +18,7 @@ from typing import Optional
 import numpy as np
 
 from . import interpret, resample
+from .gfunction import g_time
 from .io_load import ChannelConfig, TestData
 
 
@@ -47,6 +48,12 @@ class PickState:
     # --- G-function / resampling ---
     alpha: float = 1.0
     resample_step: float = 30.0
+    # Manual-only tail trim (no auto-detect seeder): shut-in-relative seconds beyond which the
+    # post-shut-in record is discarded before diagnostics. Stored in seconds (not an index or a
+    # G value) so it stays stable across alpha/resample_step changes. None = no trim (use the
+    # full record). Old saves lack this key and take the default via _decode's known-field
+    # filter -- no migration needed.
+    tail_trim_dt: Optional[float] = None
 
     # --- step 2: injection window ---
     start_idx: Optional[int] = None
@@ -251,6 +258,11 @@ class DerivedResults:
     pressure_is_bhp: bool = field(default=False, repr=False)  # bhp_all holds true BHP, not surface
     rate_all: Optional[np.ndarray] = field(default=None, repr=False)
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
+    # Untrimmed counterparts of resampled/diagnostics.G, kept so the renderer can draw the
+    # trimmed-away tail grayed out and ui.py can convert a drag back to seconds. resampled/
+    # diagnostics themselves are the trimmed arrays -- see the tail-trim block in compute_all.
+    resampled_full: Optional[resample.Resampled] = field(default=None, repr=False)
+    G_full: Optional[np.ndarray] = field(default=None, repr=False)  # g_time over resampled_full.dt
     diagnostics: Optional[resample.Diagnostics] = field(default=None, repr=False)
 
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
@@ -330,17 +342,82 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         tg = state.isip_tangent
         res.apparent_isip = interpret.apparent_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
 
-    # Resample + diagnostics (needs te)
+    # Resample + diagnostics (needs te). Resample the full post-shut-in record first, then mask
+    # to the tail trim (if any) before diagnostics -- everything downstream (effective ISIP,
+    # Shmin, log-log, pore pressure) reads only res.resampled/res.diagnostics, so the trim
+    # propagates everywhere with no other changes. resampled_full/G_full stay available
+    # (untrimmed) so the renderer can gray out the excluded tail and ui.py can convert a drag
+    # back to seconds.
     if res.te_s and res.t_shutin_s is not None and res.bhp_all is not None:
         dt_all = td.t_s - res.t_shutin_s
         post = dt_all >= 0
-        rs = resample.resample_pressure_increment(dt_all[post], res.bhp_all[post],
-                                                  step=state.resample_step)
+        rs_full = resample.resample_pressure_increment(dt_all[post], res.bhp_all[post],
+                                                        step=state.resample_step)
+        res.resampled_full = rs_full
+        res.G_full = g_time(rs_full.dt, res.te_s, state.alpha)
+        if state.tail_trim_dt is not None:
+            mask = rs_full.dt <= state.tail_trim_dt
+            rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,
+                                    guarded_at=rs_full.guarded_at)
+        else:
+            rs = rs_full
         res.resampled = rs
         if len(rs.p) >= 3:
             res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)
             if len(rs.p) < 20:
                 res.warnings.append(f"Only {len(rs.p)} resampled points; consider a smaller step")
+        elif state.tail_trim_dt is not None:
+            # A pathological trim leaves too few points to diagnose -- warn rather than let it be
+            # a silent dead end (the renderer/controller recovery path still lets the analyst drag
+            # the trim line back right from here). Inserted at the front so it survives the
+            # warn_lbl's warnings[:2] slots even when other warnings already queued ahead of it --
+            # this is the escape instruction for an otherwise-blank plot.
+            res.warnings.insert(0, f"Tail trim leaves only {len(rs.p)} resampled point(s); drag "
+                                   "the trim line back right")
+
+    # Low-surface-pressure warning: only when the mapped channel is surface pressure
+    # (state.pressure_is_bhp, not res.pressure_is_bhp -- that flips True after hydrostatic
+    # conversion too, which would hide the very condition that makes the conversion unreliable).
+    # The upper bound is the actually-*kept* window -- res.resampled.dt[-1] when diagnostics
+    # exist (the trim, if any, is already applied there, and this also respects the resampler's
+    # own rise guard) -- so a low reading the rise guard already excluded from every computed
+    # value doesn't trigger a warning that trimming would change nothing. Falls back to the raw
+    # tail_trim_dt (or no upper bound at all) when the resample block above never ran.
+    if not state.pressure_is_bhp and res.t_shutin_s is not None:
+        surf = td.pressure_surface(cfg)          # raw WHP column -- NOT res.bhp_all (converted)
+        dt_ws = td.t_s - res.t_shutin_s
+        m = dt_ws >= 0
+        if res.resampled is not None and len(res.resampled.dt):
+            m &= dt_ws <= float(res.resampled.dt[-1])
+        elif state.tail_trim_dt is not None:
+            m &= dt_ws <= state.tail_trim_dt
+        surf_kept = surf[m]
+        finite = np.isfinite(surf_kept)
+        if finite.any() and float(np.min(surf_kept[finite])) < interpret.MIN_SURFACE_PRESSURE_PSI:
+            res.warnings.append("Surface pressure fell below 100 psi post-shut-in -- BHP "
+                                "unreliable there; consider trimming the tail")
+
+    # Stale-pick warning: only meaningful once a trim is actually in effect -- gating on
+    # state.tail_trim_dt avoids misleadingly reporting picks as "beyond the tail trim" for a
+    # reloaded save against a shorter *source* with no trim set at all. np.interp silently
+    # clamps an out-of-range G to the trimmed edge, which would otherwise produce a stale-but-
+    # plausible number for a pick that now lies beyond the trimmed tail.
+    if state.tail_trim_dt is not None and res.diagnostics is not None and len(res.diagnostics.G):
+        edge = res.diagnostics.G[-1]
+        stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", state.min_dpdg_G),
+                                      ("closure", state.closure_G)) if g is not None and g > edge]
+        # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
+        # array (dg.t), not G -- see the pp block below -- so a finite pp_window upper bound
+        # beyond the trimmed tail silently shrinks (or blanks) that fit with no other warning.
+        # An open-ended window (t_hi = inf, "to the end of the data") naturally shrinks with the
+        # trim instead, so it is never stale.
+        if state.pp_window is not None and len(res.diagnostics.t):
+            pp_hi = state.pp_window[1]
+            if np.isfinite(pp_hi) and pp_hi > res.diagnostics.t[-1]:
+                stale.append("pore-pressure window")
+        if stale:
+            res.warnings.append(f"{', '.join(stale)} pick(s) lie beyond the tail trim -- values "
+                                "may be stale")
 
     # Effective ISIP: tangent to P-vs-G at the contact point, extrapolated to G=0. Derived here
     # (not a stored pick) -- the anchor is the diagnostics sample nearest state.contact_G, the

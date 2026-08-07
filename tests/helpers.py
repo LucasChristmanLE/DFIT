@@ -8,6 +8,8 @@ is both faster and exercises the same object the app uses.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -23,10 +25,16 @@ START_IDX = 100
 SHUTIN_IDX = 300
 
 
-def make_testdata(n: int = 600, dt: float = 1.0) -> TestData:
+def make_testdata(n: int = 600, dt: float = 1.0, zero_crash_at: Optional[float] = None) -> TestData:
     """A synthetic DFIT-shaped `TestData`: rate ramps up then down between START_IDX and
     SHUTIN_IDX, pressure rises during injection then falls off after shut-in, volume is the
     running integral of rate.
+
+    ``zero_crash_at``, if given, is a fraction (0..1) of the post-shut-in span at which the
+    pressure switches to a monotonic (``np.linspace``) ramp down to 0 psi, reproducing the
+    motivating tail-trim bug: a monotone crash to zero that the rise-based tail guard
+    (``resample.resample_pressure_increment``) never catches, since it only stops on a late
+    *rise* above the running minimum.
     """
     t_s = np.arange(n, dtype=float) * dt
 
@@ -43,6 +51,11 @@ def make_testdata(n: int = 600, dt: float = 1.0) -> TestData:
     post = n - SHUTIN_IDX
     decline_t = np.arange(post, dtype=float) * dt
     pressure[SHUTIN_IDX:] = 5000.0 - 1500.0 * (1.0 - np.exp(-decline_t / 200.0))
+    if zero_crash_at is not None:
+        crash_start = SHUTIN_IDX + int(zero_crash_at * post)
+        crash_len = n - crash_start
+        if crash_len > 0:
+            pressure[crash_start:] = np.linspace(pressure[crash_start], 0.0, crash_len)
 
     df = pd.DataFrame({
         PRESSURE_COL: pressure,
@@ -69,3 +82,23 @@ def overview_state(td: TestData) -> PickState:
         start_idx=START_IDX,
         shutin_idx=SHUTIN_IDX,
     )
+
+
+def pre_crash_trim_dt(res, threshold: float = 1000.0) -> float:
+    """A tail-trim boundary (shut-in-relative seconds) derived from ``res.resampled_full`` --
+    the last sample still above ``threshold`` psi -- rather than a hardcoded index into a
+    ``make_testdata(zero_crash_at=...)`` curve. Trimming at this ``dt`` is guaranteed to exclude
+    everything from ``threshold`` psi down to the crash's 0 psi floor.
+
+    Asserts the boundary actually exists and isn't the last sample, so a future change to
+    ``make_testdata``'s crash shape fails loudly here instead of silently trimming nothing (or
+    trimming inside the already-crashed tail) in whatever test calls this.
+    """
+    rs = res.resampled_full
+    above = np.where(rs.p > threshold)[0]
+    assert above.size, f"no resampled_full point is above {threshold} psi -- can't find a " \
+                       "pre-crash trim boundary"
+    idx = int(above[-1])
+    assert idx < len(rs.dt) - 1, "the above-threshold boundary is the last sample -- trimming " \
+                                 "there would exclude nothing"
+    return float(rs.dt[idx])

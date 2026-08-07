@@ -112,3 +112,15 @@ def test_commit_closure_point_sets_closure_g():
     state = PickState()
     picks.commit_closure_point(state, 7.25)
     assert state.closure_G == pytest.approx(7.25)
+
+
+def test_commit_tail_trim_sets_seconds():
+    state = PickState()
+    picks.commit_tail_trim(state, 123.5)
+    assert state.tail_trim_dt == pytest.approx(123.5)
+
+
+def test_commit_tail_trim_none_clears():
+    state = PickState(tail_trim_dt=123.5)
+    picks.commit_tail_trim(state, None)
+    assert state.tail_trim_dt is None

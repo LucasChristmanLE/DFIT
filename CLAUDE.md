@@ -239,6 +239,24 @@ early and sparse late, which stabilizes the numerical derivatives. It replaces t
 smoothing. A tail guard stops resampling once the pressure rises above its running minimum
 (non-monotonic late data).
 
+**Tail trim.** The tail guard only catches a late rise; a monotone crash to ~0 psi (gauge
+pulled, well opened) sails through it and pollutes the derivatives. The G-function step has a
+manual trim for this: a draggable dashed vline (`gid="tail_trim"`, a `DragLineController`
+sharing the step's `_CaptureGate`) commits `PickState.tail_trim_dt` (shut-in-relative seconds,
+`None` = no trim, logged to `tail_trim_s`). `compute_all` resamples the full post-shut-in
+record, keeps it on `DerivedResults.resampled_full`/`G_full`, then masks to
+`dt <= tail_trim_dt` before computing diagnostics -- so the trim propagates to every
+downstream value (effective ISIP, Shmin, log-log, pore pressure) with no other plumbing. The
+renderer draws the excluded tail grayed out (`gid="tail_excluded"`) so the line can be dragged
+back right; releasing at/past the last point clears the trim, and the commit clamps to >=3
+kept points (a pathological saved trim hits a renderer/controller recovery path plus a warning
+instead of a dead plot). The trim is manual-only (no seeder) and is never touched by scenario
+changes or the G-function reset button. Warnings: WHP below 100 psi
+(`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere in the kept post-shut-in window flags BHP as
+unreliable (only when the mapped channel is surface pressure); picks (contact, min-dP/dG,
+closure, pp window) left beyond a trim get a stale-pick warning instead of silently
+interp-clamping.
+
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 
 Closure scenarios drive the contact pick and effective ISIP:
@@ -319,8 +337,6 @@ select their tab (`ui.py:_open_guide`).
   `_update_stepbar` -> `_update_skip_test_btn` chain).
 
 ## TODO
-- Some tests suddenly drop off to zero pressure towards end, need to be able to trim tail, probably on G-function plot.
-- 0 surface pressure means bottom hole can no longer be calc'd accurately because the head falls. After trimming tail, warn user if surface pressure ever falls below 100 psi.
 - Would like to be able to resize both sidebars. Field names in right sidebar are getting cut off, even though there's lots of space.
 - When no rate is auto-detected, the start/shut-in vlines never appear
 - Some datasets don't have rate. Fallback in this case should simply set injection time by the true time between user-marked start and shut-in

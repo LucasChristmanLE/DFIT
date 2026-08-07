@@ -150,14 +150,23 @@ class DragLineController:
     (e.g. the overview's rate ``twinx``) owns ``inaxes`` over the shared region, so an identity
     check against ``self.ax`` would never match. Twinned axes share the x-scale, so converting the
     event pixel through ``self.ax.transData`` yields the correct data-x regardless.
+
+    ``gate`` (a shared ``_CaptureGate``) is claimed only *after* this controller's own hit-test at
+    press finds a line, and released on button-release -- same claim-after-hit-test contract as
+    ``AnchorLineController``/``DraggablePointController``, so this controller can share a gate
+    with them (e.g. the G-function step's tail-trim line and its contact-point marker). Defaults
+    to a private gate (no sharing) when omitted, so the overview step's existing solo usage is
+    unaffected.
     """
 
-    def __init__(self, canvas, ax, handlers, guard=None, tol_px: float = 6.0):
+    def __init__(self, canvas, ax, handlers, guard=None, tol_px: float = 6.0,
+                 gate: Optional[_CaptureGate] = None):
         self.canvas = canvas
         self.ax = ax
         self.handlers = handlers
         self.guard = guard or (lambda: False)
         self.tol_px = tol_px
+        self.gate = gate if gate is not None else _CaptureGate()
         self._active = None
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
@@ -180,6 +189,10 @@ class DragLineController:
             d = abs(px - event.x)
             if d <= best_d:
                 best, best_d = line, d
+        if best is None:
+            return
+        if not self.gate.try_claim(self):
+            return
         self._active = best
 
     def _on_motion(self, event):
@@ -194,6 +207,7 @@ class DragLineController:
             return
         line = self._active
         self._active = None
+        self.gate.release()
         if event.x is not None and event.y is not None:
             x, _ = _data_from_pixel(self.ax, event)
         else:
@@ -824,6 +838,15 @@ def commit_contact_point(state: PickState, x: float) -> None:
 def commit_closure_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the tangent-method closure (departure) pick."""
     state.closure_G = float(x)
+
+
+def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
+    """DragLineController commit for the manual tail-trim line (G-function step): ``dt`` is
+    shut-in-relative seconds, or None to clear the trim (drag released at/past the last point).
+    Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario,
+    reset_gfunction_picks, or a SEEDERS entry, since a trim must never be auto-set or
+    auto-cleared."""
+    state.tail_trim_dt = float(dt) if dt is not None else None
 
 
 def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:

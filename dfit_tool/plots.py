@@ -202,9 +202,31 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.clear()
     if res.diagnostics is None:
         ax.set_title("G-function -- need te and a falloff", fontsize=10)
-        return ViewDefaults()
+        # Recovery path: a pathological saved tail trim can leave <3 resampled points (the
+        # diagnostics guard in compute_all fails) with no picks reachable on this scenario-free
+        # plot. Still draw the untrimmed tail + trim vline so the analyst isn't stranded --
+        # dragging the line back right is the only way out of this state.
+        ylim = None
+        if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
+            ax.plot(res.G_full, res.resampled_full.p, color="0.75", alpha=0.6,
+                    gid="tail_excluded", zorder=1)
+            trim_x = (float(np.interp(state.tail_trim_dt, res.resampled_full.dt, res.G_full))
+                      if state.tail_trim_dt is not None else float(res.G_full[-1]))
+            ax.axvline(trim_x, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
+            finite_full = np.isfinite(res.resampled_full.p)
+            if finite_full.any():
+                p_lo = float(np.nanmin(res.resampled_full.p[finite_full]))
+                p_hi = float(np.nanmax(res.resampled_full.p[finite_full]))
+                pad = 0.05 * max(p_hi - p_lo, 1.0)
+                ylim = (p_lo - pad, p_hi + pad)
+        return ViewDefaults(ylim=ylim)
     dg = res.diagnostics
     rs = res.resampled
+    # Gray excluded tail drawn *before* the black trimmed curve so the kept portion paints over
+    # it. With no trim set, resampled_full is identical to rs -- harmless, just an extra plot.
+    if res.resampled_full is not None and res.G_full is not None:
+        ax.plot(res.G_full, res.resampled_full.p, color="0.75", alpha=0.6, gid="tail_excluded",
+                zorder=1)
     ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
     ax.set_xlabel("G-time")
     ax.set_ylabel("BHP (psi)")
@@ -276,6 +298,15 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                gid="contact_point")
     if state.contact_G is not None:
         ax.axvline(state.contact_G, color="black", ls=":", lw=1.2, gid="contact_vline")
+
+    # Tail-trim line: drawn regardless of closure scenario. Sits at the last data point (no
+    # trim) until dragged left; axvline doesn't participate in y-autoscale, and the pressure-
+    # axis ylim above is keyed to the trimmed rs.p, so the gray zero-crash tail can never
+    # stretch it.
+    if res.resampled_full is not None and res.G_full is not None and len(res.G_full):
+        trim_x = (float(np.interp(state.tail_trim_dt, res.resampled_full.dt, res.G_full))
+                  if state.tail_trim_dt is not None else float(res.G_full[-1]))
+        ax.axvline(trim_x, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
 
     title = "G-function"
     if res.effective_isip_compliance is not None:

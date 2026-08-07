@@ -18,7 +18,7 @@ from matplotlib.backend_bases import MouseEvent
 from dfit_tool import picks, plots, resample, ui
 from dfit_tool.model import DerivedResults, PickState, TangentPick, compute_all
 from dfit_tool.ui import DfitApp
-from tests.helpers import make_testdata, overview_state
+from tests.helpers import make_testdata, overview_state, pre_crash_trim_dt
 
 
 def _seeded():
@@ -247,6 +247,97 @@ def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
 
 
 # --------------------------------------------------------------------------------------------------
+# render_gfunction: tail trim (gray excluded tail + trim vline, recovery path)
+# --------------------------------------------------------------------------------------------------
+def _seeded_with_crash(trim_dt=None):
+    """Like _seeded() but with a monotone zero-crash in the post-shut-in tail (helpers.
+    make_testdata's zero_crash_at), optionally trimmed."""
+    td = make_testdata(n=1200, zero_crash_at=0.5)
+    st = overview_state(td)
+    picks.seed_overview(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    if trim_dt is not None:
+        st.tail_trim_dt = trim_dt
+        res = compute_all(st, td)
+    return td, st, res
+
+
+def test_render_gfunction_tail_gids_no_trim_vline_at_g_full_end():
+    td, st, res = _seeded()  # no crash, no trim -- tail_excluded/tail_trim still draw (harmless)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, td, st, res)
+
+    tail = _gid(ax, "tail_excluded")
+    vline = _gid(ax, "tail_trim")
+    assert np.allclose(tail.get_xdata(), res.G_full)
+    assert np.allclose(tail.get_ydata(), res.resampled_full.p)
+    assert vline.get_xdata()[0] == pytest.approx(float(res.G_full[-1]))
+
+
+def test_render_gfunction_trim_vline_at_last_kept_g_when_trimmed():
+    td, st, res = _seeded_with_crash()
+    last_normal_dt = pre_crash_trim_dt(res)
+    st.tail_trim_dt = last_normal_dt
+    res2 = compute_all(st, td)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, td, st, res2)
+
+    vline = _gid(ax, "tail_trim")
+    assert vline.get_xdata()[0] == pytest.approx(float(res2.diagnostics.G[-1]))
+
+
+def test_render_gfunction_ylim_unaffected_by_gray_tail():
+    td, st, res = _seeded_with_crash()
+    last_normal_dt = pre_crash_trim_dt(res)
+    st.tail_trim_dt = last_normal_dt
+    res2 = compute_all(st, td)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, td, st, res2)
+
+    # The excluded gray tail crashes toward 0 psi; the trimmed pressure axis must not be
+    # stretched down to include it.
+    assert defaults.ylim[0] > 100.0
+
+
+def test_render_gfunction_no_tail_artifacts_when_resampled_full_absent():
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 50.0 + (G - 5.0) ** 2
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0, contact_G=5.0)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, None, st, res)
+    assert all(l.get_gid() not in ("tail_excluded", "tail_trim") for l in ax.get_lines())
+
+
+def test_render_gfunction_recovery_path_draws_vline_when_diagnostics_none():
+    """A pathological saved trim leaves <3 resampled points -> diagnostics is None -- the vline
+    (and gray tail) must still draw so the analyst can drag it back right rather than being
+    stranded with a blank plot."""
+    dt = np.array([0.0, 10.0, 20.0])
+    p = np.array([500.0, 300.0, 0.0])
+    G_full = np.array([0.0, 1.0, 2.0])
+    res = DerivedResults(diagnostics=None, resampled=None,
+                         resampled_full=resample.Resampled(dt=dt, p=p, n_raw=3), G_full=G_full)
+    st = PickState(tail_trim_dt=0.0)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, st, res)
+
+    tail = _gid(ax, "tail_excluded")
+    vline = _gid(ax, "tail_trim")
+    assert np.allclose(tail.get_xdata(), G_full)
+    assert np.allclose(tail.get_ydata(), p)
+    assert vline.get_xdata()[0] == pytest.approx(0.0)
+    assert defaults.ylim is not None
+
+
+# --------------------------------------------------------------------------------------------------
 # twinx interaction regressions
 # --------------------------------------------------------------------------------------------------
 def test_gfunction_dpdg_twin_owns_inaxes_but_contact_point_controller_still_hit_tests_by_pixel():
@@ -399,11 +490,12 @@ def test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 3  # min-dP/dG point + contact point + hover
-    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    assert len(stub._controllers) == 4  # min-dP/dG point + contact point + tail trim + hover
+    min_dpdg_ctrl, contact_ctrl, trim_ctrl, hover_ctrl = stub._controllers
     assert isinstance(min_dpdg_ctrl, picks.DraggablePointController)
     assert isinstance(contact_ctrl, picks.DraggablePointController)
-    assert min_dpdg_ctrl.gate is contact_ctrl.gate
+    assert isinstance(trim_ctrl, picks.DragLineController)
+    assert min_dpdg_ctrl.gate is contact_ctrl.gate is trim_ctrl.gate
     assert isinstance(hover_ctrl, picks.HoverCursorController)
     ax2 = stub._twin_axes()
     assert min_dpdg_ctrl.ax is ax2
@@ -434,23 +526,28 @@ def test_gfunction_wiring_blank_scenario_contact_and_hover_only():
     res = compute_all(st, td)
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 2
-    contact_ctrl, hover_ctrl = stub._controllers
+    assert len(stub._controllers) == 3
+    contact_ctrl, trim_ctrl, hover_ctrl = stub._controllers
     assert isinstance(contact_ctrl, picks.DraggablePointController)
     assert contact_ctrl.ax is stub.ax
+    assert isinstance(trim_ctrl, picks.DragLineController)
     assert isinstance(hover_ctrl, picks.HoverCursorController)
 
 
 def test_gfunction_wiring_cc_cd_zero_controllers():
     """C-C/C-D have no contact rule at all -- neither the triangle nor the contact marker is
-    wired, so the step is entirely non-interactive."""
+    wired, but the tail-trim line is orthogonal to the closure scenario, so it (+ hover) still
+    wires even here."""
     td, st, res = _seeded()
     for scen in ("C-C no-contact", "C-D rapid"):
         st.closure_scenario = scen
         res = compute_all(st, td)
         stub = _stub(td, st, res, "gfunction")
         DfitApp._attach_controllers(stub)
-        assert stub._controllers == [], scen
+        assert len(stub._controllers) == 2, scen
+        trim_ctrl, hover_ctrl = stub._controllers
+        assert isinstance(trim_ctrl, picks.DragLineController), scen
+        assert isinstance(hover_ctrl, picks.HoverCursorController), scen
 
 
 def _synthetic_gfunction_res(G, dPdG):
@@ -462,6 +559,56 @@ def _synthetic_gfunction_res(G, dPdG):
     dg = resample.Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
                               t=G, p=z, dp=z, tdpdt=z)
     return DerivedResults(diagnostics=dg, resampled=resample.Resampled(dt=G, p=z, n_raw=len(G)))
+
+
+# --------------------------------------------------------------------------------------------------
+# gfunction wiring: tail-trim commit closure (ui.py's commit_trim)
+# --------------------------------------------------------------------------------------------------
+def _trim_commit(td, st, res):
+    stub = _stub(td, st, res, "gfunction")
+    DfitApp._attach_controllers(stub)
+    trim_ctrl = next(c for c in stub._controllers if isinstance(c, picks.DragLineController))
+    return stub, trim_ctrl.handlers["tail_trim"]
+
+
+def test_gfunction_trim_commit_drag_to_last_point_clears():
+    td, st, res = _seeded()
+    stub, commit = _trim_commit(td, st, res)
+    commit(float(res.G_full[-1]))
+    assert st.tail_trim_dt is None
+
+
+def test_gfunction_trim_commit_drag_to_mid_sets_dt_full_at_snapped_index():
+    td, st, res = _seeded()
+    stub, commit = _trim_commit(td, st, res)
+    mid = len(res.G_full) // 2
+    commit(float(res.G_full[mid]))
+    assert st.tail_trim_dt == pytest.approx(float(res.resampled_full.dt[mid]))
+
+
+def test_gfunction_trim_commit_drag_below_index_2_clamps():
+    td, st, res = _seeded()
+    stub, commit = _trim_commit(td, st, res)
+    commit(float(res.G_full[0]))  # would snap to index 0, but clamps to >= index 2
+    assert st.tail_trim_dt == pytest.approx(float(res.resampled_full.dt[2]))
+
+
+def test_gfunction_trim_commit_recovery_state_two_point_resample_never_indexerrors():
+    """Regression: with an exactly-2-point resampled_full (diagnostics None -- the recovery
+    path), clamping to index 2 BEFORE the clear check must never index past the end of
+    dt_full. A mid-plot drag on a record this short can only ever clear the trim."""
+    G_full = np.array([0.0, 1.0])
+    dt_full = np.array([0.0, 10.0])
+    res = DerivedResults(diagnostics=None, resampled=None,
+                         resampled_full=resample.Resampled(dt=dt_full, p=np.array([500.0, 300.0]),
+                                                            n_raw=2),
+                         G_full=G_full)
+    st = PickState()
+    stub, commit = _trim_commit(None, st, res)
+
+    commit(0.5)  # a mid-plot x -- must not raise
+
+    assert st.tail_trim_dt is None
 
 
 def test_gfunction_triangle_drag_rederives_contact_for_ca():

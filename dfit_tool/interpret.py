@@ -20,6 +20,8 @@ BBL_PER_MIN = 1.0  # BPM is bbl/min; time integrated in minutes gives bbl.
 COMPLIANCE_OFFSET_PSI = 75.0
 RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-250 psi)
 RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
+MIN_SURFACE_PRESSURE_PSI = 100.0  # below this, the hydrostatic BHP conversion is unreliable
+                                  # (the WHP signal is too small to trust); see model.compute_all
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
