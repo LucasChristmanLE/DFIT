@@ -320,6 +320,8 @@ class AnchorLineController:
         self._final = None          # (kind, anchor_x, anchor_y, slope) -- last-known-good geometry
         self._readout = None
         self._curve_px = None       # per-gesture cache of _pixel_xs(curve[0]) for anchor drags
+        self._bg = None            # blit background snapshot for the current gesture
+        self._blit_artists = None  # animated artists for the current gesture
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
             canvas.mpl_connect("motion_notify_event", self._on_motion),
@@ -408,6 +410,22 @@ class AnchorLineController:
                 self._readout = self.ax.text(0.02, 0.95, text, transform=self.ax.transAxes,
                                              fontsize=8, va="top", ha="left")
 
+        # Blitting: one full draw now (instead of one per motion event), then snapshot the
+        # background so motion only restores it and redraws the managed artists. The readout
+        # (if any) was created above, so it joins the animated set and stays out of the
+        # captured background.
+        if getattr(self.canvas, "supports_blit", False):
+            self._blit_artists = [a for a in (
+                segment, self._artist(self.gids.get("tick")),
+                self._artist(self.gids.get("extension")), self._readout) if a is not None]
+            for artist in self._blit_artists:
+                artist.set_animated(True)
+            self.canvas.draw()
+            self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
+        else:
+            self._blit_artists = None
+            self._bg = None
+
     def _on_motion(self, event):
         if self._active is None or event.x is None or event.y is None:
             return
@@ -439,11 +457,25 @@ class AnchorLineController:
         if self._readout is not None:
             text = self.readout_fn(kind, ax1, ay1, slope1)
             if text is None:
+                removed = self._readout
                 self._readout.remove()
                 self._readout = None
+                if self._blit_artists is not None:
+                    # The captured background still shows the now-gone readout; recapture a
+                    # clean one before the next blit rather than leave a ghost image.
+                    self._blit_artists = [a for a in self._blit_artists if a is not removed]
+                    self.canvas.draw()
+                    self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
             else:
                 self._readout.set_text(text)
-        self.canvas.draw_idle()
+
+        if self._bg is not None and self._blit_artists is not None:
+            self.canvas.restore_region(self._bg)
+            for artist in self._blit_artists:
+                self.ax.draw_artist(artist)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
     def _apply_geometry(self, ax1, ay1, slope1):
         segment = self._artist(self.gids.get("segment"))
@@ -485,8 +517,14 @@ class AnchorLineController:
         if self._readout is not None:
             self._readout.remove()
             self._readout = None
+        if self._blit_artists is not None:
+            for artist in self._blit_artists:
+                artist.set_animated(False)
+            self._blit_artists = None
+        self._bg = None
         self.gate.release()
         self.commit_fn(kind, float(ax1), float(ay1), float(slope1))
+        self.canvas.draw_idle()
 
     def disconnect(self):
         for cid in self._cids:
