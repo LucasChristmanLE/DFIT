@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `suggest_injection_window_pressure(p: np.ndarray) -> tuple[int, int]` — returns `(start_idx, shutin_idx)` with `start < shutin`; raises `ValueError` only when fewer than 2 finite samples exist. Task 2 calls it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/test_no_rate_fallback.py`:
 
@@ -96,12 +96,12 @@ def test_pressure_window_too_few_finite_samples_raises():
         interpret.suggest_injection_window_pressure(np.array([np.nan, np.nan, 5.0]))
 ```
 
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [x] **Step 2: Run the new tests to verify they fail**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py -v`
 Expected: FAIL / ERROR with `AttributeError: ... has no attribute 'suggest_injection_window_pressure'`
 
-- [ ] **Step 3: Implement the suggester**
+- [x] **Step 3: Implement the suggester**
 
 In `dfit_tool/interpret.py`, directly after `suggest_injection_window` (after ~line 76):
 
@@ -147,12 +147,12 @@ def suggest_injection_window_pressure(p: np.ndarray) -> tuple[int, int]:
     return start, shutin
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `C:\Users\LucasChristman\.venvs\dfit\Scripts\python.exe -m pytest tests/test_no_rate_fallback.py -v`
 Expected: 5 PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add dfit_tool/interpret.py tests/test_no_rate_fallback.py

@@ -75,6 +75,47 @@ def suggest_injection_window(
     return int(starts[0]), int(ends[-1])
 
 
+def suggest_injection_window_pressure(p: np.ndarray) -> tuple[int, int]:
+    """Best-guess (start, shutin) from the pressure curve alone, for rate-less datasets.
+
+    shutin = the global pressure maximum (in a DFIT the max sits at/just before shut-in);
+    start = the last upcross of baseline + 10% of the rise at/before that max (the *last*
+    upcross tolerates breakdown pulses and step-rate cycles earlier in the record).
+    Degenerate shapes (flat record, max at the first sample) fall back to positional
+    defaults at 2% / 25% of the record. Raises ``ValueError`` only when fewer than 2 finite
+    samples exist; otherwise always returns ``start < shutin``. This is only a default --
+    the interpreter drags the lines to the true window.
+    """
+    p = np.asarray(p, dtype=float)
+    n = len(p)
+    if int(np.isfinite(p).sum()) < 2:
+        raise ValueError("Need at least 2 finite pressure samples to suggest a window")
+
+    shutin = int(np.nanargmax(p))
+    start = None
+    if shutin > 0:
+        baseline = float(np.nanmin(p[:shutin + 1]))
+        rise = float(p[shutin]) - baseline
+        if rise > 0:
+            thresh = baseline + 0.1 * rise
+            above = p[:shutin + 1] >= thresh  # NaN compares False, so dropouts stay "below"
+            upcross = np.where(above[1:] & ~above[:-1])[0] + 1
+            if upcross.size:
+                start = int(upcross[-1])
+            elif above.any():  # unreachable in practice (the max is above); belt and braces
+                start = int(np.where(above)[0][0])
+
+    if shutin == 0 or start is None:
+        # Flat or declining-only record: positional defaults, coerced so start < shutin.
+        start = max(int(0.02 * (n - 1)), 0)
+        shutin = min(max(int(0.25 * (n - 1)), start + 1), n - 1)
+        start = min(start, shutin - 1)
+    elif start >= shutin:
+        # A single-sample jump straight to the max: keep the max, back start off one.
+        start = shutin - 1
+    return start, shutin
+
+
 def _rolling_mean(x: np.ndarray, w: int) -> np.ndarray:
     if w <= 1 or x.size < w:
         return x
