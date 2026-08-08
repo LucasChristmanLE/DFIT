@@ -431,9 +431,15 @@ Neither is explained in the panel itself.
 - `"NWB complexity*"` -- complexity is apparent ISIP minus the *shared reference* effective ISIP,
   and this marks the case where that reference fell back to the tangent effective ISIP:
   `use_tangent_ref = near_wellbore_complexity is not None and net_pressure_isip_source ==
-  "tangent"`. That is C-C and C-D, both of which clear the contact and so have no compliance
-  effective ISIP to reference. Note the two asterisks do not mean the same thing -- this one says
-  "referenced to the fallback", not "approximate" -- and under C-D both show at once.
+  "tangent"`. The reachable condition is "no compliance effective ISIP but a tangent one exists",
+  which C-C and C-D both produce (they clear the contact, so there is nothing to reference), but
+  they are not the only way there -- e.g. selecting C-C and then C-A, where
+  `re_derive_contact_from_min` finds nothing at >=110% of the min and leaves `contact_G` `None`,
+  shows the mark under a C-A scenario. It is truthful in every such state; the gate is the
+  reference, not the scenario. Note the two asterisks do not mean the same thing -- this one says
+  "referenced to the fallback", not "approximate". Under C-D both show at once **once the closure
+  pick exists**: without it there is no tangent effective ISIP either, so complexity is `None` and
+  only the Shmin asterisk shows.
 
 The CSV log is unaffected by either: `store.LOG_COLUMNS` keeps its own `Shmin_rapid` column, and
 `net_pressure_isip_source` is already logged.

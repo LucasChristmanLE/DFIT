@@ -31,8 +31,8 @@ def test_nwb_complexity_owned_by_gfunction_step():
 
 
 def test_shmin_rapid_folded_into_shmin_compliance_row():
-    # There is no longer a separate "Shmin rapid" panel row -- it is folded into "Shmin
-    # compliance" (asterisk label + tilde value) by _update_panel instead.
+    # There is no longer a separate "Shmin rapid" panel row -- _update_panel folds it into
+    # "Shmin compliance", marked by an asterisk on the label (the value carries no marker).
     assert "Shmin rapid" not in ui.PANEL_FIELDS
     assert "Shmin rapid" not in ui.FIELD_STEP
     assert "Shmin compliance" in ui.PANEL_FIELDS
@@ -122,4 +122,26 @@ def test_update_panel_complexity_blank_never_marked():
     stub = _panel_stub(res, state)
     stub._update_panel()
     assert stub.value_lbls["NWB complexity"].text == "-"
+    assert stub.name_lbls["NWB complexity"].text == "NWB complexity"
+
+
+def test_update_panel_both_asterisks_clear_on_a_second_refresh():
+    """Both label resets are load-bearing: the name labels are built once in _build_body and
+    persist across refreshes, so switching the closure scenario away from C-D (contact pick
+    re-derived -> a real compliance Shmin and a compliance-referenced complexity) has to clear
+    both asterisks. The single-call tests above can't catch a dropped else branch, since the
+    stub's labels start out plain."""
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(DerivedResults(shmin_compliance=None, shmin_rapid=9325.0,
+                                      near_wellbore_complexity=450.0,
+                                      net_pressure_isip_source="tangent"), state)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance"].text == "Shmin compliance*"
+    assert stub.name_lbls["NWB complexity"].text == "NWB complexity*"
+
+    stub.res = DerivedResults(shmin_compliance=9200.0, shmin_rapid=None,
+                              near_wellbore_complexity=450.0,
+                              net_pressure_isip_source="compliance")
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance"].text == "Shmin compliance"
     assert stub.name_lbls["NWB complexity"].text == "NWB complexity"
