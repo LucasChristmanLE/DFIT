@@ -1,9 +1,9 @@
-"""The tail-trim tool, moved from the G-function step to the Overview step behind an ephemeral
-"Show trim tool" toggle (CLAUDE.md TODO). ``PickState.tail_trim_dt`` semantics (shut-in-relative
-seconds) and ``model.compute_all``'s masking are unchanged -- see tests/test_tail_trim.py, which
-covers those and is untouched by this move. This file covers the new home for the tool:
-``plots.render_overview``'s ``show_trim`` kwarg, ``ui.DfitApp``'s overview controller wiring
-(the ``x_hours``-coordinate commit closure), and the toggle/panel-visibility plumbing.
+"""The tail-trim tool, always on at the Overview step (no more "Show trim tool" toggle --
+CLAUDE.md TODO). ``PickState.tail_trim_dt`` semantics (shut-in-relative seconds) and
+``model.compute_all``'s masking are unchanged -- see tests/test_tail_trim.py, which covers those
+and is untouched by this move. This file covers ``plots.render_overview``'s ``interactive``
+kwarg and default-cut resolution, and ``ui.DfitApp``'s overview controller wiring (the
+``x_hours``-coordinate commit closure).
 """
 
 from __future__ import annotations
@@ -42,17 +42,17 @@ def _seeded_with_crash(trim_dt=None):
 
 
 # --------------------------------------------------------------------------------------------------
-# render_overview: tail_excluded (informational, gated on a trim being set) vs. tail_trim
-# (the draggable line, gated on show_trim)
+# render_overview: tail_excluded (informational, gated on a trim/guard cut) vs. tail_trim
+# (the draggable line, gated on interactive)
 # --------------------------------------------------------------------------------------------------
-def test_render_overview_trim_set_show_false_draws_excluded_not_trim_line():
+def test_render_overview_trim_set_interactive_false_draws_excluded_not_trim_line():
     td, st, res = _seeded_with_crash()
     last_normal_dt = pre_crash_trim_dt(res)
     st.tail_trim_dt = last_normal_dt
     res2 = compute_all(st, td)
     fig = Figure()
     ax = fig.add_subplot(111)
-    plots.render_overview(ax, td, st, res2, show_trim=False)
+    plots.render_overview(ax, td, st, res2, interactive=False)
 
     t_trim_h = (last_normal_dt + res2.t_shutin_s) / 3600.0
     # The main pressure trace (no gid) is split at the trim time -- it never reaches past it.
@@ -70,35 +70,113 @@ def test_render_overview_trim_set_show_false_draws_excluded_not_trim_line():
     assert not any(l.get_gid() == "tail_trim" for l in ax.get_lines())
 
 
-def test_render_overview_trim_set_show_true_draws_trim_line_at_trim_x():
+def test_render_overview_trim_set_interactive_true_draws_trim_line_at_trim_x():
     td, st, res = _seeded_with_crash()
     last_normal_dt = pre_crash_trim_dt(res)
     st.tail_trim_dt = last_normal_dt
     res2 = compute_all(st, td)
     fig = Figure()
     ax = fig.add_subplot(111)
-    plots.render_overview(ax, td, st, res2, show_trim=True)
+    plots.render_overview(ax, td, st, res2, interactive=True)
 
     vline = _gid(ax, "tail_trim")
     assert vline.get_xdata()[0] == pytest.approx((last_normal_dt + res2.t_shutin_s) / 3600.0)
-    # The excluded-tail preview is informational and still drawn regardless of show_trim.
+    # The excluded-tail preview is informational and still drawn regardless of interactive.
     assert _gid(ax, "tail_excluded") is not None
 
 
-def test_render_overview_no_trim_show_true_vline_at_last_sample_no_excluded_tail():
-    td, st, res = _seeded_with_crash()  # no trim set
+def test_render_overview_no_trim_no_guard_vline_at_last_raw_sample_no_excluded_tail():
+    """With nothing to cut the line parks at the END OF THE DATA -- the last raw sample, not
+    resampled_full.dt[-1]. The resampler keeps a point only per 30-psi drop, so its last kept
+    point can sit well short of the record's end; a line parked there would read as a cut that
+    isn't in effect, with ungrayed data to its right."""
+    td, st, res = _seeded_with_crash()  # no trim set, no guard fired
     fig = Figure()
     ax = fig.add_subplot(111)
-    plots.render_overview(ax, td, st, res, show_trim=True)
+    plots.render_overview(ax, td, st, res, interactive=True)
 
+    last_raw_h = float(td.t_s[-1]) / 3600.0
     vline = _gid(ax, "tail_trim")
-    expected_x = (float(res.resampled_full.dt[-1]) + res.t_shutin_s) / 3600.0
-    assert vline.get_xdata()[0] == pytest.approx(expected_x)
+    assert vline.get_xdata()[0] == pytest.approx(last_raw_h)
     assert not any(l.get_gid() == "tail_excluded" for l in ax.get_lines())
     # With no trim, the main trace is unsplit and reaches the full record's last raw sample.
     main = next(l for l in ax.get_lines() if l.get_gid() is None)
-    last_raw_h = float(td.t_s[-1]) / 3600.0
     assert main.get_xdata().max() == pytest.approx(last_raw_h)
+
+
+def test_render_overview_parked_line_ignores_a_short_resampled_tail():
+    """The case the raw-sample rule exists for: resampled_full ends well short of the record (the
+    resampler keeps a point only per 30-psi drop, so a slow falloff's last kept point can lag the
+    end by hours). With no cut in effect the line must still park at the raw end, not there."""
+    td, st, res = _seeded_with_crash()
+    short_dt = np.array([0.0, 30.0, 60.0])          # last kept point ~1 min after shut-in
+    res.resampled_full = resample.Resampled(dt=short_dt, p=np.array([5000.0, 4900.0, 4800.0]),
+                                            n_raw=res.resampled_full.n_raw)
+    assert st.tail_trim_dt is None and res.resampled_full.guard_dt is None
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_overview(ax, td, st, res, interactive=True)
+
+    last_raw_h = float(td.t_s[-1]) / 3600.0
+    last_resampled_h = (float(short_dt[-1]) + res.t_shutin_s) / 3600.0
+    assert last_resampled_h < last_raw_h                       # the two genuinely differ here
+    assert _gid(ax, "tail_trim").get_xdata()[0] == pytest.approx(last_raw_h)
+    assert not any(l.get_gid() == "tail_excluded" for l in ax.get_lines())
+
+
+def test_render_overview_guard_fired_no_trim_line_at_guard_dt_and_tail_grayed():
+    """A guard fire (no trim pick set -- picks.seed_tail_trim never sets one for "rise_guard")
+    still moves both the draggable line and the gray-out on Overview -- previously only the
+    G-function plot's own guard_excluded preview showed this."""
+    td = make_testdata()
+    st = injection_state(td)
+    picks.seed_injection(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    assert st.tail_trim_dt is None
+
+    guard_dt = 55.0
+    res.resampled_full = resample.Resampled(dt=np.array([0.0, 30.0, 50.0]),
+                                            p=np.array([5000.0, 4800.0, 4700.0]),
+                                            n_raw=res.resampled_full.n_raw,
+                                            guard_dt=guard_dt)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_overview(ax, td, st, res, interactive=True)
+
+    vline = _gid(ax, "tail_trim")
+    expected_x = (guard_dt + res.t_shutin_s) / 3600.0
+    assert vline.get_xdata()[0] == pytest.approx(expected_x)
+    assert _gid(ax, "tail_excluded") is not None
+    assert st.tail_trim_dt is None  # the guard cut is display-only, never a pick
+
+
+def test_render_overview_stale_trim_past_guard_uses_guard_dt_not_trim_dt():
+    """F2: both tail_trim_dt and guard_dt are shut-in-relative, so dragging shut-in later (F1's
+    resync only fires from ui.py's controller commit, not from a bare compute_all call, so a
+    caller that hand-builds ``res`` like this one can still leave the two out of sync) can leave
+    a stale tail_trim_dt sitting PAST guard_dt. Taking tail_trim_dt at face value (the old
+    "no min() needed" logic) would render the guard-excluded region as kept -- the opposite of
+    what this feature exists to do. The cut must be the EARLIER of the two, so the line sits at
+    guard_dt and the guard-excluded tail stays grayed."""
+    td, st, res = _seeded_with_crash()
+    guard_dt = 40.0
+    res.resampled_full = resample.Resampled(dt=np.array([0.0, 20.0, 40.0]),
+                                            p=np.array([5000.0, 4800.0, 4700.0]),
+                                            n_raw=res.resampled_full.n_raw,
+                                            guard_dt=guard_dt)
+    st.tail_trim_dt = guard_dt + 3600.0  # stale: an hour past the guard boundary
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_overview(ax, td, st, res, interactive=True)
+
+    vline = _gid(ax, "tail_trim")
+    expected_x = (guard_dt + res.t_shutin_s) / 3600.0
+    assert vline.get_xdata()[0] == pytest.approx(expected_x)
+    assert _gid(ax, "tail_excluded") is not None
 
 
 def test_render_overview_no_resampled_full_no_gids_no_crash():
@@ -107,13 +185,14 @@ def test_render_overview_no_resampled_full_no_gids_no_crash():
     res = compute_all(st, td)
     fig = Figure()
     ax = fig.add_subplot(111)
-    plots.render_overview(ax, td, st, res, show_trim=True)
+    plots.render_overview(ax, td, st, res, interactive=True)
 
     assert all(l.get_gid() not in ("tail_excluded", "tail_trim") for l in ax.get_lines())
 
 
 # --------------------------------------------------------------------------------------------------
-# export: render_step_figure never passes show_trim, so an exported PNG never carries the line
+# export: render_step_figure always renders with interactive=False, so an exported PNG never
+# carries the draggable line
 # --------------------------------------------------------------------------------------------------
 def test_render_step_figure_overview_never_draws_trim_line_but_draws_excluded_tail():
     td, st, res = _seeded_with_crash()
@@ -126,20 +205,30 @@ def test_render_step_figure_overview_never_draws_trim_line_but_draws_excluded_ta
     assert any(l.get_gid() == "tail_excluded" for l in ax.get_lines())
 
 
+def test_render_step_figure_overview_png_yaxis_starts_at_zero():
+    """F7: the pinned y-min 0 (CLAUDE.md TODO) must survive into the actual exported artifact,
+    not just the live canvas -- test_view_state.py's test_refresh_unions_overview_full_y_down_to_zero
+    only covers the live y-slider's valmin, which is a different code path
+    (ui.refresh/_build_sliders) from the one that produces the PNG (render_step_figure)."""
+    td, st, res = _seeded_with_crash()
+
+    fig = plots.render_step_figure("overview", td, st, res)
+
+    ax = fig.axes[0]
+    assert ax.get_ylim()[0] == pytest.approx(0.0)
+
+
 # --------------------------------------------------------------------------------------------------
 # ui.py controller wiring (end to end against the real _attach_controllers closure)
 # --------------------------------------------------------------------------------------------------
-def _stub(td, st, res, step, show_trim=False):
-    """Same duck-typed stand-in convention as test_render_constructions.py's ``_stub``, plus the
-    ``show_trim`` ephemeral toggle _attach_controllers' overview branch reads."""
+def _stub(td, st, res, step):
+    """Same duck-typed stand-in convention as test_render_constructions.py's ``_stub``."""
     stub = types.SimpleNamespace()
     fig = Figure()
     stub.fig = fig
     stub.ax = fig.add_subplot(111)
     stub.canvas = FigureCanvasAgg(fig)
-    stub.show_trim = show_trim
-    kwargs = {"show_trim": show_trim} if step == "overview" else {}
-    plots.RENDERERS[step](stub.ax, td, st, res, **kwargs)
+    plots.RENDERERS[step](stub.ax, td, st, res)
     stub.canvas.draw()
     stub.td = td
     stub.res = res
@@ -152,9 +241,9 @@ def _stub(td, st, res, step, show_trim=False):
     return stub
 
 
-def test_overview_wiring_show_trim_true_attaches_drag_and_hover():
+def test_overview_wiring_attaches_drag_and_hover():
     td, st, res = _seeded_with_crash()
-    stub = _stub(td, st, res, "overview", show_trim=True)
+    stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
     assert len(stub._controllers) == 2
     ctrl, hover_ctrl = stub._controllers
@@ -162,18 +251,11 @@ def test_overview_wiring_show_trim_true_attaches_drag_and_hover():
     assert isinstance(hover_ctrl, picks.HoverCursorController)
 
 
-def test_overview_wiring_show_trim_false_no_controllers():
-    td, st, res = _seeded_with_crash()
-    stub = _stub(td, st, res, "overview", show_trim=False)
-    DfitApp._attach_controllers(stub)
-    assert stub._controllers == []
-
-
-def test_overview_wiring_no_resampled_full_no_controllers_even_with_show_trim():
+def test_overview_wiring_no_resampled_full_no_controllers():
     td = make_testdata()
     st = PickState(pressure_col="PRESSURE")  # no start/shutin -> no t_shutin_s/resampled_full
     res = compute_all(st, td)
-    stub = _stub(td, st, res, "overview", show_trim=True)
+    stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
     assert stub._controllers == []
 
@@ -183,7 +265,7 @@ def test_overview_wiring_no_resampled_full_no_controllers_even_with_show_trim():
 # x_hours = (dt + t_shutin_s) / 3600)
 # --------------------------------------------------------------------------------------------------
 def _trim_commit(td, st, res):
-    stub = _stub(td, st, res, "overview", show_trim=True)
+    stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
     trim_ctrl = next(c for c in stub._controllers if isinstance(c, picks.DragLineController))
     return stub, trim_ctrl.handlers["tail_trim"]
@@ -231,77 +313,3 @@ def test_overview_trim_commit_recovery_two_point_resample_never_indexerrors():
     commit((res.t_shutin_s + 5.0) / 3600.0)  # a mid-plot x -- must not raise, and must clear
 
     assert st.tail_trim_dt is None
-
-
-# --------------------------------------------------------------------------------------------------
-# toggle / panel visibility (duck-typed stand-ins, no real tk.Tk())
-# --------------------------------------------------------------------------------------------------
-class _Var:
-    def __init__(self, value=None):
-        self.value = value
-
-    def set(self, v):
-        self.value = v
-
-    def get(self):
-        return self.value
-
-
-def test_on_show_trim_flips_show_trim_and_refreshes():
-    stub = types.SimpleNamespace()
-    stub.var_show_trim = _Var(True)
-    stub.show_trim = False
-    calls = []
-    stub.refresh = lambda: calls.append(True)
-    stub._on_show_trim = types.MethodType(DfitApp._on_show_trim, stub)
-
-    stub._on_show_trim()
-
-    assert stub.show_trim is True
-    assert calls == [True]
-
-    stub.var_show_trim.set(False)
-    stub._on_show_trim()
-    assert stub.show_trim is False
-    assert calls == [True, True]
-
-
-class _FakeFrame:
-    def __init__(self):
-        self.packed = False
-
-    def pack(self, **kw):
-        self.packed = True
-
-    def pack_forget(self):
-        self.packed = False
-
-
-def _panel_stub(step):
-    stub = types.SimpleNamespace()
-    stub.frm_overview = _FakeFrame()
-    stub.frm_cscen = _FakeFrame()
-    stub.frm_pcscen = _FakeFrame()
-    stub.sep_before_notes = object()
-    stub.step = step
-    stub.state = PickState()
-    stub.btn_gfunction_reset = types.SimpleNamespace(configure=lambda **kw: None)
-    stub.rb_ppaxis = []
-    stub._update_ppaxis_enabled = lambda: None
-    stub._update_panel_visibility = types.MethodType(DfitApp._update_panel_visibility, stub)
-    return stub
-
-
-def test_update_panel_visibility_packs_frm_overview_only_on_overview_step():
-    stub = _panel_stub("overview")
-    stub._update_panel_visibility()
-    assert stub.frm_overview.packed is True
-    assert stub.frm_cscen.packed is False
-    assert stub.frm_pcscen.packed is False
-
-
-def test_update_panel_visibility_does_not_pack_frm_overview_on_other_steps():
-    for step in ("injection", "isip", "gfunction", "tangent", "loglog", "porepressure"):
-        stub = _panel_stub(step)
-        stub._update_panel_visibility()
-        assert stub.frm_overview.packed is False, step

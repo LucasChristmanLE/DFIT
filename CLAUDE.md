@@ -18,9 +18,9 @@ folder mode; single-file mode is otherwise unchanged. There is still no cross-te
 aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
 The seven steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
-porepressure. Overview shows the entire dataset, unclamped, and hosts the tail-trim tool
-behind a toggle; Injection is the zoomed injection-window view with the draggable
-start/shut-in lines and the te/Vinj/qmax title.
+porepressure. Overview shows the entire dataset, unclamped, and hosts the always-on tail-trim
+line; Injection is the zoomed injection-window view with the draggable start/shut-in lines and
+the te/Vinj/qmax title.
 
 ## Commands
 
@@ -263,45 +263,120 @@ already be satisfied by the run's second sample), so a brief water-hammer reboun
 spike no longer trips it. A non-finite sample mid-run resets the run rather than being skipped
 through it -- continuity can't be confirmed across a dropout, so two excursions separated by
 missing data can't bridge into a false fire. When the guard does fire, the excluded raw tail is
-drawn as a faint gray preview (capped at 2x the kept G-range) alongside a warning inserted at
-the front of `DerivedResults.warnings` (not appended), so it stays the topmost line in the
-right panel's stacked warning display (under the Notes box, one warning per line, wrapped --
-`ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A monotone
-crash to ~0 psi (gauge pulled, well opened) still sails through it and pollutes the
-derivatives. The Overview step has a manual trim for this, hidden by default behind its own
-"Show trim tool" checkbox (`ui.py`'s `self.show_trim`): an ephemeral session toggle, reset to
-off on every file load and never part of `PickState` or serialized, so `render_step_figure`/
-`save_all_step_pngs` never pass it and an exported PNG never carries the interactive line.
-Checking it draws a draggable dashed vline (`gid="tail_trim"`) in time-domain hours, a
-`DragLineController` with its own private gate (nothing else is draggable on that axes, so
-there is no gate to share). Dragging snaps to the nearest full-resample sample
-(`picks._nearest` against `DerivedResults.resampled_full.dt`) and commits
-`PickState.tail_trim_dt` (shut-in-relative seconds, `None` = no trim, logged to
-`tail_trim_s`). `compute_all` resamples the full post-shut-in record, keeps it on
+drawn as a faint gray preview (capped at 2x the kept G-range) on the G-function plot alongside a
+warning inserted at the front of `DerivedResults.warnings` (not appended), so it stays the topmost
+line in the right panel's stacked warning display (under the Notes box, one warning per line,
+wrapped -- `ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A
+monotone crash to ~0 psi (gauge pulled, well opened) still sails through the guard untouched and
+pollutes the derivatives -- the Overview step's tail-trim line is the defense against that.
+
+The trim line is always on: there is no more "Show trim tool" toggle. `picks.seed_tail_trim`
+(called explicitly from `ui._seed_step`, not a `SEEDERS` entry -- it needs a `res` recomputed
+*after* the injection window is seeded) parks-and-applies a default cut on the Overview step's
+first visit, via `interpret.suggest_tail_trim_dt(dt_post, p_surface_post, guard_dt)`: the
+earliest of the rise-guard boundary (`res.resampled_full.guard_dt`) or the first post-shut-in
+sample where surface pressure drops below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`; skipped
+when the mapped channel is already BHP, where a sub-100-psi test is meaningless), tie going to
+the rise guard. A rise-guard boundary sets **no pick at all** (`PickState.tail_trim_dt` stays
+`None`) -- the resampler already excluded that data (`resample.py`'s own `break`), so only the
+rendered line position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
+does snap to the last full-resample sample **strictly before** the cut (`searchsorted` with
+`side="left"`, not `"right"`, and not `picks._nearest`) and sets `PickState.tail_trim_reason =
+"low_pressure"` (logged to `tail_trim_reason`, appended after `tail_trim_s` in `LOG_COLUMNS`).
+Strictly-before matters and is not a rounding nicety: the resampler keeps a point at every >=30 psi
+drop, so the crash cliff is almost always kept *and is usually the last point kept* (the flat ~0
+psi tail after it never drops another 30 psi), so an "at or before" snap would land on
+`dt_full[-1]`, trip the seeder's own past-the-end bail, and make the auto-trim a near-no-op on the
+ordinary crashed record. The seeder BAILS (sets no pick) rather than clamps whenever
+`idx = searchsorted(dt_full, cut_dt, side="left") - 1` falls outside `[2, len(dt_full) - 2]`:
+`idx < 2` means fewer than 3 resampled samples precede the crash, so no cut can both keep >=3
+points and exclude it -- clamping `idx` UP to 2 (the old behavior) could set a trim at
+`dt_full[2]` even when that sample sits at or past the crash, keeping a sub-floor sample inside
+a record the "Tail auto-trimmed" message claims is clean; `idx >= len(dt_full) - 1` means the
+cut sits past the last kept point (crash beyond where resampling reached), so there's nothing in
+the record to remove. Both bail cases are still covered by the separate low-surface-pressure
+warning (which scans raw, not kept, samples), so neither goes silent -- setting no trim is
+strictly better than setting a wrong one. Neither candidate existing (clean record) leaves the
+line parked at the end of the data, nothing trimmed. The seeder is non-destructive (a pre-existing
+trim, e.g. from a reloaded save, is left alone).
+
+Dragging the line (`DragLineController`, gid `"tail_trim"`, in time-domain hours, its own private
+gate since nothing else is draggable on that axes) snaps to the nearest full-resample sample
+(`picks._nearest` against `DerivedResults.resampled_full.dt`) and commits `PickState.tail_trim_dt`
+(shut-in-relative seconds, `None` = no trim) via `picks.commit_tail_trim`, which always resets
+`tail_trim_reason` to `""` -- a manual drag or clear overrides whatever auto-attribution put the
+trim where it was. `compute_all` resamples the full post-shut-in record, keeps it on
 `DerivedResults.resampled_full`/`G_full`, then masks to `dt <= tail_trim_dt` before computing
-diagnostics -- so the trim propagates to every downstream value (effective ISIP, Shmin,
-log-log, pore pressure) with no other plumbing. The Overview renderer draws the excluded tail
-grayed out (`gid="tail_excluded"`) whenever a trim is set, regardless of the toggle, so the
-effect of a trim stays visible even with the tool hidden; releasing the drag at/past the last
-point clears the trim, and the commit clamps to >=3 kept points -- a record whose full
-resample already yields <=3 points can therefore only ever clear the trim, never set one (a
-pathological saved trim hits a warning directing the analyst back to the Overview tab's trim
-line, instead of a dead plot). The
-G-function plot itself carries no trim artifacts at all -- only the rise guard's own
-`guard_excluded` preview remains there. The trim is manual-only (no seeder) and is never
-touched by scenario changes or the G-function reset button. Warnings: WHP below 100 psi
-(`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler actually consumed post-shut-in
-data -- up to where its own rise guard stopped it (`resample.Resampled.guard_dt`), further
-narrowed by a trim if one is set, deliberately *not* bounded by the last resampled point kept
-(which can sit up to one `resample_step` above the true minimum and so miss a crash just past
-it) -- flags BHP as unreliable there (only when the mapped channel is surface pressure). A
-stale-pick warning (gated on a trim actually being set) covers two distinct failure modes: the
-G-function picks (contact, min-dP/dG, closure) left beyond the trim would otherwise silently
-interp-clamp to the trimmed edge, while a pore-pressure window affected by the trim gets the
-same warning by outcome -- a finite upper bound beyond the trimmed edge just shrinks its fit
-(still returns a value), and a window with fewer than 2 surviving samples empties it and blanks
-`pore_pressure` outright (an open-ended upper bound shrinks benignly with the trim and is
-exempt from the shrunk check) -- so neither failure mode goes silent.
+diagnostics -- so the trim propagates to every downstream value (effective ISIP, Shmin, log-log,
+pore pressure) with no other plumbing. Whenever `tail_trim_dt` is set, `compute_all` also emits an
+explanatory warning (`insert(0)`, same front-of-stack treatment as the guard warning) so an
+auto-applied trim is never silent: for `"low_pressure"`, `"Tail auto-trimmed ... surface pressure
+crashes below 100 psi shortly after this point. Drag the Overview trim line to the right edge to
+undo."` -- worded to point at the crash beginning just past the cut, not at the cut itself, since
+by construction of the `side="left"` snap the trim dt is a sample where pressure is still ABOVE
+the floor; else `"Tail trimmed ... (N raw samples excluded)"` for a manual trim. This matters
+because the seeded trim usually *clears* the separate "Surface pressure fell below 100 psi"
+warning below (its mask is narrowed by `tail_trim_dt`) -- without this line an auto-applied trim
+would otherwise report nothing having changed.
+
+**Resyncing shut-in moves (`picks.resync_auto_tail_trim`).** `tail_trim_dt` is shut-in-relative,
+but the shut-in pick can move on the Injection step after the trim was seeded on Overview.
+Dragging shut-in later by delta moves the auto trim's absolute-time cut delta later too (nothing
+else re-derives it), quietly re-admitting whatever crash it was supposed to exclude while the
+"Tail auto-trimmed" warning keeps claiming the crash is handled. `ui.py`'s Injection controller
+wiring calls `resync_auto_tail_trim(state, td, res)` after committing a shut-in drag (never a
+start-only drag: `tail_trim_dt`/`guard_dt` both live in dt-from-shut-in space, and
+`resample_pressure_increment` takes only `(dt, p)` built from shut-in onward, so a start-only
+change can't move either). The resync is a no-op unless `tail_trim_reason == "low_pressure"` --
+a `""` reason means no trim or the analyst's own manual pick, neither of which resync ever
+touches -- otherwise it clears the stale pick and re-runs `seed_tail_trim` against the new window,
+which correctly sets no trim at all if the new window turns out to have no crash.
+
+`plots.render_overview`'s `show_trim` kwarg is now `interactive` (default `True`, meaning "this is
+the live canvas, not an export" rather than "the analyst toggled the tool on"); `render_step_figure`
+passes `interactive=False` for `"overview"` (mirroring the `step_key == "gfunction"` special
+cases), so an exported PNG never carries a line the analyst can't actually drag. The effective
+display cut is the EARLIER of `state.tail_trim_dt` and `res.resampled_full.guard_dt` when both are
+set, else whichever one is -- both live in shut-in-relative dt, so a stale trim left behind by a
+shut-in move (before a resync runs, or for any other caller that builds `res` without going
+through the Injection wiring) can sit PAST the guard; taking `tail_trim_dt` alone (the old "a set
+pick is always <= guard_dt, no `min()` needed" reasoning) would then render the guard-excluded
+region as kept, the opposite of this feature's purpose, so `min()` is required, not optional. The
+Overview renderer grays out the raw trace past that cut (`gid="tail_excluded"`) whenever it's not
+`None`, which is what makes a **guard-excluded** tail finally visible on Overview too --
+previously only the G-function plot's own `guard_excluded` preview showed it there; the
+G-function plot itself
+still carries no trim artifacts at all. The draggable vline itself (`gid="tail_trim"`, drawn only
+when `interactive`) sits at that same cut when set, else the last raw sample time. Releasing a
+drag at/past the last point clears the trim, and the commit clamps to >=3 kept points -- a record
+whose full resample already yields <=3 points can therefore only ever clear the trim, never set
+one (a pathological saved trim hits a warning directing the analyst back to the Overview tab's
+trim line, instead of a dead plot). The trim is never touched by scenario changes or the
+G-function reset button -- this replaces the old "manual-only (no seeder) ... never auto-set"
+rule, which no longer holds.
+
+`render_overview`'s `ViewDefaults.ylim` is pinned to `(0.0, p_hi + pad)` unconditionally --
+including a converted-BHP record, where it squashes the trace into the top of the axes; the
+y-slider and Reset view are the escape. Because that can reach below the Axes' own autoscaled
+extent, both `ui.refresh` and `plots.render_step_figure` union a renderer's `ViewDefaults.ylim`
+into `full_y` (the slider's outer range) for every step except gfunction, which still *replaces*
+`full_y` (it must keep shielding the y-slider from the effective-ISIP tangent's dashed extension,
+which can swing the Axes' own autoscale to extreme psi) -- otherwise `_make_range_slider`'s
+`valinit` clamping would silently pull the view back up into the autoscaled extent on the first
+slider touch, losing the 0 baseline.
+
+Warnings: WHP below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler
+actually consumed post-shut-in data -- up to where its own rise guard stopped it
+(`resample.Resampled.guard_dt`), further narrowed by a trim if one is set, deliberately *not*
+bounded by the last resampled point kept (which can sit up to one `resample_step` above the true
+minimum and so miss a crash just past it) -- flags BHP as unreliable there (only when the mapped
+channel is surface pressure). A stale-pick warning (gated on a trim actually being set) covers two
+distinct failure modes: the G-function picks (contact, min-dP/dG, closure) left beyond the trim
+would otherwise silently interp-clamp to the trimmed edge, while a pore-pressure window affected
+by the trim gets the same warning by outcome -- a finite upper bound beyond the trimmed edge just
+shrinks its fit (still returns a value), and a window with fewer than 2 surviving samples empties
+it and blanks `pore_pressure` outright (an open-ended upper bound shrinks benignly with the trim
+and is exempt from the shrunk check) -- so neither failure mode goes silent.
 
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 
@@ -402,3 +477,17 @@ select their tab (`ui.py:_open_guide`).
   loads that JSON into the workspace but does not re-sync the Source combobox to it (the
   Skip-test button does re-sync, via `_apply_loaded_state`'s `_goto` -> `refresh` ->
   `_update_stepbar` -> `_update_skip_test_btn` chain).
+- A pre-`step_status` legacy picks JSON, reloaded, can silently re-run the Overview auto-trim
+  seeder and change reported numbers. `infer_step_status` backfills `step_status` for saves made
+  before it existed, but it omits `"overview"` from that backfill, so `"overview"` still reads
+  `not_visited` on reload -- and since the tail-trim seeder is park-and-apply on that step's first
+  visit (Tail trim, above), re-visiting Overview can re-seed a trim (or a different one than
+  whatever was in effect when that save's `dfit_log.csv` row was written), moving Shmin/effective
+  ISIP/net pressure/pore pressure with no analyst action. This is a known consequence of the
+  park-and-apply design colliding with an unrelated legacy-migration gap, not something the tail
+  trim feature itself can detect or guard against.
+
+  ## TODO
+  - G- function tab, leave the 0-500 dP/dG clamp but change the default zoom to autoscale based on values--but make sure not to include early G-time spikes.
+  - G-func tab: does the reset picks button do anything for us anymore?
+  - G-func tab: Remove Shmin rapid from sidebar. Instead, show it as Shmin compliance but add an asteriks after Shmin compliance and ~ before the number. Don't change how it logs in csv.

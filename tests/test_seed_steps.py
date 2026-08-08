@@ -59,6 +59,27 @@ def test_dfit_app_seed_step_seeds_overview_without_visiting_injection():
     assert stub.state.step_status == {}  # _seed_step itself never touches step_status
 
 
+def test_dfit_app_seed_step_overview_seeds_the_tail_trim_on_a_crashed_record():
+    """F5: pins the ui.py wiring itself (the picks.seed_tail_trim call inside _seed_step's
+    "overview" branch), not just picks.seed_tail_trim in isolation -- a mutation that deletes
+    that call leaves every other test in the suite green, since nothing else drives _seed_step
+    end to end on a record that actually needs the trim. Uses the same duck-typed-stub pattern
+    as test_dfit_app_seed_step_seeds_overview_without_visiting_injection, but on a crashed
+    record (zero_crash_at) so seed_tail_trim actually has something to do."""
+    td = make_testdata(n=1200, zero_crash_at=0.5)
+    stub = types.SimpleNamespace()
+    stub.td = td
+    stub.state = injection_state(td)
+    stub.state.start_idx = None
+    stub.state.shutin_idx = None
+    stub._seed_step = types.MethodType(DfitApp._seed_step, stub)
+
+    stub._seed_step("overview")
+
+    assert stub.state.tail_trim_dt is not None
+    assert stub.state.tail_trim_reason == "low_pressure"
+
+
 # --------------------------------------------------------------------------------------------------
 # progressive happy-path seeding: each seeder sets exactly its own field(s)
 # --------------------------------------------------------------------------------------------------

@@ -1099,13 +1099,15 @@ def commit_closure_point(state: PickState, x: float) -> None:
 
 
 def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
-    """DragLineController commit for the manual tail-trim line (Overview step, behind the "Show
-    trim tool" toggle): ``dt`` is shut-in-relative seconds, or None to clear the trim (drag
-    released at/past the last point).
-    Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario,
-    reset_gfunction_picks, or a SEEDERS entry, since a trim must never be auto-set or
-    auto-cleared."""
+    """DragLineController commit for the Overview step's always-visible tail-trim line: ``dt``
+    is shut-in-relative seconds, or None to clear the trim (drag released at/past the last
+    point). Resets state.tail_trim_reason to "" -- a manual drag or clear always overrides
+    whatever auto-attribution put the trim where it was; only seed_tail_trim (immediately after
+    calling this itself) sets a non-"" reason back.
+    Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario or
+    reset_gfunction_picks."""
     state.tail_trim_dt = float(dt) if dt is not None else None
+    state.tail_trim_reason = ""
 
 
 def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:
@@ -1345,6 +1347,86 @@ def seed_overview(state: PickState, td: TestData) -> None:
     seed_injection(state, td)
 
 
+def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
+    """Overview-step tail-trim default: park-and-apply interpret.suggest_tail_trim_dt's cut as a
+    real pick on the step's first visit, per ../CLAUDE.md's Tail trim section, rather than leaving
+    it a suggestion the analyst has to notice and act on.
+
+    NOT in SEEDERS -- it needs a ``res`` computed *after* the injection window is seeded (the
+    ``res`` at the top of ``ui._seed_step`` predates that seed), so ``ui._seed_step`` calls this
+    explicitly instead.
+
+    Non-destructive, same contract as every SEEDERS entry: returns immediately if a trim already
+    exists (a manual drag, or a reloaded save) or the inputs it needs
+    (res.resampled_full/res.t_shutin_s) aren't ready yet."""
+    if state.tail_trim_dt is not None:
+        return
+    if res.resampled_full is None or res.t_shutin_s is None:
+        return
+    dt_full = res.resampled_full.dt
+    post = td.t_s >= res.t_shutin_s
+    dt_post = td.t_s[post] - res.t_shutin_s
+    p_surface_post = None
+    if not state.pressure_is_bhp:  # state, not res -- see model.compute_all's same gate
+        p_surface_post = td.pressure_surface(state.channel_config())[post]
+    cut_dt, reason = interpret.suggest_tail_trim_dt(dt_post, p_surface_post,
+                                                     res.resampled_full.guard_dt)
+    if reason != "low_pressure":
+        # "" (no candidate at all) sets nothing -- the line parks at the end of the data.
+        # "rise_guard" sets no pick either: the resampler already broke out at the guard, so
+        # that data never entered resampled_full/diagnostics -- only the rendered line position
+        # and gray-out need to reflect it (plots.render_overview), not a pick here.
+        return
+    # Snap to the last resampled sample STRICTLY BEFORE the cut (side="left", not "right"), and
+    # not _nearest -- both of those can leave the crash sample itself in the record, which is the
+    # one sample that must go. The resampler keeps a point at every >=30 psi drop, so a crash
+    # cliff is almost always kept, and it is usually the LAST point kept (the flat ~0 psi tail
+    # after it never drops another 30 psi). "<= cut" would therefore land on dt_full[-1] and hit
+    # the bail below on the ordinary crashed record, making this seeder a near-no-op.
+    idx = int(np.searchsorted(dt_full, cut_dt, side="left")) - 1
+    # Bail rather than clamp. With side="left", idx < 2 happens exactly when fewer than 3
+    # resampled samples precede the crash -- clamping idx UP to 2 (the old behavior) can then
+    # set a trim at dt_full[2], which can sit AT OR PAST the cut and so still keep a sub-floor
+    # sample; the "auto-trimmed" message would then name a point where pressure never actually
+    # fell below the floor. idx >= len(dt_full) - 1 happens when the cut sits past the last kept
+    # point (crash beyond where resampling reached) -- nothing in the record to remove. Both
+    # halves are covered without a pick here by the separate low-surface-pressure warning, which
+    # scans raw (not kept) samples, so bailing never goes silent.
+    if idx < 2 or idx >= len(dt_full) - 1:
+        return
+    commit_tail_trim(state, float(dt_full[idx]))
+    state.tail_trim_reason = "low_pressure"
+
+
+def resync_auto_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
+    """Re-derive an auto-applied ("low_pressure") tail trim against a new shut-in pick.
+
+    ``tail_trim_dt`` is shut-in-relative, but the shut-in pick itself can move after the trim
+    was seeded -- the Injection step exists specifically to let the analyst drag it. Dragging
+    shut-in later by delta moves the auto trim's cut delta later in absolute time too (it never
+    re-ran), quietly re-admitting whatever crashed tail it was supposed to exclude while the
+    "Tail auto-trimmed" warning keeps claiming the crash is handled. A manual trim (or no trim
+    at all) is never touched here -- ``tail_trim_reason == ""`` covers both, and only the
+    analyst's own drag/clear may set or clear those.
+
+    Clears the existing pick first so ``seed_tail_trim``'s non-destructive guard (it returns
+    immediately when ``tail_trim_dt is not None``) doesn't block the re-derive, then reseeds
+    from scratch against the new window. If the new window has no crash (and no guard fire),
+    the correct outcome is no trim at all, which falling through to seed_tail_trim gives for
+    free.
+
+    ``res`` is expected to have been computed with the STALE trim still in state (the caller
+    calls this before clearing anything) -- that's fine, because seed_tail_trim only reads
+    ``res.resampled_full``/``res.t_shutin_s``/``res.resampled_full.guard_dt``, none of which are
+    masked by ``tail_trim_dt`` (only ``res.resampled``/``res.diagnostics`` are; see the
+    resample block in ``model.compute_all``)."""
+    if state.tail_trim_reason != "low_pressure":
+        return
+    state.tail_trim_dt = None
+    state.tail_trim_reason = ""
+    seed_tail_trim(state, td, res)
+
+
 def seed_injection(state: PickState, td: TestData) -> None:
     """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
     falling back to the pressure shape when no usable rate channel exists -- the vlines must
@@ -1438,6 +1520,8 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
         state.pp_window = (lo, float(dg.t[-1]))
 
 
+# seed_tail_trim is deliberately absent here -- see its docstring for why ui._seed_step calls
+# it directly instead.
 SEEDERS = {
     "overview": seed_overview,
     "injection": seed_injection,

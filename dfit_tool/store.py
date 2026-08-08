@@ -50,6 +50,7 @@ LOG_COLUMNS = [
     "net_pressure_isip_source",
     "near_wellbore_complexity",
     "tail_trim_s",
+    "tail_trim_reason",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -405,4 +406,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "net_pressure_isip_source": res.net_pressure_isip_source,
         "near_wellbore_complexity": res.near_wellbore_complexity,
         "tail_trim_s": state.tail_trim_dt,
+        "tail_trim_reason": state.tail_trim_reason,
     }

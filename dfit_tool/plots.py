@@ -89,7 +89,7 @@ def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: floa
 
 # --------------------------------------------------------------------------------------------------
 def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
-                    show_trim: bool = False) -> ViewDefaults:
+                    interactive: bool = True) -> ViewDefaults:
     """Step 1: the entire dataset, unmasked -- BHP (or surface P) and rate vs time, for the whole
     record from file start to its last raw sample.
 
@@ -101,16 +101,29 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     Injection's draggable "start"/"shutin") -- they are owned and dragged on the Injection step;
     this step draws no controllers of its own.
 
-    ``show_trim`` (default False) draws the draggable tail-trim vline (gid "tail_trim") -- the
-    tool moved here off the G-function step. It is an ephemeral session toggle (``ui.py``'s
-    ``self.show_trim``), never part of ``PickState``, so ``render_step_figure``/
-    ``save_all_step_pngs`` never pass it and an exported PNG never carries the interactive line.
-    The raw pressure trace itself, by contrast, is split and grayed out beyond the trim time (gid
-    "tail_excluded") whenever a trim is actually set, regardless of ``show_trim`` -- it's the
-    trim's visible effect, not the interactive control, so an exported PNG DOES show the gray
-    tail but never the draggable vline. It is drawn as its own segment of the real raw trace (not
-    an overlay of the coarser post-shut-in resample), so it is visible in front of, not under, the
-    kept portion.
+    The tail-trim line is always on: ``picks.seed_tail_trim`` parks it at the earliest of the
+    rise-guard boundary or a sub-100-psi surface-pressure crash on the step's first visit (or at
+    the end of the data when neither exists), and it stays draggable from there -- there is no
+    more "Show trim tool" toggle. ``interactive`` (default True) means "this is the live canvas,
+    not an export": it gates only the draggable vline itself (gid "tail_trim"), so
+    ``render_step_figure`` can pass ``interactive=False`` and an exported PNG never carries a
+    line the analyst can't actually drag.
+
+    The effective display cut, ``cut_dt``, is the EARLIER of ``state.tail_trim_dt`` and
+    ``res.resampled_full.guard_dt`` when both are set, else whichever one is. Both live in
+    shut-in-relative dt, so dragging the Injection shut-in line later (F1/``ui.py``'s
+    ``resync_auto_tail_trim``) shrinks ``guard_dt`` while an existing ``tail_trim_dt`` is
+    unchanged until resynced -- and because a guard-fired record parks its trim right at
+    ``guard_dt``, a trim within a resample step of the guard is the ordinary case, not an edge
+    case. Taking the plain max of the two (or just ``tail_trim_dt``) can leave a stale trim
+    that sits PAST the guard, which would render the guard-excluded region as kept -- the
+    opposite of this feature's purpose -- so min() is required, not optional. The raw pressure
+    trace is split and grayed out beyond ``cut_dt`` (gid
+    "tail_excluded") whenever it's not None -- this is what makes a guard-excluded tail visible
+    on Overview too, not just in the G-function plot's own ``guard_excluded`` preview. It is
+    drawn as its own segment of the real raw trace (not an overlay of the coarser post-shut-in
+    resample), so it is visible in front of, not under, the kept portion. The draggable vline
+    itself sits at ``cut_dt`` when set, else the last raw sample time (nothing to cut yet).
     """
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
@@ -120,9 +133,19 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
 
     has_trim_context = (res.resampled_full is not None and res.t_shutin_s is not None
                         and len(res.resampled_full.dt))
+    cut_dt = None
+    if has_trim_context:
+        trim_dt = state.tail_trim_dt
+        guard_dt = res.resampled_full.guard_dt
+        if trim_dt is not None and guard_dt is not None:
+            cut_dt = min(trim_dt, guard_dt)  # see docstring: a stale trim past the guard must
+                                              # not un-gray guard-excluded data
+        else:
+            cut_dt = trim_dt if trim_dt is not None else guard_dt
+
     kept = np.ones_like(t_h, dtype=bool)
-    if has_trim_context and state.tail_trim_dt is not None:
-        t_trim_s = res.t_shutin_s + state.tail_trim_dt
+    if cut_dt is not None:
+        t_trim_s = res.t_shutin_s + cut_dt
         kept = td.t_s <= t_trim_s
 
     xt, xp = _decimate(t_h[kept], p[kept])
@@ -151,16 +174,29 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         ax.axvline(t_h[state.shutin_idx], color="tab:red", ls=":", lw=1.0, alpha=0.6,
                    label="shut-in", gid="shutin_ref")
 
-    if show_trim and has_trim_context:
-        dt_full = res.resampled_full.dt
-        trim_dt = state.tail_trim_dt if state.tail_trim_dt is not None else float(dt_full[-1])
-        ax.axvline((trim_dt + res.t_shutin_s) / 3600.0, color="tab:blue", ls="--", lw=1.4,
-                   gid="tail_trim")
+    if interactive and has_trim_context:
+        # Nothing to cut yet -> park at the last RAW sample, not resampled_full.dt[-1]. The
+        # resampler only keeps a point per 30-psi drop, so on a slow falloff its last kept point
+        # can sit well short of the record's end; parking there would show the line mid-plot with
+        # ungrayed data to its right, implying a cut that isn't in effect. Releasing a drag at
+        # that raw edge still clears (ui's commit clears at idx >= len(dt_full) - 1).
+        trim_x_h = (cut_dt + res.t_shutin_s) / 3600.0 if cut_dt is not None else t_h[-1]
+        ax.axvline(trim_x_h, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
 
     ax.set_title("Overview — entire dataset", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    # The full autoscaled extent IS the intended default view for this step.
-    return ViewDefaults()
+
+    # Pinned y-min 0 (CLAUDE.md TODO): the pressure trace never reads below 0 psi, and a
+    # gauge/BHP-conversion floor should always be visible relative to true zero, even though
+    # that squashes a converted-BHP trace (~4800-6200 psi) into the top of the axes -- the
+    # y-slider and Reset view are the escape. p_hi/pad use the whole record (kept + grayed),
+    # same data-span idiom render_gfunction uses for its own pressure ylim.
+    finite_p = np.isfinite(p)
+    if not finite_p.any():
+        return ViewDefaults()
+    p_lo, p_hi = float(np.nanmin(p[finite_p])), float(np.nanmax(p[finite_p]))
+    pad = 0.05 * max(p_hi - p_lo, 1.0)
+    return ViewDefaults(ylim=(0.0, p_hi + pad))
 
 
 def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -540,12 +576,28 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     """
     fig = Figure(figsize=figsize)
     ax = fig.add_subplot(111)
-    defaults = RENDERERS[step_key](ax, td, state, res)
+    # Overview's tail-trim line is a live-canvas control, not part of the interpretation --
+    # render_step_figure (the only caller of save_all_step_pngs) always opts out explicitly,
+    # mirroring the step_key == "gfunction" special cases just below, so an exported PNG never
+    # carries a line the analyst can't actually drag.
+    kwargs = {"interactive": False} if step_key == "overview" else {}
+    defaults = RENDERERS[step_key](ax, td, state, res, **kwargs)
 
     full_x = ax.get_xlim()
     full_y = ax.get_ylim()
-    if step_key == "gfunction" and defaults.ylim is not None:
-        full_y = defaults.ylim
+    if defaults.ylim is not None:
+        # There is no slider on this offscreen Figure -- full_y here only feeds this function's
+        # own stored_view-is-None fallback a few lines down, nothing in ui.py. This union/replace
+        # split is kept in textual lockstep with the near-identical block in ui.refresh anyway
+        # (deliberately, so the two view-resolution paths can't silently drift apart), even
+        # though the REPLACE-vs-slider reasoning that motivates it there (shielding the y-slider
+        # from the effective-ISIP tangent's dashed extension) doesn't apply here, and the
+        # gfunction branch specifically is moot for "overview" (the case this split was added
+        # for). Every non-gfunction step still UNIONS so a concrete ViewDefaults.ylim that
+        # reaches outside the autoscaled extent (e.g. Overview's pinned y-min 0 against a
+        # converted-BHP trace) survives into the fallback instead of being silently dropped.
+        full_y = (defaults.ylim if step_key == "gfunction"
+                 else (min(full_y[0], defaults.ylim[0]), max(full_y[1], defaults.ylim[1])))
     # Exclude the d2P/dG2 axis (D2_AXIS_GID) from the twin lookup -- it gets no slider/persisted
     # view of its own (decision D3) and must never be mistaken for the dP/dG twin here.
     twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)

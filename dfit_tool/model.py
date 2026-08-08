@@ -54,6 +54,13 @@ class PickState:
     # full record). Old saves lack this key and take the default via _decode's known-field
     # filter -- no migration needed.
     tail_trim_dt: Optional[float] = None
+    # Attribution for tail_trim_dt: "low_pressure" when picks.seed_tail_trim auto-applied it
+    # (a sub-100-psi surface-pressure crash), "" when unset, set manually, or cleared --
+    # commit_tail_trim always resets this to "" on a manual drag/clear. Never "rise_guard": that
+    # reason sets no pick at all, since the resampler already excluded that data (see the
+    # resample block in compute_all below). Old saves lack this key and take the default via
+    # _decode's known-field filter -- no migration needed.
+    tail_trim_reason: str = ""
 
     # --- step 2: injection window ---
     start_idx: Optional[int] = None
@@ -410,6 +417,24 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             mask = rs_full.dt <= state.tail_trim_dt
             rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,
                                     guarded_at=rs_full.guarded_at, guard_dt=rs_full.guard_dt)
+            # A trim in effect is never silent -- it moves Shmin/pore pressure with no other
+            # visible signal when it was auto-applied (picks.seed_tail_trim), and even a manual
+            # drag deserves the raw-sample count. insert(0), same as the guard warning above, so
+            # it can't be buried under an earlier-queued warning.
+            if state.tail_trim_reason == "low_pressure":
+                # The cut itself sits at a still-above-floor sample by construction (picks.
+                # seed_tail_trim snaps to the last resampled sample STRICTLY BEFORE the crash,
+                # side="left") -- so this must point at the crash beginning just past the cut,
+                # not claim the cut is where pressure first read low.
+                res.warnings.insert(0,
+                    f"Tail auto-trimmed {state.tail_trim_dt/60:.0f} min after shut-in: surface "
+                    "pressure crashes below 100 psi shortly after this point. Drag the Overview "
+                    "trim line to the right edge to undo.")
+            else:
+                n_excluded = int(np.sum(dt_all[post] > state.tail_trim_dt))
+                res.warnings.insert(0,
+                    f"Tail trimmed {state.tail_trim_dt/60:.0f} min after shut-in "
+                    f"({n_excluded} raw samples excluded)")
         else:
             rs = rs_full
         res.resampled = rs

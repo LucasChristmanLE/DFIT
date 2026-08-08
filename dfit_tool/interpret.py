@@ -386,6 +386,43 @@ def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) 
     return int(np.nanargmin(np.where(mask, y, np.inf)))
 
 
+def suggest_tail_trim_dt(
+    dt_post: np.ndarray,
+    p_surface_post: Optional[np.ndarray],
+    guard_dt: Optional[float],
+    floor_psi: float = MIN_SURFACE_PRESSURE_PSI,
+) -> tuple[Optional[float], str]:
+    """Default boundary for the Overview step's always-on tail-trim line (shut-in-relative
+    seconds), and the reason it landed there. ``dt_post``/``p_surface_post`` are the raw
+    post-shut-in record (dt >= 0), aligned sample for sample.
+
+    Two independent candidates, earliest wins:
+      - ``(guard_dt, "rise_guard")`` -- the tail guard already stopped
+        ``resample.resample_pressure_increment`` there; that data never entered the resampled
+        record, so this candidate is informational only (see picks.seed_tail_trim).
+      - ``(crash_dt, "low_pressure")`` -- the first ``dt_post`` whose finite surface pressure
+        drops below ``floor_psi``. Skipped entirely when ``p_surface_post`` is None: a caller
+        passes None when the mapped channel is already BHP, where a sub-100-psi test is
+        meaningless (the same gate model.compute_all's own low-pressure warning uses).
+
+    A tie goes to "rise_guard" (checked first below). ``(None, "")`` when neither candidate
+    exists -- the line parks at the end of the data, nothing trimmed.
+    """
+    candidates: list[tuple[float, str]] = []
+    if guard_dt is not None:
+        candidates.append((float(guard_dt), "rise_guard"))
+    if p_surface_post is not None:
+        dt_post = np.asarray(dt_post, dtype=float)
+        p_surface_post = np.asarray(p_surface_post, dtype=float)
+        below = np.isfinite(p_surface_post) & (p_surface_post < floor_psi)
+        if below.any():
+            candidates.append((float(dt_post[below][0]), "low_pressure"))
+    if not candidates:
+        return None, ""
+    candidates.sort(key=lambda c: c[0])  # stable: a tie keeps rise_guard's earlier list position
+    return candidates[0]
+
+
 def min_index_in_window(G: np.ndarray, dPdG: np.ndarray, lo: float, hi: float) -> Optional[int]:
     """Index of the sample with the smallest dP/dG within ``[lo, hi]`` of G (inclusive), among
     finite samples only. ``None`` when the window holds no finite sample -- the Shift+drag

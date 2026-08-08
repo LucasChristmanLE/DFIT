@@ -90,7 +90,8 @@ def test_porepressure_does_not_force_axes_xlim_to_zero():
 def test_render_overview_plots_full_dataset_unmasked():
     # Same long-falloff-tail file that binds render_injection's "last nonzero rate + 15 min"
     # clamp -- render_overview must plot the whole thing, unclamped, with the full autoscaled
-    # extent as its default view.
+    # extent as its default xlim/y2lim, but a pressure ylim pinned to 0 at the bottom (CLAUDE.md
+    # TODO: "Overview tab make pressure ymin always 0").
     td = make_testdata(n=3000, dt=1.0)
     state = injection_state(td)
     res = compute_all(state, td)
@@ -99,7 +100,9 @@ def test_render_overview_plots_full_dataset_unmasked():
     t_h = td.t_s / 3600.0
     press_line = ax.get_lines()[0]
     assert press_line.get_xdata().max() == pytest.approx(float(t_h[-1]))
-    assert defaults == ViewDefaults()
+    assert defaults.xlim is None
+    assert defaults.y2lim is None
+    assert defaults.ylim[0] == 0.0
 
     gids = {ln.get_gid() for ln in ax.get_lines()}
     assert "start_ref" in gids
@@ -252,6 +255,20 @@ def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500()
     # full_y2: the dP/dG slider's outer range must never exceed 0-500.
     assert stub._y2_slider.valmin >= 0.0
     assert stub._y2_slider.valmax <= 500.0
+
+
+def test_refresh_unions_overview_full_y_down_to_zero():
+    """render_overview's ViewDefaults.ylim pins the bottom at 0 psi (CLAUDE.md TODO), which sits
+    below the Axes' own autoscaled extent for a normal BHP trace -- refresh() must UNION that
+    into full_y (not replace it, that's gfunction-only) so the y-slider's outer range still
+    reaches 0 instead of silently clamping the default view back up on the first slider touch."""
+    td = make_testdata()
+    state = injection_state(td)
+    stub = _refresh_stub(td, state, "overview")
+
+    stub.refresh()
+
+    assert stub._y_slider.valmin == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------------------------------

@@ -212,9 +212,6 @@ class DfitApp:
         self.state = PickState()
         self.res = None
         self.step = "overview"
-        # Ephemeral session UI state for the Overview step's tail-trim tool toggle -- NOT part of
-        # PickState, never serialized. Reset to False on every fresh file load (_load_common).
-        self.show_trim = False
         self._controllers: list = []
         self._views: dict[str, Optional[ViewState]] = {}
         self._x_slider: Optional[sliders.PanRangeSlider] = None
@@ -395,14 +392,6 @@ class DfitApp:
 
         ttk.Separator(panel).pack(fill="x", pady=6)
 
-        # Overview-step-only widget: the tail-trim tool's ephemeral show/hide toggle (moved off
-        # the G-function step). Built/packed the same way as
-        # frm_cscen/frm_pcscen below -- not packed here, _update_panel_visibility owns that.
-        self.frm_overview = ttk.Frame(panel)
-        self.var_show_trim = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.frm_overview, text="Show trim tool", variable=self.var_show_trim,
-                        command=self._on_show_trim).pack(anchor="w")
-
         # Closure-scenario and postclosure/pp-axis widgets are step-aware: only relevant once the
         # user has reached the step that produces the pick they annotate. Each cluster lives in
         # its own frame so _update_panel_visibility can pack/pack_forget it as a unit without
@@ -539,8 +528,6 @@ class DfitApp:
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
-        self.show_trim = False
-        self.var_show_trim.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -927,12 +914,6 @@ class DfitApp:
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
 
-    def _on_show_trim(self):
-        """The Overview step's "Show trim tool" checkbox: a discrete click, so (unlike a slider
-        callback) refresh() is safe here."""
-        self.show_trim = self.var_show_trim.get()
-        self.refresh()
-
     def _on_reset_gfunction_picks(self):
         """The G-function step's adaptive "Reset picks" button: re-run the active scenario's
         auto-pick, discarding any manual drags (decision 3)."""
@@ -1081,13 +1062,21 @@ class DfitApp:
     def _seed_step(self, key: str) -> None:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
         ``picks.SEEDERS``. "overview" and "injection" need ``self.td`` too (seed_overview just
-        delegates to seed_injection); "isip" needs both; the rest take only (state, res)."""
+        delegates to seed_injection); "isip" needs both; the rest take only (state, res).
+
+        "overview" additionally seeds the tail-trim line (picks.seed_tail_trim, not in SEEDERS)
+        once the window exists: the ``res`` computed below predates seed_overview on a fresh file
+        (no start_idx/shutin_idx yet, so te_s/resampled_full/guard_dt are all None), so it must be
+        recomputed after seed_overview runs before the trim seeder has anything to see."""
         if self.td is None:
             return
         res = compute_all(self.state, self.td)
         seeder = picks.SEEDERS[key]
         if key in ("overview", "injection"):
             seeder(self.state, self.td)
+            if key == "overview":
+                res = compute_all(self.state, self.td)
+                picks.seed_tail_trim(self.state, self.td, res)
         elif key == "isip":
             seeder(self.state, self.td, res)
         else:
@@ -1154,20 +1143,22 @@ class DfitApp:
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
-        # Overview is the one step whose renderer takes an extra kwarg -- the ephemeral
-        # show-trim toggle (self.show_trim, never part of PickState). Same step-special-case
-        # precedent as the gfunction clamps just below.
-        kwargs = {"show_trim": self.show_trim} if self.step == "overview" else {}
-        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res, **kwargs)
+        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
 
         full_x = self.ax.get_xlim()
         full_y = self.ax.get_ylim()
-        if self.step == "gfunction" and defaults.ylim is not None:
-            # The Axes' own autoscale over full_y also picks up the effective-ISIP tangent's
-            # dashed extension (drawn on this same Axes), which can swing the pressure axis to
-            # extreme psi values far outside the real BHP data. The renderer's own data-driven
-            # ylim is the true outer bound for this step's pressure axis.
-            full_y = defaults.ylim
+        if defaults.ylim is not None:
+            # gfunction must still REPLACE full_y (shield the y-slider from the effective-ISIP
+            # tangent's dashed extension, drawn on this same Axes, which can swing the Axes' own
+            # autoscale to extreme psi values far outside the real BHP data -- the renderer's own
+            # data-driven ylim is the true outer bound there). Every other step UNIONS instead,
+            # so a concrete ViewDefaults.ylim reaching outside the autoscaled extent (e.g.
+            # Overview's pinned y-min 0 against a converted-BHP trace) still ends up inside the
+            # slider's full range -- otherwise _make_range_slider's valinit pinning would clamp
+            # the stored/default view back up into the autoscaled extent on the first slider
+            # touch, losing the 0 baseline.
+            full_y = (defaults.ylim if self.step == "gfunction"
+                     else (min(full_y[0], defaults.ylim[0]), max(full_y[1], defaults.ylim[1])))
         twin = self._twin_axes()
         full_y2 = twin.get_ylim() if twin is not None else None
         if self.step == "gfunction" and full_y2 is not None:
@@ -1224,14 +1215,11 @@ class DfitApp:
         self._update_skip_test_btn()
 
     def _update_panel_visibility(self):
-        """Show the closure-scenario widgets only on "gfunction", the postclosure/pp-axis
-        widgets only on "loglog"/"porepressure", and the trim-tool toggle only on "overview" --
-        all packed relative to sep_before_notes so re-showing never reorders the panel."""
-        self.frm_overview.pack_forget()
+        """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
+        widgets only on "loglog"/"porepressure" -- packed relative to sep_before_notes so
+        re-showing never reorders the panel."""
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
-        if self.step == "overview":
-            self.frm_overview.pack(fill="x", before=self.sep_before_notes)
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
             self.btn_gfunction_reset.configure(
@@ -1348,8 +1336,8 @@ class DfitApp:
         step = self.step
         if step == "overview":
             res = self.res
-            if (self.show_trim and res.resampled_full is not None
-                    and res.t_shutin_s is not None and len(res.resampled_full.dt)):
+            if (res.resampled_full is not None and res.t_shutin_s is not None
+                    and len(res.resampled_full.dt)):
                 dt_full = res.resampled_full.dt
                 t_shutin_s = res.t_shutin_s
 
@@ -1368,20 +1356,24 @@ class DfitApp:
                 self._controllers.append(ctrl)
                 self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
                 self.hint_lbl.config(text="Drag the blue dashed line to trim a bad tail; release "
-                                          "it at the last point to clear the trim.")
-            elif self.show_trim:
-                self.hint_lbl.config(
-                    text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists.")
+                                          "it at the right edge to clear the trim.")
             else:
                 self.hint_lbl.config(
-                    text="Entire dataset. Use Next to zoom into the injection window. Toggle "
-                         '"Show trim tool" to trim a bad tail.')
+                    text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists.")
         elif step == "injection":
             def _commit(idx_attr):
                 def on_release(x_hours):
                     idx = picks._nearest(self.td.t_s / 3600.0, x_hours)
                     setattr(self.state, idx_attr, idx)
                     self.state.qmax_bpm = None  # re-derive from the new window
+                    if idx_attr == "shutin_idx":
+                        # tail_trim_dt/guard_dt both live in dt-from-shut-in space, so moving
+                        # shut-in can move the auto trim's cut in absolute time (F1) -- resync it
+                        # before refreshing. start_idx deliberately does NOT trigger this:
+                        # resample_pressure_increment takes only (dt, p) built from shut-in
+                        # onward, so a start-only change can't move tail_trim_dt or guard_dt.
+                        picks.resync_auto_tail_trim(self.state, self.td, compute_all(self.state,
+                                                                                     self.td))
                     self.refresh()
                 return on_release
             drag_ctrl = picks.DragLineController(

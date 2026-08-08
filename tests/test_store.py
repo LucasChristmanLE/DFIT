@@ -768,9 +768,24 @@ def test_log_row_has_tail_trim_s(tmp_path):
 
     row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
 
-    # Appended last so an existing dfit_log.csv stays loadable.
-    assert store.LOG_COLUMNS[-1] == "tail_trim_s"
+    assert "tail_trim_s" in store.LOG_COLUMNS
     assert row["tail_trim_s"] == pytest.approx(1234.5)
+
+
+def test_log_row_has_tail_trim_reason(tmp_path):
+    td = make_testdata()
+    state = injection_state(td)
+    state.tail_trim_dt = 1234.5
+    state.tail_trim_reason = "low_pressure"
+    res = compute_all(state, td)
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = os.path.join(str(tmp_path), "well1.csv")
+
+    row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
+
+    # Appended last so an existing dfit_log.csv stays loadable.
+    assert store.LOG_COLUMNS[-1] == "tail_trim_reason"
+    assert row["tail_trim_reason"] == "low_pressure"
 
 
 def test_load_log_backfills_missing_near_wellbore_complexity(tmp_path):
