@@ -9,12 +9,31 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from dfit_tool import picks
+from dfit_tool import ui as ui_module
 from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.resample import Diagnostics, Resampled
 from dfit_tool import plots
 from dfit_tool.plots import ViewDefaults
 from dfit_tool.ui import DfitApp, ViewState, _resolve_view
 from tests.helpers import PRESSURE_COL, make_testdata, injection_state
+
+
+def _make_full_y2_mismatch_res():
+    """A dP/dG curve that reproduces the full_y2-too-narrow bug: G>=1 max ~100 (so the
+    renderer's own default y2lim is (0, 110.0)), a spike near G=0 (below Y2_SCALE_G_MIN, so it
+    is excluded from that default) that isn't the record's global max, and a nonzero data
+    minimum -- both of which make the twin Axes' own raw autoscale (~(0.84, 104.7), via
+    mpl's default 5% margin vs the renderer's 10%) fall short of the default at BOTH ends."""
+    G = np.linspace(0.1, 20.0, 60)
+    dPdG = np.linspace(0.5, 100.0, 60)
+    dPdG[:3] = 50.0  # spike near G=0, below the record's own max of 100
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    return res
 
 
 def _render(renderer, td, state, res):
@@ -96,7 +115,7 @@ def test_gfunction_y2lim_default_no_longer_capped_at_50():
 
 def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
     """A record whose real dP/dG runs even higher (~900) still clamps at DPDG_VIEW_MAX so the
-    default view can never exceed the slider's own travel range."""
+    default view can never exceed the 0-500 hard bound."""
     G = np.linspace(0.1, 20.0, 60)
     dPdG = np.linspace(10.0, 900.0, 60)
     dPdG[:3] = 20000.0  # water-hammer spike, still below G=1
@@ -402,3 +421,52 @@ def test_refresh_d2_ylim_not_persisted_across_refreshes():
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, td, state, stub.res)
     assert d2_axis.get_ylim() == pytest.approx(defaults.y3lim)
+
+
+# --------------------------------------------------------------------------------------------------
+# The y2 slider's full/travel range must CONTAIN the renderer's own default y2lim, not just the
+# twin Axes' raw autoscale -- the raw autoscale (mpl's own ~5% margin) can be narrower than the
+# renderer's masked-and-10%-padded default at either end, and _make_range_slider's valinit
+# clamping would otherwise silently snap the view off the default on the first slider touch.
+# --------------------------------------------------------------------------------------------------
+def test_refresh_unions_gfunction_full_y2_with_default_view(monkeypatch):
+    td = make_testdata()
+    state = injection_state(td)
+    fake_res = _make_full_y2_mismatch_res()
+    monkeypatch.setattr(ui_module, "compute_all", lambda st, t: fake_res)
+    stub = _refresh_stub(td, state, "gfunction")
+
+    stub.refresh()
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, td, state, fake_res)
+    assert defaults.y2lim is not None
+
+    # full_y2 (the slider's outer/travel range) must contain the default at both ends.
+    assert stub._y2_slider.valmin <= defaults.y2lim[0]
+    assert stub._y2_slider.valmax >= defaults.y2lim[1]
+
+    # And the initial view actually applied is the unclamped default, not a valinit-clamped
+    # version of it -- this is what silently overwrote the stored ViewState.y2lim before the fix.
+    assert stub._y2_slider.val == pytest.approx(defaults.y2lim)
+
+
+def test_render_step_figure_unions_gfunction_full_y2_with_default_view():
+    """Same containment property as test_refresh_unions_gfunction_full_y2_with_default_view,
+    covering the headless export path's own full_y2-based fallback (plots.render_step_figure
+    with stored_view=None) so both lockstep blocks are exercised."""
+    td = make_testdata()
+    state = injection_state(td)
+    res = _make_full_y2_mismatch_res()
+
+    fig = plots.render_step_figure("gfunction", td, state, res, stored_view=None)
+
+    twin = next(a for a in fig.axes if a is not fig.axes[0])
+    fig2 = Figure()
+    ax2 = fig2.add_subplot(111)
+    defaults = plots.render_gfunction(ax2, td, state, res)
+    assert defaults.y2lim is not None
+
+    applied = twin.get_ylim()
+    assert applied == pytest.approx(defaults.y2lim)

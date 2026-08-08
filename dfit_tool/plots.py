@@ -612,6 +612,11 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)
     full_y2 = twin.get_ylim() if twin is not None else None
     if step_key == "gfunction" and full_y2 is not None:
+        # UNION the renderer's own y2 default in first (kept in textual lockstep with the
+        # near-identical block in ui.refresh), then hard-clamp to 0-500 -- see that block for
+        # the full reasoning.
+        if defaults.y2lim is not None:
+            full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
         full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], DPDG_VIEW_MAX))
 
     if stored_view is not None:

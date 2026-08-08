@@ -1150,7 +1150,14 @@ class DfitApp:
         twin = self._twin_axes()
         full_y2 = twin.get_ylim() if twin is not None else None
         if self.step == "gfunction" and full_y2 is not None:
-            # Hard-clamp the derivative (dP/dG) slider's full range to 0-500 regardless of how
+            # UNION the renderer's own y2 default in, same reasoning as full_y above: the default is
+            # the G>=1-masked max of dP/dG, while this range is the twin's raw autoscale (which the
+            # near-G=0 spike inflates at the top and a nonzero data minimum lifts at the bottom), so
+            # the default can reach outside it in either direction -- and _make_range_slider's valinit
+            # pinning would then snap the view off the default on the first slider touch.
+            if defaults.y2lim is not None:
+                full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
+            # Then hard-clamp the derivative (dP/dG) slider's full range to 0-500 regardless of how
             # extreme the raw dPdG spike is, so the slider itself can never travel past it.
             full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], plots.DPDG_VIEW_MAX))
 

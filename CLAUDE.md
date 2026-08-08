@@ -386,11 +386,17 @@ the max of dP/dG over `G >= plots.Y2_SCALE_G_MIN` (1.0, the same g_min conventio
 `plots.DPDG_VIEW_MAX`. Masking by G is what keeps the early water-hammer spike out of it -- a
 percentile over all samples was dominated by that spike, since the resampled grid is densest
 across it, and the old hard 50-psi/G cap squashed any record whose real derivative ran higher.
-A record entirely below G=1 falls back to all finite samples. The **slider's full range** is
-separately hard-clamped to `(0, plots.DPDG_VIEW_MAX)` in both `ui.refresh` and
-`plots.render_step_figure`, so the slider can never travel past 500 no matter how extreme the
-raw spike is; the default view is capped at the same constant so it always fits inside that
-travel. `render_tangent`'s own G·dP/dG default is still the 95th-percentile rule and has no cap.
+A record entirely below G=1 falls back to all finite samples. The **slider's full range** is the
+twin Axes' own autoscale unioned with that default, then hard-clamped into
+`(0, plots.DPDG_VIEW_MAX)` -- both steps in `ui.refresh` and again in
+`plots.render_step_figure`, kept in textual lockstep. The clamp is what stops the slider
+traveling past 500 no matter how extreme the raw spike is. The union is what keeps the default
+view inside the travel: the raw autoscale is inflated at the top by the near-G=0 spike and
+lifted off zero at the bottom by a nonzero data minimum, so the default can fall outside it in
+either direction, and `_make_range_slider`'s valinit pinning would then snap the view off the
+default on the first slider touch -- the same failure the `full_y` union prevents on every other
+step. Note the full range is an *intersection* with `(0, 500)`, not that interval itself.
+`render_tangent`'s own G·dP/dG default is still the 95th-percentile rule and has no cap.
 
 Closure scenarios drive the contact pick and effective ISIP:
 
