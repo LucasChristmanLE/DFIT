@@ -33,34 +33,37 @@ def test_all_renderers_return_view_defaults():
         assert isinstance(defaults, ViewDefaults), f"{name} did not return a ViewDefaults"
 
 
-def test_gfunction_leaves_twin_axes_unclipped_but_returns_percentile_y2lim():
+def test_gfunction_leaves_twin_axes_unclipped_but_returns_autoscaled_y2lim():
     td = make_testdata()
     state = injection_state(td)
     res = compute_all(state, td)
     fig, ax, defaults = _render(plots.render_gfunction, td, state, res)
     dg = res.diagnostics
-    finite = np.isfinite(dg.dPdG)
-    hi = np.percentile(dg.dPdG[finite], 95)
-    expected_clip = (0, min(max(hi * 1.5, 1.0), 50.0))
+    finite_all = np.isfinite(dg.dPdG)
+    masked = finite_all & (dg.G >= plots.Y2_SCALE_G_MIN)
+    if not masked.any():
+        masked = finite_all
+    hi = float(np.nanmax(dg.dPdG[masked]))
+    expected_clip = (0, min(max(hi * 1.10, 1.0), plots.DPDG_VIEW_MAX))
 
     assert defaults.y2lim == pytest.approx(expected_clip)
 
     twin = next(a for a in fig.axes if a is not ax)
     actual = twin.get_ylim()
     # The renderer no longer clips the twin axes itself -- the full (unclipped) data stays
-    # visible, including whatever sits above the percentile clip that only the returned
+    # visible, including whatever sits above the autoscaled default that only the returned
     # ViewDefaults carries.
     assert actual != pytest.approx(expected_clip)
-    assert actual[1] >= float(np.nanmax(dg.dPdG[finite]))
+    assert actual[1] >= float(np.nanmax(dg.dPdG[finite_all]))
 
 
-def test_gfunction_y2lim_default_capped_at_50_for_spiky_dpdg():
-    """The 95th-pct*1.5 default would otherwise scale to whatever the early water-hammer spike
-    demands; a hard 50 cap keeps the default view tightly zoomed to the meaningful early-time
-    derivative regardless."""
+def test_gfunction_y2lim_default_excludes_early_g_spike():
+    """The default view autoscales from dP/dG at G >= Y2_SCALE_G_MIN only, masking the early
+    water-hammer spike (which sits below G=1) out of the scale entirely rather than clipping
+    the whole default view to a fixed 50 cap."""
     G = np.linspace(0.1, 20.0, 60)
     dPdG = np.full(60, 5.0)
-    dPdG[:3] = 20000.0  # water-hammer spike
+    dPdG[:3] = 20000.0  # water-hammer spike, at G ~ 0.1/0.44/0.78, all below G=1
     p = np.linspace(5000.0, 4000.0, 60)
     res = DerivedResults()
     res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
@@ -70,7 +73,61 @@ def test_gfunction_y2lim_default_capped_at_50_for_spiky_dpdg():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, None, PickState(), res)
-    assert defaults.y2lim[1] == pytest.approx(50.0)
+    assert defaults.y2lim[1] == pytest.approx(5.5)
+
+
+def test_gfunction_y2lim_default_no_longer_capped_at_50():
+    """A record whose post-G=1 dP/dG genuinely runs to ~300 should autoscale there instead of
+    being squashed by the old hard 50 cap."""
+    G = np.linspace(0.1, 20.0, 60)
+    dPdG = np.linspace(10.0, 300.0, 60)
+    dPdG[:3] = 20000.0  # water-hammer spike, still below G=1
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, PickState(), res)
+    assert defaults.y2lim[1] == pytest.approx(330.0)
+
+
+def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
+    """A record whose real dP/dG runs even higher (~900) still clamps at DPDG_VIEW_MAX so the
+    default view can never exceed the slider's own travel range."""
+    G = np.linspace(0.1, 20.0, 60)
+    dPdG = np.linspace(10.0, 900.0, 60)
+    dPdG[:3] = 20000.0  # water-hammer spike, still below G=1
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, PickState(), res)
+    assert defaults.y2lim[1] == pytest.approx(plots.DPDG_VIEW_MAX)
+
+
+def test_gfunction_y2lim_falls_back_to_all_finite_when_whole_record_below_g_min():
+    """A record whose entire G range sits below Y2_SCALE_G_MIN has nothing surviving the mask,
+    so the default falls back to scaling from all finite dP/dG instead of returning None."""
+    G = np.linspace(0.01, 0.5, 60)
+    dPdG = np.linspace(10.0, 40.0, 60)
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, PickState(), res)
+    assert defaults.y2lim is not None
+    assert defaults.y2lim[1] == pytest.approx(44.0)
 
 
 def test_porepressure_does_not_force_axes_xlim_to_zero():

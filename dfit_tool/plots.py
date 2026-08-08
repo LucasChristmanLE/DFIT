@@ -36,6 +36,9 @@ _ISIP_TANGENT_HALF_MIN = 0.75
 
 D2_AXIS_GID = "d2pdg2_axis"  # gid on the gfunction step's optional third (d2P/dG2) twin axes
 
+DPDG_VIEW_MAX = 500.0   # hard ceiling on the gfunction dP/dG axis: default view AND slider range
+Y2_SCALE_G_MIN = 1.0    # G below this is the water-hammer spike -- excluded from the autoscale
+
 
 @dataclass
 class ViewDefaults:
@@ -356,10 +359,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax2.set_ylabel("dP/dG", color="tab:red")
     ax2.tick_params(axis="y", labelcolor="tab:red")
     y2lim = None
-    finite = np.isfinite(dg.dPdG)
-    if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
-        hi = np.percentile(dg.dPdG[finite], 95)
-        y2lim = (0, min(max(hi * 1.5, 1.0), 50.0))
+    # Autoscale the default view to the real derivative, masking the early water-hammer spike
+    # out by G-time (same g_min convention as interpret.suggest_min_dpdg_index and the d2P/dG2
+    # block below). A percentile over all samples was dominated by the spike (the resampled grid
+    # is densest there), and the old hard 50 cap squashed any record whose real dP/dG ran higher.
+    finite = np.isfinite(dg.dPdG) & (dg.G >= Y2_SCALE_G_MIN)
+    if not finite.any():        # whole record sits below G=1 -- scale from everything finite
+        finite = np.isfinite(dg.dPdG)
+    if finite.any():
+        hi = float(np.nanmax(dg.dPdG[finite]))
+        y2lim = (0, min(max(hi * 1.10, 1.0), DPDG_VIEW_MAX))
 
     y3lim = None
     if state.show_d2pdg2:
@@ -603,7 +612,7 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)
     full_y2 = twin.get_ylim() if twin is not None else None
     if step_key == "gfunction" and full_y2 is not None:
-        full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], 500.0))
+        full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], DPDG_VIEW_MAX))
 
     if stored_view is not None:
         xlim, ylim, y2lim = stored_view

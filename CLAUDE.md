@@ -380,6 +380,18 @@ and is exempt from the shrunk check) -- so neither failure mode goes silent.
 
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 
+The dP/dG (twin) axis has two independent limits. The **default view** autoscales to the data:
+the max of dP/dG over `G >= plots.Y2_SCALE_G_MIN` (1.0, the same g_min convention
+`interpret.suggest_min_dpdg_index` and the d2P/dG2 block use), +10%, floored at 1.0, capped at
+`plots.DPDG_VIEW_MAX`. Masking by G is what keeps the early water-hammer spike out of it -- a
+percentile over all samples was dominated by that spike, since the resampled grid is densest
+across it, and the old hard 50-psi/G cap squashed any record whose real derivative ran higher.
+A record entirely below G=1 falls back to all finite samples. The **slider's full range** is
+separately hard-clamped to `(0, plots.DPDG_VIEW_MAX)` in both `ui.refresh` and
+`plots.render_step_figure`, so the slider can never travel past 500 no matter how extreme the
+raw spike is; the default view is capped at the same constant so it always fits inside that
+travel. `render_tangent`'s own G·dP/dG default is still the 95th-percentile rule and has no cap.
+
 Closure scenarios drive the contact pick and effective ISIP:
 
 | Scenario | dP/dG shape | Stress pick |
@@ -488,6 +500,5 @@ select their tab (`ui.py:_open_guide`).
   trim feature itself can detect or guard against.
 
   ## TODO
-  - G- function tab, leave the 0-500 dP/dG clamp but change the default zoom to autoscale based on values--but make sure not to include early G-time spikes.
   - G-func tab: does the reset picks button do anything for us anymore?
   - G-func tab: Remove Shmin rapid from sidebar. Instead, show it as Shmin compliance but add an asteriks after Shmin compliance and ~ before the number. Don't change how it logs in csv.

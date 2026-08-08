@@ -1164,7 +1164,7 @@ class DfitApp:
         if self.step == "gfunction" and full_y2 is not None:
             # Hard-clamp the derivative (dP/dG) slider's full range to 0-500 regardless of how
             # extreme the raw dPdG spike is, so the slider itself can never travel past it.
-            full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], 500.0))
+            full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], plots.DPDG_VIEW_MAX))
 
         view = _resolve_view(self._views.get(self.step), defaults, full_x, full_y, full_y2)
         self._views[self.step] = view
