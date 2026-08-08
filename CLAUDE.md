@@ -69,7 +69,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD.
 - **Interaction (matplotlib only, no Tkinter).** `picks.py` has the event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`,
-  `SpanController`, `HoverCursorController`, and the `_CaptureGate` press arbiter), the
+  `SpanController`, `ModifierSpanController`, `HoverCursorController`, and the
+  `_CaptureGate` press arbiter), the
   pure `commit_*` functions that translate finished geometry into `PickState` changes, and
   the per-step `seed_*` functions. `plots.py` has the `render_*` renderers. `sliders.py`
   has `PanRangeSlider`.
@@ -319,6 +320,27 @@ additionally reports `shmin_rapid` = apparent ISIP − 175 psi (the midpoint of 
 range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown as its own "Shmin rapid" panel row and in
 the G-function title (`interpret.format_shmin_rapid`). Net pressure is deliberately not
 derived from it -- there is no `net_pressure_rapid`.
+
+**Min-dP/dG pick.** The red triangle seeds from `interpret.suggest_min_dpdg_index`: interior
+local minima of dP/dG over the whole record (no fixed G threshold), preferring candidates
+before the fracture-contact hump. `interpret.suggest_hump_index` locates that hump as the
+interior local max of dP/dG with the largest G·dP/dG -- the water-hammer spike near G=0 loses
+on the G factor, the decaying tail has no local max -- falling back to the raw argmax on a
+monotone record; the same helper seeds the blank-scenario contact placeholder. A record with
+no interior local min at all (C-C shape) falls back to the G>=1-masked global min. Two
+corrections exist: dragging the triangle commits on release and re-derives the contact via
+`re_derive_contact_from_min` (C-A: +10% rule; C-B: g_min-masked inflection nearest the drag);
+Shift+drag selects a window instead (`picks.ModifierSpanController`, sharing the step's
+capture gate and registered ahead of the point controllers so a Shift-press wins the gesture).
+The window commit, `picks.handle_min_dpdg_window`, sets both picks itself: C-A puts the
+triangle at the window's dP/dG min and the contact by the +10% rule from there; C-B puts the
+triangle *and* the contact at the inflection found inside the window
+(`suggest_contact_inflection_index(g_range=...)`, no g_min mask, so a below-G=1 inflection
+stays where the analyst put the window). The span is a live gesture only -- never persisted,
+never rendered in exports. When C-A is active and dP/dG never reaches 110% of the picked min
+(no clear contact), `render_gfunction` draws a dashed hline at that threshold on the dP/dG
+axis (`gid="clear_threshold_line"`, skipped when the threshold is non-finite) with a
+"consider C-B" label; it appears in exported PNGs whenever the condition holds.
 
 Postclosure scenarios drive the pore-pressure axis:
 
