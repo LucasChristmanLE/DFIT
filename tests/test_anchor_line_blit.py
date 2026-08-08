@@ -78,15 +78,52 @@ def _pressed_body(canvas_cls=RecordingCanvas):
     return ctrl, ax, canvas, mid_x, mid_y
 
 
+def test_press_paints_managed_artists_immediately_via_restore_and_blit():
+    # Without a first paint at press, the just-animated artists are skipped by the preceding
+    # canvas.draw() and stay invisible until the first motion event.
+    anchor_x0, anchor_y0, slope0 = 5.0, 50.0, -3.0
+    pick = TangentPick(anchor_x=anchor_x0, anchor_y=anchor_y0, slope=slope0)
+    fig, ax, canvas = _build_axes(anchor_x0, anchor_y0, slope0)
+    ctrl = picks.AnchorLineController(canvas, ax, GIDS, get_pick=lambda: pick,
+                                      commit_fn=lambda *a: None)
+    mid_x, mid_y = anchor_x0 + 2.5, anchor_y0 + slope0 * 2.5
+    restore_before, blit_before = canvas.restore_region_calls, canvas.blit_calls
+
+    ctrl._on_press(_event("button_press_event", canvas, ax, mid_x, mid_y))
+
+    assert ctrl._active == "body"
+    assert canvas.restore_region_calls == restore_before + 1
+    assert canvas.blit_calls == blit_before + 1
+
+
+def test_disconnect_mid_drag_unanimates_and_clears_state():
+    ctrl, ax, canvas, mid_x, mid_y = _pressed_body()
+    ctrl._on_motion(_event("motion_notify_event", canvas, ax, mid_x + 3.0, mid_y + 4.0))
+    artists = ctrl._blit_artists
+    assert all(a.get_animated() for a in artists)
+
+    ctrl.disconnect()
+
+    assert all(a.get_animated() is False for a in artists)
+    assert ctrl._active is None
+    assert ctrl._blit_artists is None
+    assert ctrl._bg is None
+    assert ctrl._cids == []
+    assert ctrl.gate.try_claim(object())  # gate was released, so a fresh claim succeeds
+
+
 def test_motion_during_drag_blits_instead_of_draw_idle():
     ctrl, ax, canvas, mid_x, mid_y = _pressed_body()
+    # Press already did one restore/blit (the first paint) -- see
+    # test_press_paints_managed_artists_immediately_via_restore_and_blit -- so check the delta.
     idle_before = canvas.draw_idle_calls
+    restore_before, blit_before = canvas.restore_region_calls, canvas.blit_calls
 
     ctrl._on_motion(_event("motion_notify_event", canvas, ax, mid_x + 3.0, mid_y + 4.0))
 
     assert canvas.draw_idle_calls == idle_before
-    assert canvas.restore_region_calls == 1
-    assert canvas.blit_calls == 1
+    assert canvas.restore_region_calls == restore_before + 1
+    assert canvas.blit_calls == blit_before + 1
 
 
 def test_release_unanimates_artists_and_schedules_a_draw():

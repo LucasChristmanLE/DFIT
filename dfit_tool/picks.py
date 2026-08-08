@@ -20,6 +20,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from matplotlib.backend_tools import Cursors
+from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
 from . import interpret
@@ -153,10 +154,23 @@ class ModifierSpanController:
     contract as every other controller here, so a Shift-press claims a shared gate before sibling
     point controllers get a chance when this is registered ahead of them.
 
-    Motion draws/updates a translucent ``axvspan`` (same look as ``SpanController``) between the
-    press-x and the cursor-x (via ``_data_from_pixel``). Release removes the patch either way (the
-    selection disappears) and calls ``on_span(lo, hi)`` with the sorted bounds, but only when
-    ``hi > lo``.
+    Motion updates a translucent span patch (same look as ``SpanController``'s ``axvspan``)
+    between the press-x and the cursor-x (via ``_data_from_pixel``). The patch is created ONCE at
+    press-capture time (zero-width at the press-x) rather than being removed and rebuilt every
+    motion event -- a ``Rectangle`` added via ``ax.add_patch`` with
+    ``transform=ax.get_xaxis_transform(which="grid")`` (x in data coords, y spanning 0..1 axes
+    coords -- exactly what ``Axes.axvspan`` builds internally, dataLim-protection dance included),
+    so motion only needs to ``patch.set_x(lo)``/``patch.set_width(hi - lo)``. When the canvas
+    supports blitting (``canvas.supports_blit``), the patch is set animated and a single
+    ``canvas.draw()`` + background snapshot happen at press, followed by one immediate
+    restore/redraw/blit so the zero-width patch is painted at press rather than staying invisible
+    (harmless here since it's zero-width anyway, but keeps the pattern uniform with the other
+    three controllers) -- then motion only restores the snapshot, redraws the patch, and blits --
+    never a full ``draw_idle()``. Without blit support, motion falls back to ``draw_idle()`` after
+    updating the patch's geometry (no remove/re-add either way). Release removes the patch either
+    way (the selection disappears) and calls ``on_span(lo, hi)`` with the sorted bounds, but only
+    when ``hi > lo``. ``disconnect()`` mid-drag also releases the gate and resets ``_press_x``, so
+    a stray motion event after disconnection can't raise on the now-gone patch.
     """
 
     def __init__(self, canvas, ax, on_span: Callable[[float, float], None],
@@ -170,6 +184,7 @@ class ModifierSpanController:
 
         self._press_x: Optional[float] = None
         self._patch = None
+        self._bg = None  # blit background snapshot for the current gesture
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
             canvas.mpl_connect("motion_notify_event", self._on_motion),
@@ -188,15 +203,42 @@ class ModifierSpanController:
         x, _ = _data_from_pixel(self.ax, event)
         self._press_x = x
 
+        self._patch = Rectangle((x, 0.0), 0.0, 1.0, alpha=0.2, facecolor="tab:orange")
+        self._patch.set_transform(self.ax.get_xaxis_transform(which="grid"))
+        # Mirror Axes.axvspan: adding an xaxis-transformed Rectangle can otherwise perturb
+        # dataLim's y-interval, so snapshot/restore it around add_patch.
+        iy = self.ax.dataLim.intervaly.copy()
+        my = self.ax.dataLim.minposy
+        self.ax.add_patch(self._patch)
+        self.ax.dataLim.intervaly = iy
+        self.ax.dataLim.minposy = my
+        self.ax._request_autoscale_view("x")
+
+        if getattr(self.canvas, "supports_blit", False):
+            self._patch.set_animated(True)
+            self.canvas.draw()
+            self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            # First paint: the draw() above skipped the now-animated patch, so without this the
+            # patch is invisible from press until the first motion event.
+            self.canvas.restore_region(self._bg)
+            self.ax.draw_artist(self._patch)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self._bg = None
+
     def _on_motion(self, event):
-        if self._press_x is None or event.x is None or event.y is None:
+        if self._press_x is None or self._patch is None or event.x is None or event.y is None:
             return
         x, _ = _data_from_pixel(self.ax, event)
         lo, hi = sorted((self._press_x, x))
-        if self._patch is not None:
-            self._patch.remove()
-        self._patch = self.ax.axvspan(lo, hi, alpha=0.2, facecolor="tab:orange")
-        self.canvas.draw_idle()
+        self._patch.set_x(lo)
+        self._patch.set_width(hi - lo)
+        if self._bg is not None:
+            self.canvas.restore_region(self._bg)
+            self.ax.draw_artist(self._patch)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
     def _on_release(self, event):
         if self._press_x is None:
@@ -206,6 +248,7 @@ class ModifierSpanController:
         if self._patch is not None:
             self._patch.remove()
             self._patch = None
+        self._bg = None
         self.gate.release()
         if event.x is not None and event.y is not None:
             x, _ = _data_from_pixel(self.ax, event)
@@ -220,9 +263,13 @@ class ModifierSpanController:
         for cid in self._cids:
             self.canvas.mpl_disconnect(cid)
         self._cids = []
+        if self._press_x is not None:
+            self.gate.release()
+        self._press_x = None
         if self._patch is not None:
             self._patch.remove()
             self._patch = None
+        self._bg = None
 
     # ---- hover probes (no side effects) -- see HoverCursorController ----
     def hover_kind(self, event) -> Optional[str]:
@@ -244,6 +291,17 @@ class DragLineController:
     ``handlers`` maps an axvline gid to ``on_release(x_data)``. During a drag the line is moved
     live (no recompute); on release the matching handler is called with the final x. ``guard()``
     returning True blocks capture (e.g. while the toolbar zoom/pan mode is active).
+
+    Blits during the drag when the canvas supports it (``canvas.supports_blit``): press sets the
+    captured line animated, does one ``canvas.draw()``, snapshots the background, and immediately
+    restores/redraws/blits once more so the line stays visible at press instead of going blank
+    until the first motion event (the preceding ``draw()`` skips animated artists); motion
+    restores that snapshot, redraws the line, and blits instead of a full ``draw_idle()``; release
+    un-animates the line and issues one final ``draw_idle()``. Falls back to a plain
+    ``draw_idle()`` per motion event when blitting isn't supported. ``disconnect()`` mid-drag
+    un-animates the line, clears the background snapshot, and releases the gate, so an active
+    line never stays animated (and so invisible to any later full draw) past disconnection. Same
+    pattern as ``AnchorLineController``.
 
     Hit-tests and reads the cursor through ``_axes_contains_pixel``/``_data_from_pixel`` (this
     axes' own transforms) rather than ``event.inaxes``/``event.xdata``: an overlaid twin axes
@@ -269,6 +327,7 @@ class DragLineController:
         self.tol_px = tol_px
         self.gate = gate if gate is not None else _CaptureGate()
         self._active = None
+        self._bg = None  # blit background snapshot for the current gesture
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
             canvas.mpl_connect("motion_notify_event", self._on_motion),
@@ -296,18 +355,39 @@ class DragLineController:
             return
         self._active = best
 
+        # Blitting: one full draw now (instead of one per motion event), then snapshot the
+        # background so motion only restores it and redraws the active line.
+        if getattr(self.canvas, "supports_blit", False):
+            self._active.set_animated(True)
+            self.canvas.draw()
+            self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            # First paint: the draw() above skipped the now-animated line, so without this the
+            # line is invisible from press until the first motion event.
+            self.canvas.restore_region(self._bg)
+            self.ax.draw_artist(self._active)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self._bg = None
+
     def _on_motion(self, event):
         if self._active is None or event.x is None or event.y is None:
             return
         x, _ = _data_from_pixel(self.ax, event)
         self._active.set_xdata([x, x])
-        self.canvas.draw_idle()
+        if self._bg is not None:
+            self.canvas.restore_region(self._bg)
+            self.ax.draw_artist(self._active)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
     def _on_release(self, event):
         if self._active is None:
             return
         line = self._active
         self._active = None
+        line.set_animated(False)
+        self._bg = None
         self.gate.release()
         if event.x is not None and event.y is not None:
             x, _ = _data_from_pixel(self.ax, event)
@@ -316,11 +396,20 @@ class DragLineController:
         handler = self.handlers.get(line.get_gid())
         if handler is not None:
             handler(float(x))
+        # The last blit already painted the line at its final x; this un-animates it for any
+        # subsequent full draw (e.g. the commit-path refresh most handlers trigger) rather than
+        # leaving an animated artist behind.
+        self.canvas.draw_idle()
 
     def disconnect(self):
         for cid in self._cids:
             self.canvas.mpl_disconnect(cid)
         self._cids = []
+        if self._active is not None:
+            self._active.set_animated(False)
+            self._active = None
+            self._bg = None
+            self.gate.release()
 
     # ---- hover probes (no side effects) -- see HoverCursorController ----
     def hover_kind(self, event) -> Optional[str]:
@@ -403,7 +492,9 @@ class AnchorLineController:
     press succeeds, and released on button-release -- so a miss here never blocks a sibling
     controller sharing the gate, and whichever controller's hit-test succeeds first (in
     ``mpl_connect``/construction order) wins the gesture. Defaults to a private gate (no sharing)
-    when omitted.
+    when omitted. ``disconnect()`` mid-drag mirrors release's cleanup: it un-animates the blit
+    artists, clears the background snapshot, and releases the gate, so a dragged line never stays
+    animated (and so invisible to any later full draw) past disconnection.
     """
 
     _ROTATE_DX_EPS_PX = 1.0
@@ -540,6 +631,12 @@ class AnchorLineController:
                 artist.set_animated(True)
             self.canvas.draw()
             self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            # First paint: the draw() above skipped the now-animated artists, so without this
+            # they are invisible from press until the first motion event.
+            self.canvas.restore_region(self._bg)
+            for artist in self._blit_artists:
+                self.ax.draw_artist(artist)
+            self.canvas.blit(self.ax.bbox)
         else:
             self._blit_artists = None
             self._bg = None
@@ -657,6 +754,14 @@ class AnchorLineController:
         if self._readout is not None:
             self._readout.remove()
             self._readout = None
+        if self._active is not None:
+            if self._blit_artists is not None:
+                for artist in self._blit_artists:
+                    artist.set_animated(False)
+                self._blit_artists = None
+            self._bg = None
+            self._active = None
+            self.gate.release()
 
     # ---- hover probes (no side effects) -- see HoverCursorController ----
     def hover_kind(self, event) -> Optional[str]:
@@ -697,6 +802,17 @@ class DraggablePointController:
 
     ``gate`` follows the same claim-after-hit-test / release-on-release contract as
     ``AnchorLineController`` -- see ``_CaptureGate``.
+
+    Blits during the drag when the canvas supports it (``canvas.supports_blit``): press sets the
+    marker (and the companion vline, when ``vline_gid`` is set and present) animated, does one
+    ``canvas.draw()``, snapshots the background, and immediately restores/redraws/blits once more
+    so the marker stays visible at press instead of going blank until the first motion event (the
+    preceding ``draw()`` skips animated artists); motion restores that snapshot, redraws the
+    animated artists, and blits instead of a full ``draw_idle()``; release un-animates them and
+    issues one final ``draw_idle()``. Falls back to a plain ``draw_idle()`` per motion event when
+    blitting isn't supported. ``disconnect()`` mid-drag un-animates the managed artists, clears the
+    background snapshot, and releases the gate, so a dragged marker never stays animated (and so
+    invisible to any later full draw) past disconnection. Same pattern as ``AnchorLineController``.
     """
 
     def __init__(self, canvas, ax, gid: str, curve_x: np.ndarray, curve_y: np.ndarray,
@@ -714,6 +830,8 @@ class DraggablePointController:
 
         self._dragging = False
         self._final_x = None
+        self._bg = None            # blit background snapshot for the current gesture
+        self._blit_artists = None  # animated artists (marker + optional vline) for the gesture
         self._cids = [
             canvas.mpl_connect("button_press_event", self._on_press),
             canvas.mpl_connect("motion_notify_event", self._on_motion),
@@ -768,6 +886,25 @@ class DraggablePointController:
         self._dragging = True
         self._final_x = float(xs[0])
 
+        # Blitting: one full draw now (instead of one per motion event), then snapshot the
+        # background so motion only restores it and redraws the managed artists.
+        if getattr(self.canvas, "supports_blit", False):
+            vline = self._vline()
+            self._blit_artists = [a for a in (marker, vline) if a is not None]
+            for artist in self._blit_artists:
+                artist.set_animated(True)
+            self.canvas.draw()
+            self._bg = self.canvas.copy_from_bbox(self.ax.bbox)
+            # First paint: the draw() above skipped the now-animated artists, so without this
+            # they are invisible from press until the first motion event.
+            self.canvas.restore_region(self._bg)
+            for artist in self._blit_artists:
+                self.ax.draw_artist(artist)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self._blit_artists = None
+            self._bg = None
+
     def _on_motion(self, event):
         if not self._dragging or event.x is None or event.y is None:
             return
@@ -780,19 +917,39 @@ class DraggablePointController:
         if vline is not None:
             vline.set_xdata([sx, sx])
         self._final_x = sx
-        self.canvas.draw_idle()
+        if self._bg is not None and self._blit_artists is not None:
+            self.canvas.restore_region(self._bg)
+            for artist in self._blit_artists:
+                self.ax.draw_artist(artist)
+            self.canvas.blit(self.ax.bbox)
+        else:
+            self.canvas.draw_idle()
 
     def _on_release(self, event):
         if not self._dragging:
             return
         self._dragging = False
+        if self._blit_artists is not None:
+            for artist in self._blit_artists:
+                artist.set_animated(False)
+            self._blit_artists = None
+        self._bg = None
         self.gate.release()
         self.commit_fn(float(self._final_x))
+        self.canvas.draw_idle()
 
     def disconnect(self):
         for cid in self._cids:
             self.canvas.mpl_disconnect(cid)
         self._cids = []
+        if self._dragging:
+            if self._blit_artists is not None:
+                for artist in self._blit_artists:
+                    artist.set_animated(False)
+                self._blit_artists = None
+            self._bg = None
+            self._dragging = False
+            self.gate.release()
 
     # ---- hover probes (no side effects) -- see HoverCursorController ----
     def hover_kind(self, event) -> Optional[str]:
