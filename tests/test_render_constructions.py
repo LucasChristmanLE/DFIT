@@ -232,7 +232,7 @@ def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
     construction gids (asserted above) are still drawn from the derived
     res.eff_isip_line_compliance, but no
     AnchorLineController wiring exists for them anywhere in ui.py any more -- see
-    test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate below, which asserts
+    test_gfunction_wiring_attaches_span_and_two_point_controllers_sharing_one_gate below, which asserts
     the step's only two controllers are both DraggablePointControllers."""
     td, st, res = _seeded()
     fig = Figure()
@@ -492,19 +492,22 @@ def test_isip_wiring_no_op_when_bhp_or_shutin_missing():
     assert stub._controllers == []
 
 
-def test_gfunction_wiring_attaches_two_point_controllers_sharing_one_gate():
+def test_gfunction_wiring_attaches_span_and_two_point_controllers_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 3  # min-dP/dG point + contact point + hover
-    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    assert len(stub._controllers) == 4  # window span + min-dP/dG point + contact point + hover
+    span_ctrl, min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    assert isinstance(span_ctrl, picks.ModifierSpanController)
     assert isinstance(min_dpdg_ctrl, picks.DraggablePointController)
     assert isinstance(contact_ctrl, picks.DraggablePointController)
+    assert span_ctrl.gate is contact_ctrl.gate
     assert min_dpdg_ctrl.gate is contact_ctrl.gate
     assert isinstance(hover_ctrl, picks.HoverCursorController)
     ax2 = stub._twin_axes()
     assert min_dpdg_ctrl.ax is ax2
     assert contact_ctrl.ax is stub.ax
+    assert span_ctrl.ax is ax2
 
     contact_ctrl.commit_fn(3.5)
     assert st.contact_G == pytest.approx(3.5)
@@ -569,7 +572,7 @@ def test_gfunction_triangle_drag_rederives_contact_for_ca():
     st = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0)
     stub = _stub(None, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    span_ctrl, min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
 
     new_min = 6.0  # drag the triangle off the true min (5.0)
     min_dpdg_ctrl.commit_fn(new_min)
@@ -587,7 +590,7 @@ def test_gfunction_triangle_drag_rederives_contact_for_cb():
     st = PickState(closure_scenario="C-B adequate", min_dpdg_G=11.0)  # seeded far from G=6
     stub = _stub(None, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
-    min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
+    span_ctrl, min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
 
     new_seed = 6.5  # drag the seed near the true inflection at G=6
     min_dpdg_ctrl.commit_fn(new_seed)
@@ -628,3 +631,76 @@ def test_tangent_wiring_no_op_when_diagnostics_missing():
     stub = _stub(td, st, res, "tangent")
     DfitApp._attach_controllers(stub)
     assert stub._controllers == []
+
+
+# --------------------------------------------------------------------------------------------------
+# render_gfunction: the C-A 110%-never-reached hline (Part 3)
+# --------------------------------------------------------------------------------------------------
+def _clear_threshold_gid(ax):
+    # The hline is drawn on ax2 (the dP/dG twin), not the primary axis passed in -- restrict the
+    # search to it (same twin-identification approach as
+    # test_render_gfunction_min_dpdg_point_gid_on_twin_axis above) so a pass actually verifies
+    # placement, not merely presence anywhere on the figure.
+    ax2 = next(a for a in ax.figure.axes if a is not ax)
+    return [l for l in ax2.get_lines() if l.get_gid() == "clear_threshold_line"]
+
+
+def test_render_gfunction_clear_threshold_line_present_when_min_never_clears():
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 100.0 * np.exp(-G / 3.0)  # monotonic decline -- never rises 10% above any pick
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear", min_dpdg_G=3.0)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, None, st, res)
+    assert len(_clear_threshold_gid(ax)) == 1
+
+
+def test_render_gfunction_clear_threshold_line_absent_when_dpdg_all_nan_at_pick():
+    """An all-NaN dPdG at the pick makes the 110% threshold itself NaN -- drawing an axhline at
+    NaN would leave an invisible line with a visible "never reached" label; neither should be
+    drawn at all."""
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = np.full_like(G, np.nan)
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear", min_dpdg_G=3.0)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, None, st, res)
+    assert _clear_threshold_gid(ax) == []
+    ax2 = next(a for a in fig.axes if a is not ax)
+    assert not any("never reached" in t.get_text() for t in ax2.texts)
+
+
+def test_render_gfunction_clear_threshold_line_absent_when_contact_rule_succeeds():
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 50.0 + (G - 5.0) ** 2  # dips to a min then rises -- the +10% rule succeeds
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, None, st, res)
+    assert _clear_threshold_gid(ax) == []
+
+
+def test_render_gfunction_clear_threshold_line_absent_when_no_min_pick():
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 100.0 * np.exp(-G / 3.0)
+    res = _synthetic_gfunction_res(G, dPdG)
+    st = PickState(closure_scenario="C-A clear")  # no min_dpdg_G set
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_gfunction(ax, None, st, res)
+    assert _clear_threshold_gid(ax) == []
+
+
+def test_render_gfunction_clear_threshold_line_absent_for_cb_cc_cd_scenarios():
+    G = np.linspace(0.0, 12.0, 241)
+    dPdG = 100.0 * np.exp(-G / 3.0)  # would trip the hline if the scenario were C-A
+    res = _synthetic_gfunction_res(G, dPdG)
+    for scen in ("C-B adequate", "C-C no-contact", "C-D rapid"):
+        st = PickState(closure_scenario=scen, min_dpdg_G=3.0)
+        fig = Figure()
+        ax = fig.add_subplot(111)
+        plots.render_gfunction(ax, None, st, res)
+        assert _clear_threshold_gid(ax) == [], scen

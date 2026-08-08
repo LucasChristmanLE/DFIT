@@ -138,6 +138,106 @@ class SpanController:
         self.selector.disconnect_events()
 
 
+class ModifierSpanController:
+    """Modifier-armed (default Shift) horizontal drag-select on a target Axes; forwards the
+    sorted ``(lo, hi)`` window on release. Backs the G-function step's window-correction gesture
+    (Shift+drag re-finds the min-dP/dG pick, or the C-B inflection, within a hand-picked
+    interval) -- a plain drag never captures, so ordinary point/line dragging on the same Axes is
+    untouched by this controller sitting alongside it.
+
+    Press captures only when ``modifier`` is present in the event's held-modifier set (matplotlib
+    reports it as a "+"-joined string on ``event.key``, e.g. ``"shift"`` or
+    ``"shift+control"`` -- absent entirely, i.e. ``None``, when nothing is held), the pixel is
+    inside ``ax`` via ``_axes_contains_pixel`` (never ``event.inaxes`` -- see module docstring),
+    and ``guard()`` is not active; then ``gate.try_claim(self)`` -- same claim-after-hit-test
+    contract as every other controller here, so a Shift-press claims a shared gate before sibling
+    point controllers get a chance when this is registered ahead of them.
+
+    Motion draws/updates a translucent ``axvspan`` (same look as ``SpanController``) between the
+    press-x and the cursor-x (via ``_data_from_pixel``). Release removes the patch either way (the
+    selection disappears) and calls ``on_span(lo, hi)`` with the sorted bounds, but only when
+    ``hi > lo``.
+    """
+
+    def __init__(self, canvas, ax, on_span: Callable[[float, float], None],
+                 modifier: str = "shift", gate: Optional[_CaptureGate] = None, guard=None):
+        self.canvas = canvas
+        self.ax = ax
+        self.on_span = on_span
+        self.modifier = modifier
+        self.gate = gate if gate is not None else _CaptureGate()
+        self.guard = guard or (lambda: False)
+
+        self._press_x: Optional[float] = None
+        self._patch = None
+        self._cids = [
+            canvas.mpl_connect("button_press_event", self._on_press),
+            canvas.mpl_connect("motion_notify_event", self._on_motion),
+            canvas.mpl_connect("button_release_event", self._on_release),
+        ]
+
+    def _on_press(self, event):
+        if event.button != 1 or not _axes_contains_pixel(self.ax, event):
+            return
+        if self.modifier not in (event.key or "").split("+"):
+            return
+        if self.guard():
+            return
+        if not self.gate.try_claim(self):
+            return
+        x, _ = _data_from_pixel(self.ax, event)
+        self._press_x = x
+
+    def _on_motion(self, event):
+        if self._press_x is None or event.x is None or event.y is None:
+            return
+        x, _ = _data_from_pixel(self.ax, event)
+        lo, hi = sorted((self._press_x, x))
+        if self._patch is not None:
+            self._patch.remove()
+        self._patch = self.ax.axvspan(lo, hi, alpha=0.2, facecolor="tab:orange")
+        self.canvas.draw_idle()
+
+    def _on_release(self, event):
+        if self._press_x is None:
+            return
+        press_x = self._press_x
+        self._press_x = None
+        if self._patch is not None:
+            self._patch.remove()
+            self._patch = None
+        self.gate.release()
+        if event.x is not None and event.y is not None:
+            x, _ = _data_from_pixel(self.ax, event)
+        else:
+            x = press_x
+        self.canvas.draw_idle()
+        lo, hi = sorted((press_x, x))
+        if hi > lo:
+            self.on_span(lo, hi)
+
+    def disconnect(self):
+        for cid in self._cids:
+            self.canvas.mpl_disconnect(cid)
+        self._cids = []
+        if self._patch is not None:
+            self._patch.remove()
+            self._patch = None
+
+    # ---- hover probes (no side effects) -- see HoverCursorController ----
+    def hover_kind(self, event) -> Optional[str]:
+        """Always None: the modifier gesture needs a held key that a plain motion event carries
+        no information about, so there is no hover affordance to show before a Shift+press."""
+        return None
+
+    def active_kind(self) -> Optional[str]:
+        """"body" (same kind ``AnchorLineController`` reports for its own pan-the-whole-line
+        drag) while a span drag is in progress, else None -- lets ``HoverCursorController`` hold
+        a move cursor for the duration of the gesture instead of raising on the probe it doesn't
+        implement."""
+        return "body" if self._press_x is not None else None
+
+
 class DragLineController:
     """Drag gid-tagged vertical lines within an Axes; commit the released x per gid.
 
@@ -889,10 +989,14 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
     """Re-derive the contact pick from the current ``state.min_dpdg_G`` under the active closure
     scenario, without moving the min-dP/dG marker itself.
 
-    This is the shared rule engine behind both ``apply_closure_scenario`` (scenario just picked)
-    and the triangle-drag commit path (ui.py's gfunction wiring, decision D4): dragging the
-    triangle re-runs the same rule from its new position so the contact pick always matches the
-    scenario's answer for wherever the analyst has put the anchor.
+    This is the rule engine shared by ``apply_closure_scenario`` (scenario just picked) and the
+    triangle-drag commit path (ui.py's gfunction wiring, decision D4): dragging the triangle
+    re-runs the same rule from its new position so the contact pick always matches the
+    scenario's answer for wherever the analyst has put the anchor. It is not the *only* rule
+    engine for this pick, though: the Shift+drag window-correction gesture
+    (``handle_min_dpdg_window``) runs its own parallel version of the same C-A/C-B rules, seeded
+    from a hand-picked window instead of a g_min-masked search or a dragged seed, and is the
+    complete commit for that gesture -- ui.py does not call this function afterward.
 
       - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there.
       - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed.
@@ -925,6 +1029,67 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
     return None
 
 
+def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
+                           hi: float) -> Optional[str]:
+    """Shift+drag window-correction commit for the min-dP/dG pick (ui.py's
+    ``ModifierSpanController`` on the gfunction step): finds the relevant point within
+    ``[lo, hi]`` under the active closure scenario and moves the triangle there. Mirrors
+    ``re_derive_contact_from_min``'s scenario dispatch, but the window narrows the *search*
+    itself rather than seeding a nearest-sample/seed lookup from an existing pick.
+
+    Unlike the triangle-drag commit path (which moves only the triangle and leaves ui.py to
+    call ``re_derive_contact_from_min`` afterward), this is the *complete* commit for the window
+    gesture -- it sets both ``state.min_dpdg_G`` and ``state.contact_G`` itself, rather than
+    handing off to ``re_derive_contact_from_min``. That re-derive runs the C-A rule from a
+    ``g_min``-masked (>= 1.0) search, which can silently re-derive the contact to a DIFFERENT
+    inflection/rise point outside a window the analyst deliberately narrowed below G=1.0 --
+    the window itself is the more specific answer and must win.
+
+      - C-A clear: the relative minimum of dP/dG within the window
+        (``interpret.min_index_in_window``) becomes the triangle; the +10%-rise contact rule
+        (``interpret.suggest_contact_clear_index``) then runs from *that* index (unmasked, right
+        of it), same as ``re_derive_contact_from_min``'s C-A branch -- just seeded from the
+        window-found min instead of a g_min-masked search.
+      - C-B adequate: the dP/dG inflection within the window
+        (``interpret.suggest_contact_inflection_index`` with ``g_range``) IS the contact -- both
+        picks are set to it directly, with no further re-derive over the (possibly sub-1.0)
+        window.
+      - blank / C-C / C-D / missing diagnostics: no-op (the controller isn't wired then anyway).
+
+    Returns a user-facing hint string when the window (or, for C-A, the rise rule from the
+    window's min) holds nothing usable, else None. On a C-A rise-rule failure, ``min_dpdg_G`` is
+    still moved to the window's min (``contact_G`` is left unchanged) -- same partial-failure
+    shape as the triangle-drag path. The caller (ui.py) does not need to re-derive the contact
+    afterward; this function is the whole commit.
+    """
+    scen = state.closure_scenario
+    if not scen or scen.startswith(("C-C", "C-D")):
+        return None
+    dg = res.diagnostics
+    if dg is None or len(dg.G) < 3:
+        return None
+    if scen.startswith("C-A"):
+        idx = interpret.min_index_in_window(dg.G, dg.dPdG, lo, hi)
+        if idx is None:
+            return "No finite dP/dG sample inside the window."
+        state.min_dpdg_G = float(dg.G[idx])
+        contact_idx = interpret.suggest_contact_clear_index(dg.dPdG, idx)
+        if contact_idx is None:
+            return ("dP/dG never rises 10% above the min -- not a clear contact "
+                    "(consider C-B or C-C).")
+        state.contact_G = float(dg.G[contact_idx])
+        return None
+    if scen.startswith("C-B"):
+        idx = interpret.suggest_contact_inflection_index(
+            dg.G, dg.dPdG, g_range=(lo, hi), d2=dg.d2PdG2)
+        if idx is None:
+            return "No inflection inside the window."
+        state.min_dpdg_G = float(dg.G[idx])
+        state.contact_G = float(dg.G[idx])
+        return None
+    return None
+
+
 def reset_gfunction_picks(state: PickState, res: DerivedResults) -> Optional[str]:
     """The G-function step's "Reset picks" button: re-run the current scenario's auto-pick,
     discarding any manual drags (decision 3) -- as opposed to ``apply_closure_scenario``, which
@@ -948,8 +1113,8 @@ def reset_gfunction_picks(state: PickState, res: DerivedResults) -> Optional[str
             return None
         idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
         state.min_dpdg_G = float(dg.G[idx])
-        hump = int(np.nanargmax(dg.dPdG))
-        state.contact_G = float(dg.G[hump])
+        hump = interpret.suggest_hump_index(dg.G, dg.dPdG)
+        state.contact_G = float(dg.G[hump]) if hump is not None else float(dg.G[-1])
         return None
     if scen.startswith(("C-C", "C-D")):
         state.contact_G = None
@@ -976,12 +1141,17 @@ _GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent 
                            "the min-dP/dG marker.")
 
 
+_MIN_DPDG_WINDOW_HINT = " Shift+drag a window on the plot to re-find it there."
+
+
 def gfunction_hint_text(scenario: str) -> str:
     """Scenario-aware hint-label text for the G-function step."""
     if scenario.startswith("C-A"):
-        return "Contact auto-positioned at rel-min +10%; drag the triangle to move the anchor."
+        return ("Contact auto-positioned at rel-min +10%; drag the triangle to move the anchor."
+                + _MIN_DPDG_WINDOW_HINT)
     if scenario.startswith("C-B"):
-        return "The triangle is the inflection seed; drag it to re-find the nearest inflection."
+        return ("The triangle is the inflection seed; drag it to re-find the nearest inflection."
+                + _MIN_DPDG_WINDOW_HINT)
     if scenario.startswith(("C-C", "C-D")):
         return "No contact pick applies for this closure scenario."
     return _GFUNCTION_HINT_DEFAULT
@@ -1067,8 +1237,8 @@ def seed_gfunction(state: PickState, res: DerivedResults) -> None:
         idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
         state.min_dpdg_G = float(dg.G[idx])
     if state.contact_G is None:
-        hump = int(np.nanargmax(dg.dPdG))
-        state.contact_G = float(dg.G[hump])
+        hump = interpret.suggest_hump_index(dg.G, dg.dPdG)
+        state.contact_G = float(dg.G[hump]) if hump is not None else float(dg.G[-1])
 
 
 def seed_tangent(state: PickState, res: DerivedResults) -> None:

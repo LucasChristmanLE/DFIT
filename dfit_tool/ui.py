@@ -1452,11 +1452,26 @@ class DfitApp:
                     picks.commit_contact_point(self.state, x)
                     self.refresh()
 
+                def on_min_dpdg_window(lo, hi):
+                    # Shift+drag window correction: handle_min_dpdg_window is the complete commit
+                    # for this gesture -- it moves the triangle within [lo, hi] AND sets the
+                    # contact pick itself (its own window-scoped rule, not the g_min-masked
+                    # re_derive_contact_from_min), so there is nothing left to re-derive here.
+                    hint = picks.handle_min_dpdg_window(self.state, res, lo, hi)
+                    self.refresh()
+                    if hint:
+                        self.hint_lbl.config(text=hint)
+
                 # min-dP/dG-first ordering preserved (tests unpack step_ctrls by position) --
                 # the triangle only applies to C-A (rel-min anchor) / C-B (inflection seed); the
                 # contact marker applies to every scenario except C-C/C-D, which have no contact
                 # rule at all (decision 4 / the CLAUDE.md closure-scenario table).
                 if scenario.startswith(("C-A", "C-B")):
+                    # Registered before the point controllers below so a Shift-press claims the
+                    # shared gate first -- an ordinary (unmodified) press never captures here, so
+                    # the point controllers still win a plain drag.
+                    step_ctrls.append(picks.ModifierSpanController(
+                        self.canvas, ax2, on_min_dpdg_window, gate=gate))
                     step_ctrls.append(picks.DraggablePointController(
                         self.canvas, ax2, "min_dpdg_point", G, dPdG, commit_fn=commit_min_dpdg,
                         gate=gate))

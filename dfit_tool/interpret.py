@@ -314,26 +314,89 @@ def pore_pressure(x_transform: np.ndarray, P: np.ndarray) -> float:
 # --------------------------------------------------------------------------------------------------
 # auto-suggestions for interactive picks
 # --------------------------------------------------------------------------------------------------
-def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> int:
-    """Index of the relative minimum of dP/dG for G >= g_min (skips the early water-hammer
-    spike): among interior samples that dip below both neighbors (``dPdG[i] < dPdG[i-1] and
-    dPdG[i] <= dPdG[i+1]``), the one with the smallest dP/dG value -- the compliance "elbow" the
-    effective-ISIP tangent should anchor at. Falls back to the masked global minimum when the
-    curve has no interior local min (e.g. a monotonic decline -- the C-C no-contact shape)."""
+def suggest_hump_index(G: np.ndarray, dPdG: np.ndarray) -> Optional[int]:
+    """Index of the dP/dG "hump" -- the post-elbow rise in a C-A closure signature.
+
+    Among interior local maxima of dP/dG (``y[i] > y[i-1] and y[i] >= y[i+1]``, finite triples --
+    same neighbor test ``suggest_min_dpdg_index`` uses for its local minima), returns the one
+    with the largest ``G * dPdG`` value. Multiplying by G is what lets the real hump beat the
+    early water-hammer spike (which sits at G -> 0 and is itself an interior local max whenever
+    it doesn't decay monotonically from index 0): the spike's own G*dPdG is suppressed by its
+    tiny G, while the hump's is not.
+
+    A monotone decaying tail past the hump has no interior local max (it only ever falls), so it
+    is never a candidate here -- unlike a plain ``argmax(G * dPdG)`` over the whole curve, which
+    keeps climbing for as long as the tail decays slower than 1/G and can land on a tail sample
+    far past the real hump instead of the hump itself.
+
+    Falls back to the raw finite ``argmax(dPdG)`` when no interior local max exists at all (e.g.
+    a monotonic decline with no hump to find -- the old placeholder behavior, kept as the
+    degenerate case). ``None`` only when nothing is finite."""
     G = np.asarray(G, dtype=float)
     y = np.asarray(dPdG, dtype=float)
-    mask = G >= g_min
-    if not mask.any():
-        mask = np.ones_like(G, dtype=bool)
+    finite = np.isfinite(y)
+    if not finite.any():
+        return None
+    interior = np.zeros(len(y), dtype=bool)
+    if len(y) >= 3:
+        finite3 = np.isfinite(y[:-2]) & np.isfinite(y[1:-1]) & np.isfinite(y[2:])
+        local_max = (y[1:-1] > y[:-2]) & (y[1:-1] >= y[2:])
+        interior[1:-1] = finite3 & local_max
+    if interior.any():
+        candidates = np.where(interior)[0]
+        return int(candidates[np.argmax(G[candidates] * y[candidates])])
+    return int(np.flatnonzero(finite)[np.argmax(y[finite])])
+
+
+def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> int:
+    """Index of the relative minimum of dP/dG -- the compliance "elbow" the effective-ISIP
+    tangent should anchor at.
+
+    Interior local minima (``dPdG[i] < dPdG[i-1] and dPdG[i] <= dPdG[i+1]``) are searched over
+    the *whole* array, unmasked -- the neighbor test itself skips the spike's monotone descent,
+    so no ``g_min`` mask is needed to find an elbow that sits below it (e.g. G < 1.0). When more
+    than one candidate exists, those before ``suggest_hump_index``'s hump are preferred (a dip
+    planted in the tail, past the hump, is not the true elbow); if that subset is empty (no hump,
+    or the hump sits at index 0), the full candidate set is kept. The smallest-valued candidate
+    (of whichever set applies) wins.
+
+    Falls back to the ``g_min``-masked global minimum -- byte-identical to the pre-rewrite
+    behavior -- when the curve has no interior local min at all (e.g. a monotonic decline, the
+    C-C no-contact shape). An all-non-finite curve returns 0."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    if not np.isfinite(y).any():
+        return 0
     interior = np.zeros(len(y), dtype=bool)
     if len(y) >= 3:
         finite3 = np.isfinite(y[:-2]) & np.isfinite(y[1:-1]) & np.isfinite(y[2:])
         local_min = (y[1:-1] < y[:-2]) & (y[1:-1] <= y[2:])
-        interior[1:-1] = finite3 & local_min & mask[1:-1]
+        interior[1:-1] = finite3 & local_min
     if interior.any():
         candidates = np.where(interior)[0]
+        hump = suggest_hump_index(G, y)
+        if hump is not None and hump > 0:
+            before_hump = candidates[candidates < hump]
+            if before_hump.size:
+                candidates = before_hump
         return int(candidates[np.argmin(y[candidates])])
+    mask = G >= g_min
+    if not mask.any():
+        mask = np.ones_like(G, dtype=bool)
     return int(np.nanargmin(np.where(mask, y, np.inf)))
+
+
+def min_index_in_window(G: np.ndarray, dPdG: np.ndarray, lo: float, hi: float) -> Optional[int]:
+    """Index of the sample with the smallest dP/dG within ``[lo, hi]`` of G (inclusive), among
+    finite samples only. ``None`` when the window holds no finite sample -- the Shift+drag
+    window-correction gesture's C-A finder (``picks.handle_min_dpdg_window``)."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    mask = (G >= lo) & (G <= hi) & np.isfinite(y)
+    if not mask.any():
+        return None
+    candidates = np.where(mask)[0]
+    return int(candidates[np.argmin(y[candidates])])
 
 
 def suggest_contact_clear_index(
@@ -358,12 +421,19 @@ def suggest_contact_inflection_index(
     g_min: float = 1.0,
     seed: Optional[float] = None,
     d2: Optional[np.ndarray] = None,
+    g_range: Optional[tuple] = None,
 ) -> Optional[int]:
     """C-B "adequate" contact rule: the inflection of a monotonically declining dP/dG -- the
     flattest point of the decline, i.e. an interior local maximum of d(dP/dG)/dG over
     G >= ``g_min`` (masking the early water-hammer region, mirroring
     ``suggest_min_dpdg_index``). Returns None when no interior local max exists (a shape with
     no flattening, e.g. a pure exponential-style decline).
+
+    ``g_range`` (``(lo, hi)``), when given, replaces the ``g_min`` mask with
+    ``lo <= G <= hi`` -- the Shift+drag window-correction gesture's C-B finder
+    (``picks.handle_min_dpdg_window``) uses this to search only the hand-picked interval, and
+    returns None (no fallback to the full curve) when that window holds no candidate. Default
+    ``None`` preserves the ``g_min`` behavior exactly.
 
     ``d2`` lets a caller reuse an already-computed d2P/dG2 (e.g. ``resample.Diagnostics.d2PdG2``)
     instead of recomputing ``np.gradient`` here. ``seed`` (a G value), when given, picks the
@@ -375,9 +445,13 @@ def suggest_contact_inflection_index(
     if len(y) < 3:
         return None
     d2 = np.asarray(d2, dtype=float) if d2 is not None else np.gradient(y, G)
-    mask = G >= g_min
-    if not mask.any():
-        mask = np.ones_like(G, dtype=bool)
+    if g_range is not None:
+        lo, hi = g_range
+        mask = (G >= lo) & (G <= hi)
+    else:
+        mask = G >= g_min
+        if not mask.any():
+            mask = np.ones_like(G, dtype=bool)
     interior = np.zeros(len(d2), dtype=bool)
     finite3 = np.isfinite(d2[:-2]) & np.isfinite(d2[1:-1]) & np.isfinite(d2[2:])
     local_max = (d2[1:-1] > d2[:-2]) & (d2[1:-1] >= d2[2:])
