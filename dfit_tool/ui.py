@@ -1523,9 +1523,11 @@ class DfitApp:
         def s(v, f="{:.0f}"):
             return f.format(v) if v is not None else "-"
         # C-D rapid closure has no contact pick, so no compliance Shmin -- shmin_rapid stands in for
-        # it in the same row, marked approximate (label asterisk + "~" on the value) rather than
-        # sitting in a row of its own that read like a fourth stress method. compute_all only ever
-        # sets shmin_rapid for C-D, and C-D always clears the contact, so the two are never both set.
+        # it in the same row, marked approximate by the label asterisk alone; the value column's
+        # own "±75" half-range (from format_shmin_rapid's short form) is what signals the
+        # approximation there, rather than sitting in a row of its own that read like a fourth
+        # stress method. compute_all only ever sets shmin_rapid for C-D, and C-D always clears the
+        # contact, so the two are never both set.
         use_rapid = r.shmin_compliance is None and r.shmin_rapid is not None
         vals = {
             "te (min)": s(r.te_s / 60 if r.te_s else None, "{:.2f}"),
@@ -1535,7 +1537,7 @@ class DfitApp:
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
             "NWB complexity": s(r.near_wellbore_complexity),
             "contact P": s(r.contact_pressure),
-            "Shmin compliance": (f"~{interpret.format_shmin_rapid(r.shmin_rapid)}" if use_rapid
+            "Shmin compliance": (interpret.format_shmin_rapid(r.shmin_rapid) if use_rapid
                                   else s(r.shmin_compliance)),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
@@ -1559,6 +1561,13 @@ class DfitApp:
         gf_visited = self.state.step_status.get("gfunction", "not_visited") != "not_visited"
         self.name_lbls["Shmin compliance"].config(
             text="Shmin compliance*" if (use_rapid and gf_visited) else "Shmin compliance")
+        # Complexity is referenced to the shared eff ISIP; mark it when that fell back to the tangent
+        # one (C-C/C-D clear the contact, so there is no compliance eff ISIP to reference). Same
+        # not_visited gate as the value, so the asterisk can never sit next to a "-".
+        use_tangent_ref = (r.near_wellbore_complexity is not None
+                           and r.net_pressure_isip_source == "tangent")
+        self.name_lbls["NWB complexity"].config(
+            text="NWB complexity*" if (use_tangent_ref and gf_visited) else "NWB complexity")
         self.warn_lbl.config(text="\n".join(r.warnings) if r.warnings else "")
 
     # ---- persistence ----------------------------------------------------------------------------

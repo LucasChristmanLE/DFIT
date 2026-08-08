@@ -70,7 +70,7 @@ def test_update_panel_cd_rapid_marks_shmin_compliance_row():
     stub = _panel_stub(res, state)
     stub._update_panel()
     assert stub.name_lbls["Shmin compliance"].text == "Shmin compliance*"
-    assert stub.value_lbls["Shmin compliance"].text == "~9325 ±75"
+    assert stub.value_lbls["Shmin compliance"].text == "9325 ±75"
 
 
 def test_update_panel_non_rapid_shmin_compliance_row_plain():
@@ -91,3 +91,35 @@ def test_update_panel_not_visited_blanks_value_and_asterisk():
     stub._update_panel()
     assert stub.value_lbls["Shmin compliance"].text == "-"
     assert stub.name_lbls["Shmin compliance"].text == "Shmin compliance"
+
+
+def test_update_panel_complexity_referenced_to_tangent_marks_row():
+    # net_pressure_isip_source == "tangent" means the shared eff ISIP reference fell back from
+    # compliance (C-C/C-D clear the contact pick), so the complexity row is marked.
+    res = DerivedResults(near_wellbore_complexity=450.0, net_pressure_isip_source="tangent")
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.name_lbls["NWB complexity"].text == "NWB complexity*"
+    assert stub.value_lbls["NWB complexity"].text == "450"
+
+
+def test_update_panel_complexity_referenced_to_compliance_not_marked():
+    # net_pressure_isip_source == "compliance" is the primary reference -- no asterisk.
+    res = DerivedResults(near_wellbore_complexity=450.0, net_pressure_isip_source="compliance")
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.name_lbls["NWB complexity"].text == "NWB complexity"
+    assert stub.value_lbls["NWB complexity"].text == "450"
+
+
+def test_update_panel_complexity_blank_never_marked():
+    # No complexity value (blank "-"): the asterisk must not appear even though the source says
+    # "tangent" -- same not_visited-style gate the value column uses.
+    res = DerivedResults(near_wellbore_complexity=None, net_pressure_isip_source="tangent")
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.value_lbls["NWB complexity"].text == "-"
+    assert stub.name_lbls["NWB complexity"].text == "NWB complexity"

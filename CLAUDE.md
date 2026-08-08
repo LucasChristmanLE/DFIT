@@ -414,16 +414,29 @@ range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown in the G-function title
 (`interpret.format_shmin_rapid`, verbose form). Net pressure is deliberately not
 derived from it -- there is no `net_pressure_rapid`.
 
-`shmin_rapid` has no panel row of its own. It stands in for the compliance Shmin in that row
-instead: `ui._update_panel` sets `use_rapid = shmin_compliance is None and shmin_rapid is not
-None` and then renders the label as `"Shmin compliance*"` and the value as
-`"~9325 ±75"` (the short `format_shmin_rapid` form with a leading tilde). The asterisk is gated
-on the same `not_visited` check the values are, so it can never sit next to a `"-"`, and the
-label is reset to plain text on the else branch since the widget persists across refreshes.
-Nothing in the panel explains the asterisk -- the G-function title carries
-`Shmin(rapid)=9325 ±75 (ISIP − 100–250)` whenever it is showing. The two are never both set
-(C-D clears the contact, and `compute_all` only sets `shmin_rapid` for C-D), so the fallback is
-unambiguous. The CSV log is unaffected: `store.LOG_COLUMNS` keeps its own `Shmin_rapid` column.
+**Panel asterisks.** Two result-panel rows carry a trailing `*` on the label when the number in
+them came from a fallback rather than the primary construction. Both are display-only, set in
+`ui._update_panel` by mutating `self.name_lbls[...]`, and both are gated on the same
+`not_visited` check the value column uses, so an asterisk can never sit next to a `"-"`. Both
+reset to plain text on the else branch, since the label widgets persist across refreshes.
+Neither is explained in the panel itself.
+
+- `"Shmin compliance*"` -- `shmin_rapid` has no panel row of its own; it stands in for the
+  compliance Shmin in that row when `use_rapid = shmin_compliance is None and shmin_rapid is not
+  None`. The value is the short `format_shmin_rapid` form, `"9325 ±75"` -- no tilde, the ±
+  half-range is what signals the approximation in the value column. The two are never both set
+  (C-D clears the contact, and `compute_all` only sets `shmin_rapid` for C-D), so the fallback is
+  unambiguous. The G-function title separately carries the verbose
+  `Shmin(rapid)=9325 ±75 (ISIP − 100–250)` whenever this is showing.
+- `"NWB complexity*"` -- complexity is apparent ISIP minus the *shared reference* effective ISIP,
+  and this marks the case where that reference fell back to the tangent effective ISIP:
+  `use_tangent_ref = near_wellbore_complexity is not None and net_pressure_isip_source ==
+  "tangent"`. That is C-C and C-D, both of which clear the contact and so have no compliance
+  effective ISIP to reference. Note the two asterisks do not mean the same thing -- this one says
+  "referenced to the fallback", not "approximate" -- and under C-D both show at once.
+
+The CSV log is unaffected by either: `store.LOG_COLUMNS` keeps its own `Shmin_rapid` column, and
+`net_pressure_isip_source` is already logged.
 
 **Min-dP/dG pick.** The red triangle seeds from `interpret.suggest_min_dpdg_index`: interior
 local minima of dP/dG over the whole record (no fixed G threshold), preferring candidates
