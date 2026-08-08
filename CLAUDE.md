@@ -404,9 +404,20 @@ Closure scenarios drive the contact pick and effective ISIP:
 Note: in the current code (`picks.apply_closure_scenario`) C-C and C-D both clear the contact
 pick, so `compute_all` produces no compliance Shmin and no effective ISIP for either. C-D
 additionally reports `shmin_rapid` = apparent ISIP − 175 psi (the midpoint of the 100–250 psi
-range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown as its own "Shmin rapid" panel row and in
-the G-function title (`interpret.format_shmin_rapid`). Net pressure is deliberately not
+range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown in the G-function title
+(`interpret.format_shmin_rapid`, verbose form). Net pressure is deliberately not
 derived from it -- there is no `net_pressure_rapid`.
+
+`shmin_rapid` has no panel row of its own. It stands in for the compliance Shmin in that row
+instead: `ui._update_panel` sets `use_rapid = shmin_compliance is None and shmin_rapid is not
+None` and then renders the label as `"Shmin compliance*"` and the value as
+`"~9325 ±75"` (the short `format_shmin_rapid` form with a leading tilde). The asterisk is gated
+on the same `not_visited` check the values are, so it can never sit next to a `"-"`, and the
+label is reset to plain text on the else branch since the widget persists across refreshes.
+Nothing in the panel explains the asterisk -- the G-function title carries
+`Shmin(rapid)=9325 ±75 (ISIP − 100–250)` whenever it is showing. The two are never both set
+(C-D clears the contact, and `compute_all` only sets `shmin_rapid` for C-D), so the fallback is
+unambiguous. The CSV log is unaffected: `store.LOG_COLUMNS` keeps its own `Shmin_rapid` column.
 
 **Min-dP/dG pick.** The red triangle seeds from `interpret.suggest_min_dpdg_index`: interior
 local minima of dP/dG over the whole record (no fixed G threshold), preferring candidates
@@ -498,6 +509,3 @@ select their tab (`ui.py:_open_guide`).
   ISIP/net pressure/pore pressure with no analyst action. This is a known consequence of the
   park-and-apply design colliding with an unrelated legacy-migration gap, not something the tail
   trim feature itself can detect or guard against.
-
-  ## TODO
-  - G-func tab: Remove Shmin rapid from sidebar. Instead, show it as Shmin compliance but add an asteriks after Shmin compliance and ~ before the number. Don't change how it logs in csv.

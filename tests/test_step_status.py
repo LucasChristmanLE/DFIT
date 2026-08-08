@@ -110,7 +110,6 @@ def test_field_step_mapping_matches_spec():
         "NWB complexity": "gfunction",
         "contact P": "gfunction",
         "Shmin compliance": "gfunction",
-        "Shmin rapid": "gfunction",
         "tc compliance (min)": "gfunction",
         "net (compliance)": "gfunction",
         "Shmin tangent": "tangent",

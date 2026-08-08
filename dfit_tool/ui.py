@@ -59,12 +59,12 @@ _PC_HINTS = {
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
-# The 19 result-panel rows, in display order -- module level (not just a literal inside
+# The 18 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
     "eff ISIP (compliance)", "NWB complexity",
-    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable", "Shmin rapid",
+    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
     "delta closure", "pore pressure",
@@ -87,7 +87,6 @@ FIELD_STEP = {
     "NWB complexity": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
-    "Shmin rapid": "gfunction",
     "tc compliance (min)": "gfunction",
     "net (compliance)": "gfunction",
     "Shmin tangent": "tangent",
@@ -381,14 +380,16 @@ class DfitApp:
 
         ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
+        self.name_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
             # Value packed first: pane minsize only binds sash drags, so a too-narrow
             # window can still squeeze this pane -- the later-packed name label loses
             # pixels then, keeping the number readable.
             row = ttk.Frame(panel); row.pack(fill="x")
             v = ttk.Label(row, text="-", width=14, anchor="e"); v.pack(side="right")
-            ttk.Label(row, text=key).pack(side="left")
+            n = ttk.Label(row, text=key); n.pack(side="left")
             self.value_lbls[key] = v
+            self.name_lbls[key] = n
 
         ttk.Separator(panel).pack(fill="x", pady=6)
 
@@ -1514,6 +1515,11 @@ class DfitApp:
         r = self.res
         def s(v, f="{:.0f}"):
             return f.format(v) if v is not None else "-"
+        # C-D rapid closure has no contact pick, so no compliance Shmin -- shmin_rapid stands in for
+        # it in the same row, marked approximate (label asterisk + "~" on the value) rather than
+        # sitting in a row of its own that read like a fourth stress method. compute_all only ever
+        # sets shmin_rapid for C-D, and C-D always clears the contact, so the two are never both set.
+        use_rapid = r.shmin_compliance is None and r.shmin_rapid is not None
         vals = {
             "te (min)": s(r.te_s / 60 if r.te_s else None, "{:.2f}"),
             "Vinj (bbl)": s(r.vinj, "{:.1f}"),
@@ -1522,11 +1528,10 @@ class DfitApp:
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
             "NWB complexity": s(r.near_wellbore_complexity),
             "contact P": s(r.contact_pressure),
-            "Shmin compliance": s(r.shmin_compliance),
+            "Shmin compliance": (f"~{interpret.format_shmin_rapid(r.shmin_rapid)}" if use_rapid
+                                  else s(r.shmin_compliance)),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
-            "Shmin rapid": (interpret.format_shmin_rapid(r.shmin_rapid)
-                            if r.shmin_rapid is not None else "-"),
             "tc compliance (min)": s(r.closure_time_compliance_s / 60
                                       if r.closure_time_compliance_s is not None else None, "{:.2f}"),
             "tc tangent (min)": s(r.closure_time_tangent_s / 60
@@ -1543,6 +1548,10 @@ class DfitApp:
             owning_step = FIELD_STEP[k]
             visited = self.state.step_status.get(owning_step, "not_visited") != "not_visited"
             self.value_lbls[k].config(text=v if visited else "-")
+        # The asterisk tracks the value: gate it on the same not_visited check the loop above applies.
+        gf_visited = self.state.step_status.get("gfunction", "not_visited") != "not_visited"
+        self.name_lbls["Shmin compliance"].config(
+            text="Shmin compliance*" if (use_rapid and gf_visited) else "Shmin compliance")
         self.warn_lbl.config(text="\n".join(r.warnings) if r.warnings else "")
 
     # ---- persistence ----------------------------------------------------------------------------
