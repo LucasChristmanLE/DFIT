@@ -1104,8 +1104,8 @@ def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
     point). Resets state.tail_trim_reason to "" -- a manual drag or clear always overrides
     whatever auto-attribution put the trim where it was; only seed_tail_trim (immediately after
     calling this itself) sets a non-"" reason back.
-    Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario or
-    reset_gfunction_picks."""
+    Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario, the
+    triangle-drag commit, or the Shift+drag window commit."""
     state.tail_trim_dt = float(dt) if dt is not None else None
     state.tail_trim_reason = ""
 
@@ -1247,53 +1247,6 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         state.contact_G = float(dg.G[idx])
         return None
     return None
-
-
-def reset_gfunction_picks(state: PickState, res: DerivedResults) -> Optional[str]:
-    """The G-function step's "Reset picks" button: re-run the current scenario's auto-pick,
-    discarding any manual drags (decision 3) -- as opposed to ``apply_closure_scenario``, which
-    only fills in picks that are still unset.
-
-      - blank: reseed both the min-dP/dG and contact picks, same defaults as ``seed_gfunction``
-        (unconditionally here, not only when unset).
-      - C-A clear: re-suggest ``min_dpdg_G`` fresh (discarding a dragged min), then re-derive
-        contact from it.
-      - C-B adequate: keep a dragged ``min_dpdg_G`` (it is the inflection seed, not a rel-min, so
-        a drag is not something to discard) if one is set, else seed it fresh; then re-derive
-        contact from it.
-      - C-C no-contact / C-D rapid: clear ``contact_G`` only -- no min/contact rule applies.
-
-    Returns a hint string on failure, same convention as ``apply_closure_scenario``.
-    """
-    scen = state.closure_scenario
-    dg = res.diagnostics
-    if not scen:
-        if dg is None or res.resampled is None or len(dg.G) <= 5:
-            return None
-        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
-        state.min_dpdg_G = float(dg.G[idx])
-        hump = interpret.suggest_hump_index(dg.G, dg.dPdG)
-        state.contact_G = float(dg.G[hump]) if hump is not None else float(dg.G[-1])
-        return None
-    if scen.startswith(("C-C", "C-D")):
-        state.contact_G = None
-        return None
-    if dg is None or len(dg.G) < 3:
-        return None
-    if scen.startswith("C-A") or (scen.startswith("C-B") and state.min_dpdg_G is None):
-        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
-        state.min_dpdg_G = float(dg.G[idx])
-    return re_derive_contact_from_min(state, res)
-
-
-def gfunction_reset_button_label(scenario: str) -> str:
-    """Label for the G-function step's adaptive "Reset picks" button (decision D1): one button
-    whose text names the operation it performs for the active closure scenario."""
-    if scenario.startswith("C-A"):
-        return "Reset picks (find rel min + contact)"
-    if scenario.startswith("C-B"):
-        return "Reset picks (find inflection)"
-    return "Reset picks"
 
 
 _GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent follows it) or "

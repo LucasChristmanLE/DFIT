@@ -197,18 +197,6 @@ def test_apply_closure_scenario_leaves_tail_trim_untouched():
     assert st.tail_trim_dt == pytest.approx(trim)
 
 
-def test_reset_gfunction_picks_leaves_tail_trim_untouched():
-    td, st, res = _seeded_with_crash()
-    st.tail_trim_dt = pre_crash_trim_dt(res)
-    res2 = compute_all(st, td)
-    trim = st.tail_trim_dt
-
-    st.closure_scenario = "C-A clear"
-    picks.reset_gfunction_picks(st, res2)
-
-    assert st.tail_trim_dt == pytest.approx(trim)
-
-
 # --------------------------------------------------------------------------------------------------
 # interpret.suggest_tail_trim_dt -- the default cut for the always-on Overview trim line
 # --------------------------------------------------------------------------------------------------

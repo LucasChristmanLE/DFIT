@@ -351,9 +351,9 @@ when `interactive`) sits at that same cut when set, else the last raw sample tim
 drag at/past the last point clears the trim, and the commit clamps to >=3 kept points -- a record
 whose full resample already yields <=3 points can therefore only ever clear the trim, never set
 one (a pathological saved trim hits a warning directing the analyst back to the Overview tab's
-trim line, instead of a dead plot). The trim is never touched by scenario changes or the
-G-function reset button -- this replaces the old "manual-only (no seeder) ... never auto-set"
-rule, which no longer holds.
+trim line, instead of a dead plot). The trim is never touched by a scenario change or by either
+min-dP/dG correction (the triangle drag, the Shift+drag window) -- this replaces the old
+"manual-only (no seeder) ... never auto-set" rule, which no longer holds.
 
 `render_overview`'s `ViewDefaults.ylim` is pinned to `(0.0, p_hi + pad)` unconditionally --
 including a converted-BHP record, where it squashes the trace into the top of the axes; the
@@ -500,5 +500,4 @@ select their tab (`ui.py:_open_guide`).
   trim feature itself can detect or guard against.
 
   ## TODO
-  - G-func tab: does the reset picks button do anything for us anymore?
   - G-func tab: Remove Shmin rapid from sidebar. Instead, show it as Shmin compliance but add an asteriks after Shmin compliance and ~ before the number. Don't change how it logs in csv.

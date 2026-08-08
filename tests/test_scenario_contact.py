@@ -254,9 +254,6 @@ def test_re_derive_contact_from_min_ca_hints_when_no_rise():
     assert state.contact_G == 1.0
 
 
-# --------------------------------------------------------------------------------------------------
-# reset_gfunction_picks: the "Reset picks" button
-# --------------------------------------------------------------------------------------------------
 from dfit_tool.resample import Resampled
 
 
@@ -264,61 +261,6 @@ def _res_with_resampled(G, dPdG):
     res = _res_with(G, dPdG)
     res.resampled = Resampled(dt=G, p=res.diagnostics.p, n_raw=len(G))
     return res
-
-
-def test_reset_gfunction_picks_blank_reseeds_both():
-    G, dPdG = _s_curve()
-    res = _res_with_resampled(G, dPdG)
-    state = PickState(closure_scenario="", min_dpdg_G=99.0, contact_G=99.0)
-    assert picks.reset_gfunction_picks(state, res) is None
-    assert state.min_dpdg_G != 99.0
-    assert state.contact_G != 99.0
-    assert abs(state.min_dpdg_G - 5.0) < 0.2  # the true rel-min, not the stale drag
-
-
-def test_reset_gfunction_picks_ca_discards_dragged_min():
-    G, dPdG = _s_curve()
-    res = _res_with_resampled(G, dPdG)
-    state = PickState(closure_scenario="C-A clear", min_dpdg_G=6.0, contact_G=99.0)
-    assert picks.reset_gfunction_picks(state, res) is None
-    assert abs(state.min_dpdg_G - 5.0) < 0.2  # re-found rel-min, not the dragged 6.0
-    assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1  # the +10% rule from the fresh min
-
-
-def test_reset_gfunction_picks_cb_keeps_dragged_seed():
-    G, dPdG = _two_bump_decline()
-    res = _res_with_resampled(G, dPdG)
-    state = PickState(closure_scenario="C-B adequate", min_dpdg_G=9.0, contact_G=99.0)
-    assert picks.reset_gfunction_picks(state, res) is None
-    assert state.min_dpdg_G == 9.0  # the seed survives -- it's the analyst's chosen anchor
-    assert abs(state.contact_G - 9.0) < abs(state.contact_G - 3.0)
-
-
-def test_reset_gfunction_picks_cb_seeds_when_unset():
-    G, dPdG = _decline_with_inflection()
-    res = _res_with_resampled(G, dPdG)
-    state = PickState(closure_scenario="C-B adequate")
-    assert picks.reset_gfunction_picks(state, res) is None
-    assert state.min_dpdg_G is not None
-    assert abs(state.contact_G - 6.0) < 0.2
-
-
-def test_reset_gfunction_picks_cc_cd_clear_contact_only():
-    G, dPdG = _s_curve()
-    res = _res_with_resampled(G, dPdG)
-    for scen in ("C-C no-contact", "C-D rapid"):
-        state = PickState(closure_scenario=scen, min_dpdg_G=5.0, contact_G=7.0)
-        assert picks.reset_gfunction_picks(state, res) is None
-        assert state.contact_G is None
-        assert state.min_dpdg_G == 5.0  # the diagnostic pick survives
-
-
-def test_gfunction_reset_button_label_per_scenario():
-    assert picks.gfunction_reset_button_label("C-A clear") == "Reset picks (find rel min + contact)"
-    assert picks.gfunction_reset_button_label("C-B adequate") == "Reset picks (find inflection)"
-    assert picks.gfunction_reset_button_label("C-C no-contact") == "Reset picks"
-    assert picks.gfunction_reset_button_label("C-D rapid") == "Reset picks"
-    assert picks.gfunction_reset_button_label("") == "Reset picks"
 
 
 def test_gfunction_hint_text_per_scenario():
@@ -442,9 +384,9 @@ def test_show_d2pdg2_round_trips(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------------
-# seed_gfunction / reset_gfunction_picks (blank scenario): the contact placeholder is now
-# interpret.suggest_hump_index (G*dP/dG argmax), not a raw nanargmax(dPdG) -- the latter lands on
-# the early water-hammer spike whenever the spike outweighs the real hump.
+# seed_gfunction (blank scenario): the contact placeholder is now interpret.suggest_hump_index
+# (G*dP/dG argmax), not a raw nanargmax(dPdG) -- the latter lands on the early water-hammer spike
+# whenever the spike outweighs the real hump.
 # --------------------------------------------------------------------------------------------------
 def _spike_hump_curve():
     """Local fixture: raw argmax(dPdG) lands on the spike near G~=0, but the real hump (found via
@@ -468,15 +410,6 @@ def test_seed_gfunction_contact_at_hump_not_spike():
     assert abs(state.min_dpdg_G - 0.55) < 0.15
     assert abs(state.contact_G - 3.5) < 0.3
     assert state.contact_G > 1.0  # nowhere near the spike at G~=0
-
-
-def test_reset_gfunction_picks_blank_contact_at_hump_not_spike():
-    G, dPdG = _spike_hump_curve()
-    res = _res_with_resampled(G, dPdG)
-    state = PickState(closure_scenario="")
-    assert picks.reset_gfunction_picks(state, res) is None
-    assert abs(state.contact_G - 3.5) < 0.3
-    assert state.contact_G > 1.0
 
 
 # --------------------------------------------------------------------------------------------------

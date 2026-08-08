@@ -408,9 +408,6 @@ class DfitApp:
         self.var_showd2 = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.frm_cscen, text="show d²P/dG²", variable=self.var_showd2,
                         command=self._on_showd2).pack(anchor="w", pady=(4, 0))
-        self.btn_gfunction_reset = ttk.Button(self.frm_cscen, text="Reset picks",
-                                              command=self._on_reset_gfunction_picks)
-        self.btn_gfunction_reset.pack(anchor="w", pady=(6, 0))
         ttk.Button(self.frm_cscen, text="Interpretation guide...",
                    command=lambda: self._open_guide("closure")).pack(anchor="w", pady=(6, 0))
 
@@ -914,16 +911,6 @@ class DfitApp:
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
 
-    def _on_reset_gfunction_picks(self):
-        """The G-function step's adaptive "Reset picks" button: re-run the active scenario's
-        auto-pick, discarding any manual drags (decision 3)."""
-        hint = picks.reset_gfunction_picks(self.state, compute_all(self.state, self.td))
-        self.refresh()
-        if hint:
-            # refresh() -> _attach_controllers just set the step's default hint text; the
-            # reset's own failure feedback must win, same pattern as _on_scenario above.
-            self.hint_lbl.config(text=hint)
-
     # ---- interpretation guide window --------------------------------------------------------------
     def _open_guide(self, key: str):
         """Open the single interpretation-guide window (or refocus it) on the tab for `key`
@@ -1222,8 +1209,6 @@ class DfitApp:
         self.frm_pcscen.pack_forget()
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
-            self.btn_gfunction_reset.configure(
-                text=picks.gfunction_reset_button_label(self.state.closure_scenario))
         if self.step in ("loglog", "porepressure"):
             self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
