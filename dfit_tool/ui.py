@@ -206,6 +206,7 @@ class DfitApp:
         self.root = root
         self.root.title("DFIT interpretation (first build)")
         self.root.geometry("1400x850")
+        self.root.state("zoomed")
 
         self.td: io_load.TestData | None = None
         self.state = PickState()
@@ -241,7 +242,7 @@ class DfitApp:
     def _build_top(self):
         top = ttk.Frame(self.root, padding=6)
         top.pack(side="top", fill="x")
-        ttk.Button(top, text="Open CSV…", command=self._open).pack(side="left")
+        ttk.Button(top, text="Open File…", command=self._open).pack(side="left")
         ttk.Button(top, text="Open Folder…", command=self._open_folder).pack(side="left")
         self.file_lbl = ttk.Label(top, text="(no file)")
         self.file_lbl.pack(side="left", padx=8)

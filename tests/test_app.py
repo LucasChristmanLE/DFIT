@@ -65,7 +65,8 @@ def _init_stub():
     stub._open_folder_path = lambda p: stub._open_folder_calls.append(p)
     stub._load_calls = []
     stub._load = lambda p: stub._load_calls.append(p)
-    stub.root = types.SimpleNamespace(title=lambda t: None, geometry=lambda g: None)
+    stub.root = types.SimpleNamespace(title=lambda t: None, geometry=lambda g: None,
+                                      state=lambda s: None)
     return stub
 
 
