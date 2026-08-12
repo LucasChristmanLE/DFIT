@@ -39,6 +39,12 @@ def test_shmin_rapid_folded_into_shmin_compliance_row():
     assert "Shmin compliance" in ui.FIELD_STEP
 
 
+def test_shmin_liberty_row_present_and_owned_by_gfunction_step():
+    # Display + log only -- no asterisk logic, this row is never a fallback substitution.
+    assert "Shmin Liberty" in ui.PANEL_FIELDS
+    assert ui.FIELD_STEP["Shmin Liberty"] == "gfunction"
+
+
 class _FakeLabel:
     """Minimal duck-typed ttk.Label stand-in: records the last .config(text=...) call."""
 
@@ -145,3 +151,20 @@ def test_update_panel_both_asterisks_clear_on_a_second_refresh():
     stub._update_panel()
     assert stub.name_lbls["Shmin compliance"].text == "Shmin compliance"
     assert stub.name_lbls["NWB complexity"].text == "NWB complexity"
+
+
+def test_update_panel_shmin_liberty_renders_when_visited():
+    res = DerivedResults(shmin_liberty=9150.0)
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.value_lbls["Shmin Liberty"].text == "9150"
+    assert stub.name_lbls["Shmin Liberty"].text == "Shmin Liberty"  # never asterisked
+
+
+def test_update_panel_shmin_liberty_blanks_when_gfunction_not_visited():
+    res = DerivedResults(shmin_liberty=9150.0)
+    state = PickState(step_status={})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.value_lbls["Shmin Liberty"].text == "-"

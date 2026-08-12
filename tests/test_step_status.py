@@ -117,6 +117,7 @@ def test_field_step_mapping_matches_spec():
         "net (tangent)": "tangent",
         "delta closure": "tangent",
         "Shmin variable": "tangent",
+        "Shmin Liberty": "gfunction",
         "tc variable (min)": "tangent",
         "net (variable)": "tangent",
         "pore pressure": "porepressure",

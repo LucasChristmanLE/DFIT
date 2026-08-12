@@ -51,6 +51,7 @@ LOG_COLUMNS = [
     "near_wellbore_complexity",
     "tail_trim_s",
     "tail_trim_reason",
+    "Shmin_liberty",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -407,4 +408,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "near_wellbore_complexity": res.near_wellbore_complexity,
         "tail_trim_s": state.tail_trim_dt,
         "tail_trim_reason": state.tail_trim_reason,
+        "Shmin_liberty": res.shmin_liberty,
     }

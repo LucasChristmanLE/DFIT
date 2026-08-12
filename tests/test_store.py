@@ -703,6 +703,14 @@ def test_build_log_row_pp_confidence_empty_otherwise(tmp_path):
     assert row["pp_confidence"] == ""
 
 
+def test_build_log_row_maps_shmin_liberty(tmp_path):
+    # No min-dP/dG pick (the default injection_state() has no gfunction picks at all) -> None,
+    # same as res.shmin_liberty -- the mapping is a straight passthrough, not computed here.
+    row, _, res = _built_row(tmp_path)
+    assert res.shmin_liberty is None
+    assert row["Shmin_liberty"] is None
+
+
 def test_build_log_row_closure_time_seconds_to_minutes(tmp_path):
     td = make_testdata()
     state = injection_state(td)
@@ -783,8 +791,11 @@ def test_log_row_has_tail_trim_reason(tmp_path):
 
     row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
 
-    # Appended last so an existing dfit_log.csv stays loadable.
-    assert store.LOG_COLUMNS[-1] == "tail_trim_reason"
+    # Appended directly after tail_trim_s so an existing dfit_log.csv stays loadable --
+    # Shmin_liberty was appended later still, so tail_trim_reason is no longer the last column,
+    # but this positional relationship still holds.
+    assert (store.LOG_COLUMNS.index("tail_trim_reason")
+            == store.LOG_COLUMNS.index("tail_trim_s") + 1)
     assert row["tail_trim_reason"] == "low_pressure"
 
 

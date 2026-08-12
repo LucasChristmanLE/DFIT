@@ -208,6 +208,15 @@ Per-test deliverables:
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
   other two (Shmin, closure time, and net pressure each have compliance, tangent, and
   variable rows in the panel; effective ISIP shows only the compliance row there).
+- **Shmin, Liberty** — Liberty's internal variant of the compliance method, minus 200 psi
+  (`interpret.LIBERTY_OFFSET_PSI`). C-A (and blank) anchors on the min-dP/dG pick
+  (`state.min_dpdg_G`); C-B anchors on the contact pick instead (the inflection) — the min pick
+  there is only the inflection's seed and can sit at a nearby rel-min, not the inflection
+  itself. Gated on `state.contact_G` being set, so it blanks in every state that blanks the
+  compliance row (including a C-A/C-B whose contact construction failed); blank for C-C/C-D.
+  Shown as the "Shmin Liberty" panel row and logged to the `Shmin_liberty` column only — it is
+  not drawn on any plot and feeds no other derived value (no net pressure, no shared reference
+  ISIP, no complexity).
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and

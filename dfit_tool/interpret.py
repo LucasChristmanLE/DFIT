@@ -18,6 +18,7 @@ import numpy as np
 
 BBL_PER_MIN = 1.0  # BPM is bbl/min; time integrated in minutes gives bbl.
 COMPLIANCE_OFFSET_PSI = 75.0
+LIBERTY_OFFSET_PSI = 200.0  # Liberty-internal method: anchor BHP - 200 psi (see shmin_liberty)
 RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-250 psi)
 RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
 MIN_SURFACE_PRESSURE_PSI = 100.0  # below this, the hydrostatic BHP conversion is unreliable
@@ -253,6 +254,12 @@ def effective_isip(anchor_G: float, anchor_P: float, slope_P_per_G: float) -> fl
 def shmin_compliance(contact_pressure: float, offset: float = COMPLIANCE_OFFSET_PSI) -> float:
     """Compliance-method Shmin = contact pressure - offset (default 75 psi)."""
     return contact_pressure - offset
+
+
+def shmin_liberty(anchor_pressure: float, offset: float = LIBERTY_OFFSET_PSI) -> float:
+    """Liberty-internal Shmin = BHP at the method's anchor (the min-dP/dG pick for C-A, the
+    inflection/contact pick for C-B) - offset (default 200 psi)."""
+    return anchor_pressure - offset
 
 
 def shmin_tangent(closure_pressure: float) -> float:

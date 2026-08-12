@@ -245,6 +245,7 @@ class DerivedResults:
     shmin_tangent: Optional[float] = None
     shmin_variable: Optional[float] = None
     shmin_rapid: Optional[float] = None
+    shmin_liberty: Optional[float] = None
     closure_time_compliance_s: Optional[float] = None
     closure_time_tangent_s: Optional[float] = None
     closure_time_variable_s: Optional[float] = None
@@ -525,6 +526,21 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.shmin_compliance = interpret.shmin_compliance(res.contact_pressure)
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
                                                           res.resampled.dt))
+
+    # Liberty-internal Shmin: the Liberty variant of the compliance method. The anchor is the
+    # min-dP/dG pick for C-A (and a blank scenario); for C-B the inflection is the contact pick
+    # itself -- the min pick there is only the inflection *seed* and can sit at a nearby rel-min,
+    # so anchoring on it would read the wrong point. Gated on contact_G so it blanks whenever the
+    # scenario's contact construction failed (e.g. the min pick fell back to the global min on a
+    # record with no interior rel-min) -- the same states that blank the compliance row. Display +
+    # log only: never feeds net pressure or the shared reference ISIP.
+    if (state.contact_G is not None and res.diagnostics is not None
+            and not state.closure_scenario.startswith(("C-C", "C-D"))):
+        anchor_G = (state.contact_G if state.closure_scenario.startswith("C-B")
+                    else state.min_dpdg_G)
+        if anchor_G is not None:
+            p_anchor = float(np.interp(anchor_G, res.diagnostics.G, res.resampled.p))
+            res.shmin_liberty = interpret.shmin_liberty(p_anchor)
 
     # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, so no *compliance*
     # effective ISIP -- the tangent one still exists and still feeds the shared reference; this

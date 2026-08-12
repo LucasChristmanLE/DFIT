@@ -59,12 +59,12 @@ _PC_HINTS = {
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
-# The 18 result-panel rows, in display order -- module level (not just a literal inside
+# The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
     "eff ISIP (compliance)", "NWB complexity",
-    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable",
+    "contact P", "Shmin compliance", "Shmin tangent", "Shmin variable", "Shmin Liberty",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
     "delta closure", "pore pressure",
@@ -94,6 +94,7 @@ FIELD_STEP = {
     "net (tangent)": "tangent",
     "delta closure": "tangent",
     "Shmin variable": "tangent",
+    "Shmin Liberty": "gfunction",
     "tc variable (min)": "tangent",
     "net (variable)": "tangent",
     "pore pressure": "porepressure",
@@ -1542,6 +1543,7 @@ class DfitApp:
                                   else s(r.shmin_compliance)),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
+            "Shmin Liberty": s(r.shmin_liberty),
             "tc compliance (min)": s(r.closure_time_compliance_s / 60
                                       if r.closure_time_compliance_s is not None else None, "{:.2f}"),
             "tc tangent (min)": s(r.closure_time_tangent_s / 60
