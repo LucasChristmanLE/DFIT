@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from dfit_tool import io_load
+from dfit_tool import io_load, units
 
 # --------------------------------------------------------------------------------------------------
 # FIX A -- Date + Time columns, day-first dates
@@ -836,3 +836,230 @@ def test_load_csv_ordinary_month_first_csv_unchanged(tmp_path):
     assert dt.iloc[0] == pd.Timestamp("2022-08-09 08:23:17")
     assert dt.iloc[-1] == pd.Timestamp("2022-08-10 08:23:40")
     np.testing.assert_allclose(td.t_s, [0.0, 12.0, 86423.0])
+
+
+# --------------------------------------------------------------------------------------------------
+# unit detection (io_load.classify_pressure_magnitude / detect_channel_unit /
+# refresh_unit_detection) -- see units.py and ../CLAUDE.md's Approach section.
+# --------------------------------------------------------------------------------------------------
+def _kpa_csv(tmp_path):
+    """Strathcona shape: "CASING Pressure (KPAg)" header, no rate/volume."""
+    p = tmp_path / "kpa.csv"
+    p.write_text(
+        "Date,CASING Pressure (KPAg)\n"
+        "1/1/2024 00:00:00,90050\n"
+        "1/1/2024 00:00:01,90040\n"
+        "1/1/2024 00:00:02,90030\n"
+    )
+    return io_load.load_csv(str(p))
+
+
+def test_header_suffix_kpag_detected_with_source_header(tmp_path):
+    td = _kpa_csv(tmp_path)
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    det = td.unit_detections["CASING Pressure (KPAg)"]
+    assert det.unit == "kpa"
+    assert det.factor == pytest.approx(0.1450377377)
+    assert det.source == "header"
+
+
+def test_header_suffix_conversion_applied_lazily_via_column(tmp_path):
+    td = _kpa_csv(tmp_path)
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    converted = td.column("CASING Pressure (KPAg)")
+    np.testing.assert_allclose(converted, np.array([90050, 90040, 90030]) * 0.1450377377)
+    # The raw df itself is never mutated -- lazy conversion, not eager.
+    np.testing.assert_allclose(
+        pd.to_numeric(td.df["CASING Pressure (KPAg)"]).to_numpy(dtype=float),
+        [90050.0, 90040.0, 90030.0],
+    )
+
+
+@pytest.mark.parametrize("p99,expected_unit,expected_confidence", [
+    (5000.0, "psi", "high"),
+    (17000.0, "psi", "low"),
+    (90000.0, "kpa", "high"),
+])
+def test_classify_pressure_magnitude_thresholds(p99, expected_unit, expected_confidence):
+    values = np.full(20, p99)
+    unit, confidence = io_load.classify_pressure_magnitude(values)
+    assert unit == expected_unit
+    assert confidence == expected_confidence
+
+
+def test_classify_pressure_magnitude_too_few_finite_samples_is_psi_low():
+    unit, confidence = io_load.classify_pressure_magnitude(np.array([np.nan, 5000.0]))
+    assert unit == "psi"
+    assert confidence == "low"
+
+
+def test_detect_channel_unit_pressure_heuristic_no_header(tmp_path):
+    p = tmp_path / "nohdr.csv"
+    p.write_text("Date,Pressure\n1/1/2024 00:00:00,90050\n1/1/2024 00:00:01,90040\n")
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, "Pressure")
+    det = td.unit_detections["Pressure"]
+    assert det.unit == "kpa"
+    assert det.source == "heuristic"
+    assert det.confidence == "high"
+
+
+def test_rate_inherits_metric_pressure_verdict(tmp_path):
+    p = tmp_path / "metric.csv"
+    p.write_text(
+        "Date,Pressure,Rate\n"
+        "1/1/2024 00:00:00,90050,6.0\n"
+        "1/1/2024 00:00:01,90040,6.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, "Pressure", rate_col="Rate")
+    rate_det = td.unit_detections["Rate"]
+    assert rate_det.unit == "m3/min"
+    assert rate_det.source == "inherited"
+    assert rate_det.confidence == "low"
+    np.testing.assert_allclose(td.column("Rate"), np.array([6.0, 6.0]) * units.M3_TO_BBL)
+
+
+def test_rate_inherits_field_pressure_verdict(tmp_path):
+    p = tmp_path / "field.csv"
+    p.write_text(
+        "Date,Pressure,Rate\n"
+        "1/1/2024 00:00:00,5000,6.0\n"
+        "1/1/2024 00:00:01,4995,6.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, "Pressure", rate_col="Rate")
+    rate_det = td.unit_detections["Rate"]
+    assert rate_det.unit == "bpm"
+    assert rate_det.source == "inherited"
+    np.testing.assert_allclose(td.column("Rate"), [6.0, 6.0])
+
+
+def test_refresh_unit_detection_idempotent(tmp_path):
+    td = _kpa_csv(tmp_path)
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    first = dict(td.unit_factors)
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    second = dict(td.unit_factors)
+    assert first == second
+    first_values = td.column("CASING Pressure (KPAg)")
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    second_values = td.column("CASING Pressure (KPAg)")
+    np.testing.assert_allclose(first_values, second_values)
+
+
+def test_override_bypasses_header_and_heuristic(tmp_path):
+    td = _kpa_csv(tmp_path)
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)", pressure_unit="psi")
+    det = td.unit_detections["CASING Pressure (KPAg)"]
+    assert det.unit == "psi"
+    assert det.factor == 1.0
+    assert det.source == "override"
+
+
+def test_low_confidence_heuristic_warns_even_at_factor_one(tmp_path):
+    p = tmp_path / "ambiguous.csv"
+    p.write_text("Date,Pressure\n1/1/2024 00:00:00,17000\n1/1/2024 00:00:01,17000\n")
+    td = io_load.load_csv(str(p))
+    warnings = io_load.refresh_unit_detection(td, "Pressure")
+    assert any("ambiguous" in w.lower() for w in warnings)
+
+
+def test_header_conversion_warns_with_factor_and_source(tmp_path):
+    td = _kpa_csv(tmp_path)
+    warnings = io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)")
+    assert len(warnings) == 1
+    assert "kpa" in warnings[0].lower()
+    assert "header" in warnings[0].lower()
+
+
+def test_field_units_load_is_silent(tmp_path):
+    p = tmp_path / "field.csv"
+    p.write_text("Date,Pressure (psi)\n1/1/2024 00:00:00,5000\n1/1/2024 00:00:01,4995\n")
+    td = io_load.load_csv(str(p))
+    warnings = io_load.refresh_unit_detection(td, "Pressure (psi)")
+    assert warnings == []
+
+
+# --------------------------------------------------------------------------------------------------
+# finding 3 -- MPa/bar pressure must also trigger metric inheritance for rate/volume (not just
+# kPa); inherited confidence is always "low"; a channel's own header suffix still wins.
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("header,peak", [("MPa", 90.05), ("bar", 900.5)])
+def test_rate_and_volume_inherit_mpa_and_bar_pressure(tmp_path, header, peak):
+    p = tmp_path / "metric.csv"
+    p.write_text(
+        f"Date,Pressure ({header}),Rate,Volume\n"
+        f"1/1/2024 00:00:00,{peak},6.0,100.0\n"
+        f"1/1/2024 00:00:01,{peak - 0.01},6.0,100.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, f"Pressure ({header})", rate_col="Rate", volume_col="Volume")
+    rate_det = td.unit_detections["Rate"]
+    vol_det = td.unit_detections["Volume"]
+    assert rate_det.unit == "m3/min"
+    assert rate_det.source == "inherited"
+    assert rate_det.confidence == "low"
+    assert vol_det.unit == "m3"
+    assert vol_det.confidence == "low"
+    np.testing.assert_allclose(td.column("Rate"), np.array([6.0, 6.0]) * units.M3_TO_BBL)
+    np.testing.assert_allclose(td.column("Volume"), np.array([100.0, 100.0]) * units.M3_TO_BBL)
+
+
+def test_rate_inherited_field_confidence_is_low_not_high(tmp_path):
+    # Finding 3: inherited confidence is always "low" (an inference from another channel's
+    # verdict), even when it lands on field units.
+    p = tmp_path / "field.csv"
+    p.write_text(
+        "Date,Pressure,Rate\n"
+        "1/1/2024 00:00:00,5000,6.0\n"
+        "1/1/2024 00:00:01,4995,6.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, "Pressure", rate_col="Rate")
+    assert td.unit_detections["Rate"].confidence == "low"
+
+
+def test_rate_own_header_suffix_beats_kpa_pressure_inheritance(tmp_path):
+    # A rate column whose own header names bpm must stay bpm even under a metric pressure verdict
+    # -- a channel's own header suffix always wins over inheritance.
+    p = tmp_path / "mixed.csv"
+    p.write_text(
+        "Date,Pressure (KPAg),Rate (bpm)\n"
+        "1/1/2024 00:00:00,90050,6.0\n"
+        "1/1/2024 00:00:01,90040,6.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    io_load.refresh_unit_detection(td, "Pressure (KPAg)", rate_col="Rate (bpm)")
+    rate_det = td.unit_detections["Rate (bpm)"]
+    assert rate_det.unit == "bpm"
+    assert rate_det.source == "header"
+    np.testing.assert_allclose(td.column("Rate (bpm)"), [6.0, 6.0])
+
+
+# --------------------------------------------------------------------------------------------------
+# finding 4 -- refresh_unit_detection must not KeyError on a column name absent from td.df (a
+# foreign picks JSON, or a folder-mode source switch that leaves a stale column name behind).
+# --------------------------------------------------------------------------------------------------
+def test_refresh_unit_detection_missing_column_no_raise_no_entry(tmp_path):
+    td = _kpa_csv(tmp_path)
+    warnings = io_load.refresh_unit_detection(
+        td, "Pressure Not A Real Column", rate_col="Rate Also Missing",
+        volume_col="Volume Also Missing")
+    assert warnings == []
+    assert td.unit_factors == {}
+    assert td.unit_detections == {}
+
+
+def test_refresh_unit_detection_missing_pressure_col_still_skips_rate_inheritance(tmp_path):
+    # A missing pressure column means no pressure_detection to inherit from -- the rate/volume
+    # branch itself is unaffected as long as it too is a real column, defaulting to field units.
+    p = tmp_path / "onlyrate.csv"
+    p.write_text("Date,Rate\n1/1/2024 00:00:00,6.0\n1/1/2024 00:00:01,6.0\n")
+    td = io_load.load_csv(str(p))
+    warnings = io_load.refresh_unit_detection(td, "Missing Pressure Col", rate_col="Rate")
+    assert warnings == []
+    assert "Missing Pressure Col" not in td.unit_detections
+    rate_det = td.unit_detections["Rate"]
+    assert rate_det.unit == "bpm"
+    assert rate_det.source == "inherited"

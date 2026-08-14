@@ -65,7 +65,7 @@ def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monk
     monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
 
     stub = types.SimpleNamespace()
-    stub._load_common = lambda path: True
+    stub._load_common = lambda path, well_hint=None: True
     stub.state = PickState()
     stub._apply_loaded_state_calls = []
 
@@ -102,7 +102,7 @@ def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monke
     monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
 
     stub = types.SimpleNamespace()
-    stub._load_common = lambda path: True
+    stub._load_common = lambda path, well_hint=None: True
     stub.state = PickState()
     stub._apply_loaded_state = lambda state: setattr(stub, "state", state)
     stub._refresh_queue_row = lambda e: None
@@ -131,6 +131,9 @@ def _save_stub(current_entry, td, notes="some notes"):
     stub.var_rate = _Var(None)
     stub.var_volume = _Var(None)
     stub.var_isbhp = _Var(False)
+    stub.var_pressure_unit = _Var("auto")
+    stub.var_rate_unit = _Var("auto")
+    stub.var_volume_unit = _Var("auto")
     stub.var_density = _Var(None)
     stub.var_tvd = _Var(None)
     stub.var_well = _Var("")
@@ -145,7 +148,7 @@ def _save_stub(current_entry, td, notes="some notes"):
 
 
 def test_save_current_queue_picks_noop_when_no_current_entry():
-    stub = _save_stub(current_entry=None, td=object())
+    stub = _save_stub(current_entry=None, td=types.SimpleNamespace())
     stub._save_current_queue_picks()
     assert stub._refresh_calls == []
 
@@ -159,7 +162,7 @@ def test_save_current_queue_picks_noop_when_no_file_loaded():
 
 def test_save_current_queue_picks_writes_json_and_refreshes_row(tmp_path):
     entry = store.TestEntry(test_id="w", folder=str(tmp_path))
-    stub = _save_stub(current_entry=entry, td=object(), notes="hello")
+    stub = _save_stub(current_entry=entry, td=types.SimpleNamespace(), notes="hello")
 
     stub._save_current_queue_picks()
 
@@ -176,7 +179,7 @@ def test_save_current_queue_picks_captures_unapplied_widget_edits(tmp_path):
     task fixes) -- density/well/formation are typed as NEW values while self.state still holds
     the OLD ones; _save_current_queue_picks must sync the widgets into state before saving."""
     entry = store.TestEntry(test_id="w", folder=str(tmp_path))
-    stub = _save_stub(current_entry=entry, td=object(), notes="hello")
+    stub = _save_stub(current_entry=entry, td=types.SimpleNamespace(), notes="hello")
     stub.state.density_ppg = 8.0
     stub.state.well_name = "Old Well"
     stub.state.formation = "Old Formation"
@@ -198,7 +201,7 @@ def test_sync_state_from_widgets_garbled_density_preserves_prior_value(tmp_path)
     non-empty but unparseable Density/TVD entry ("8." or "8.x") must not null out a
     previously-good value -- only an explicitly emptied box should clear it."""
     entry = store.TestEntry(test_id="w", folder=str(tmp_path))
-    stub = _save_stub(current_entry=entry, td=object(), notes="hello")
+    stub = _save_stub(current_entry=entry, td=types.SimpleNamespace(), notes="hello")
     stub.state.density_ppg = 8.0
     stub.state.tvd_ft = 9000.0
     stub.var_density.set("8.")  # garbled, mid-keystroke
@@ -438,6 +441,9 @@ def _apply_stub():
                  "var_alpha", "var_step", "var_cscen", "var_pcscen", "var_ppaxis"):
         setattr(stub, name, _Var())
     stub.var_isbhp = _Var()
+    stub.var_pressure_unit = _Var()
+    stub.var_rate_unit = _Var()
+    stub.var_volume_unit = _Var()
     stub.var_showd2 = _Var()
     stub.quest_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.txt_notes = _Text()
@@ -656,6 +662,132 @@ def test_on_source_change_accept_calls_load_test_with_force_reset(monkeypatch):
 
 
 # --------------------------------------------------------------------------------------------------
+# _on_unit_change: switching a per-channel unit override resets picks for this test (a fresh
+# PickState via _reset_picks_keep_mapping, not a resume) -- confirm first, reverting the combobox
+# on decline. Mirrors _on_source_change's structure/tests above.
+# --------------------------------------------------------------------------------------------------
+def test_on_unit_change_noop_when_unchanged():
+    stub = types.SimpleNamespace()
+    stub.td = object()  # a file is loaded -- exercises the past-the-guard path
+    stub.state = PickState(pressure_unit="auto")
+    stub.var_pressure_unit = _Var("auto")
+    stub._reset_picks_keep_mapping_calls = []
+    stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
+    stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
+
+    stub._on_unit_change("pressure")
+
+    assert stub._reset_picks_keep_mapping_calls == []
+
+
+def test_on_unit_change_decline_reverts_combobox(monkeypatch):
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: False)
+    stub = types.SimpleNamespace()
+    stub.td = object()
+    stub.state = PickState(pressure_unit="auto")
+    stub.var_pressure_unit = _Var("kpa")
+    stub._reset_picks_keep_mapping_calls = []
+    stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
+    stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
+
+    stub._on_unit_change("pressure")
+
+    assert stub.var_pressure_unit.value == "auto"
+    assert stub._reset_picks_keep_mapping_calls == []
+    assert stub.state.pressure_unit == "auto"
+
+
+def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
+    monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: True)
+    stub = types.SimpleNamespace()
+    stub.td = object()
+    stub.state = PickState(pressure_unit="auto", pressure_col="P", min_dpdg_G=5.0)
+    stub.var_pressure_unit = _Var("kpa")
+    stub.var_rate_unit = _Var("auto")
+    stub.var_volume_unit = _Var("auto")
+    stub.var_cscen = _Var("C-A clear")
+    stub.var_pcscen = _Var("PC-A linear")
+    stub.var_ppaxis = _Var("tm1")
+    stub.var_showd2 = _Var(True)
+    stub._views = {"gfunction": "stale"}
+    stub._goto_calls = []
+    stub._goto = lambda step: stub._goto_calls.append(step)
+    stub._reset_picks_keep_mapping = types.MethodType(DfitApp._reset_picks_keep_mapping, stub)
+    stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
+
+    stub._on_unit_change("pressure")
+
+    assert stub.state.pressure_unit == "kpa"
+    assert stub.state.min_dpdg_G is None  # the pick was reset, not carried forward
+    assert stub.state.pressure_col == "P"  # mapping preserved
+    assert stub.var_cscen.value == ""
+    assert stub.var_pcscen.value == ""
+    assert stub.var_ppaxis.value == "tm12"
+    assert stub.var_showd2.value is False
+    assert stub._views == {k: None for k, _ in STEPS}
+    assert stub._goto_calls == ["overview"]
+
+
+def test_on_unit_change_no_file_loaded_reverts_without_dialog(monkeypatch):
+    # No file loaded (self.td is None): there's nothing to reset picks on and no test in play,
+    # so this must revert the combobox and return before ever popping the confirm dialog.
+    askyesno_calls = []
+    monkeypatch.setattr(
+        ui.messagebox, "askyesno",
+        lambda *a, **kw: askyesno_calls.append((a, kw)) or True)
+    stub = types.SimpleNamespace()
+    stub.td = None
+    stub.state = PickState(pressure_unit="auto")
+    stub.var_pressure_unit = _Var("kpa")
+    stub._reset_picks_keep_mapping_calls = []
+    stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
+    stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
+
+    stub._on_unit_change("pressure")
+
+    assert askyesno_calls == []
+    assert stub.var_pressure_unit.value == "auto"
+    assert stub.state.pressure_unit == "auto"
+    assert stub._reset_picks_keep_mapping_calls == []
+
+
+# --------------------------------------------------------------------------------------------------
+# _reset_picks_keep_mapping: the fresh-PickState builder _on_unit_change uses on accept.
+# --------------------------------------------------------------------------------------------------
+def test_reset_picks_keep_mapping_preserves_selected_fields_and_clears_rest():
+    stub = types.SimpleNamespace()
+    stub.state = PickState(
+        pressure_col="P", rate_col="R", volume_col="V", pressure_is_bhp=True,
+        pressure_unit="kpa", rate_unit="m3/min", volume_unit="bbl",
+        density_ppg=9.5, tvd_ft=8000.0, well_name="Foo 1H", formation="Eagle Ford",
+        alpha=0.5, resample_step=25.0, notes="some notes", active_source="dbs",
+        min_dpdg_G=5.0, contact_G=6.0, closure_scenario="C-A clear",
+        step_status={"overview": "done"},
+    )
+    stub._reset_picks_keep_mapping = types.MethodType(DfitApp._reset_picks_keep_mapping, stub)
+
+    stub._reset_picks_keep_mapping()
+
+    st = stub.state
+    assert (st.pressure_col, st.rate_col, st.volume_col) == ("P", "R", "V")
+    assert st.pressure_is_bhp is True
+    assert (st.pressure_unit, st.rate_unit, st.volume_unit) == ("kpa", "m3/min", "bbl")
+    assert st.density_ppg == 9.5
+    assert st.tvd_ft == 8000.0
+    assert st.well_name == "Foo 1H"
+    assert st.formation == "Eagle Ford"
+    assert st.alpha == 0.5
+    assert st.resample_step == 25.0
+    assert st.notes == "some notes"
+    assert st.active_source == "dbs"
+    # every numeric pick / step_status entry resets to the PickState default.
+    assert st.min_dpdg_G is None
+    assert st.contact_G is None
+    assert st.closure_scenario == ""
+    assert st.step_status == {}
+
+
+# --------------------------------------------------------------------------------------------------
 # _advance_queue: the shared auto-advance tail of Finish and Skip test. Advances to the next
 # "new" entry (scanning circularly from just after the current one), or reports the queue is
 # exhausted.
@@ -734,6 +866,9 @@ def _finish_stub(tmp_path, folder_mode, monkeypatch, second_status="new"):
     stub.var_rate = _Var(state.rate_col)
     stub.var_volume = _Var(state.volume_col)
     stub.var_isbhp = _Var(state.pressure_is_bhp)
+    stub.var_pressure_unit = _Var(state.pressure_unit)
+    stub.var_rate_unit = _Var(state.rate_unit)
+    stub.var_volume_unit = _Var(state.volume_unit)
     stub.var_density = _Var(state.density_ppg)
     stub.var_tvd = _Var(state.tvd_ft)
     stub.var_well = _Var(state.well_name)
@@ -947,6 +1082,9 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub.var_rate = _Var(state.rate_col)
     stub.var_volume = _Var(state.volume_col)
     stub.var_isbhp = _Var(state.pressure_is_bhp)
+    stub.var_pressure_unit = _Var(state.pressure_unit)
+    stub.var_rate_unit = _Var(state.rate_unit)
+    stub.var_volume_unit = _Var(state.volume_unit)
     stub.var_density = _Var(state.density_ppg)
     stub.var_tvd = _Var(state.tvd_ft)
     stub.var_well = _Var(state.well_name)
@@ -966,6 +1104,7 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub._update_stepbar = lambda: None
     stub._update_panel_visibility = lambda: None
     stub._update_panel = lambda: None
+    stub._update_unit_labels = lambda: None
     stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
     stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
     stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)

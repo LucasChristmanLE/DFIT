@@ -268,6 +268,12 @@ class DfitApp:
         self.var_tvd = tk.StringVar()
         self.var_alpha = tk.StringVar(value="1.0")
         self.var_step = tk.StringVar(value="30")
+        # Per-channel unit overrides -- "auto" (the default) means "detect it" (header suffix ->
+        # magnitude heuristic -> field-unit inheritance; see io_load.detect_channel_unit). Changing
+        # one away from "auto" resets picks (_on_unit_change), same reasoning as the Source combo.
+        self.var_pressure_unit = tk.StringVar(value="auto")
+        self.var_rate_unit = tk.StringVar(value="auto")
+        self.var_volume_unit = tk.StringVar(value="auto")
 
         def combo(parent, label, var, width=24):
             ttk.Label(parent, text=label).pack(side="left", padx=(8, 2))
@@ -275,11 +281,25 @@ class DfitApp:
             c.pack(side="left")
             return c
 
+        def unit_combo(parent, var, values, kind):
+            c = ttk.Combobox(parent, textvariable=var, values=values, width=8, state="readonly")
+            c.pack(side="left", padx=(2, 0))
+            c.bind("<<ComboboxSelected>>", lambda e: self._on_unit_change(kind))
+            lbl = ttk.Label(parent, text="", foreground="gray")
+            lbl.pack(side="left", padx=(2, 0))
+            return c, lbl
+
         self.cmb_pressure = combo(cfg, "Pressure:", self.var_pressure)
+        self.cmb_pressure_unit, self.lbl_pressure_unit = unit_combo(
+            cfg, self.var_pressure_unit, ["auto", "psi", "kpa", "mpa", "bar"], "pressure")
         ttk.Checkbutton(cfg, text="is BHP", variable=self.var_isbhp,
                         command=self._apply_config).pack(side="left", padx=4)
         self.cmb_rate = combo(cfg, "Rate:", self.var_rate, 20)
+        self.cmb_rate_unit, self.lbl_rate_unit = unit_combo(
+            cfg, self.var_rate_unit, ["auto", "bpm", "m3/min"], "rate")
         self.cmb_volume = combo(cfg, "Volume:", self.var_volume, 18)
+        self.cmb_volume_unit, self.lbl_volume_unit = unit_combo(
+            cfg, self.var_volume_unit, ["auto", "bbl", "m3"], "volume")
 
         # Pure metadata -- prefilled from the questionnaire like density/TVD, but nothing
         # computes on them and nothing gates on them. Free text, so plain Entry widgets.
@@ -504,10 +524,14 @@ class DfitApp:
         if path:
             self._load(path)
 
-    def _load_common(self, path: str) -> bool:
+    def _load_common(self, path: str, well_hint: Optional[str] = None) -> bool:
         """Load `path` into a fresh PickState and land on "overview" -- shared by single-file
         _load and folder-mode _load_test. Returns False (leaving the previous self.td/state
-        untouched) if the load failed, True on success."""
+        untouched) if the load failed, True on success.
+
+        `well_hint` picks which sheet of a multi-well questionnaire workbook to read (see
+        questionnaire._select_sheet) -- folder mode passes the entry's test_id; single-file mode
+        passes nothing and _load_questionnaire falls back to the data file's stem."""
         try:
             self.td = io_load.load(path)
         except Exception as e:
@@ -522,6 +546,9 @@ class DfitApp:
         self.var_rate.set(g["rate"] or "")
         self.var_volume.set(g["volume"] or "")
         self.var_isbhp.set(bool(g["pressure_is_bhp"]))
+        self.var_pressure_unit.set("auto")
+        self.var_rate_unit.set("auto")
+        self.var_volume_unit.set("auto")
         self.state = PickState()
         self._views = {k: None for k, _ in STEPS}
         self.var_cscen.set("")
@@ -535,7 +562,7 @@ class DfitApp:
         self.var_tvd.set("")
         self.var_well.set("")
         self.var_formation.set("")
-        self._load_questionnaire(path)
+        self._load_questionnaire(path, well_hint)
         self._sync_state_from_widgets()
         self._goto("overview")
         return True
@@ -681,7 +708,7 @@ class DfitApp:
             probed_picks = store.load_picks_for(entry)
             source = _resolve_load_source(entry, probed_picks)
         path = entry.data_path(source)
-        if not self._load_common(path):
+        if not self._load_common(path, well_hint=entry.test_id):
             return
         saved = None
         if not force_reset:
@@ -733,6 +760,68 @@ class DfitApp:
             self.var_source.set(current)
             return
         self._load_test(self.current_entry, source=new, force_reset=True)
+
+    def _on_unit_change(self, kind: str):
+        """One of the three per-channel unit dropdowns (pressure/rate/volume): mirrors
+        _on_source_change -- an override rescales the same column under existing picks
+        (`isip_tangent` stores an absolute psi anchor/slope, and `te_s` feeds `g_time`, shifting
+        the meaning of every stored G pick), so switching it resets picks rather than silently
+        reinterpreting them under a new scale. Confirm first; decline reverts the combobox to
+        its prior value. The existing plain channel-remap combos keep their current no-confirm
+        behavior -- a deliberate scope boundary (see ../CLAUDE.md)."""
+        # kind is "pressure"/"rate"/"volume" -- both the widget var and the PickState attribute
+        # it mirrors follow the same "<kind>_unit" naming, so this is looked up rather than
+        # spelled out three times (and, unlike a dict literal of all three, never touches the
+        # other two kinds' widgets).
+        var = getattr(self, f"var_{kind}_unit")
+        attr = f"{kind}_unit"
+        current = getattr(self.state, attr)
+        if self.td is None:
+            # No file loaded: there's nothing to reset picks on and nothing for the dropdown to
+            # mean yet -- revert it rather than popping a confirm dialog with no test in play.
+            var.set(current)
+            return
+        new = var.get()
+        if new == current:
+            return
+        if not messagebox.askyesno(
+                "Change unit",
+                "Changing this channel's unit resets all picks for this test. Continue?"):
+            var.set(current)
+            return
+        setattr(self.state, attr, new)
+        self._reset_picks_keep_mapping()
+        self.var_cscen.set("")
+        self.var_pcscen.set("")
+        self.var_ppaxis.set("tm12")
+        self.var_showd2.set(False)
+        self._views = {k: None for k, _ in STEPS}
+        self._goto("overview")
+
+    def _reset_picks_keep_mapping(self):
+        """A fresh PickState that keeps only what a unit-override change must not disturb:
+        channel mapping, unit overrides, density/TVD, well/formation, alpha, resample step,
+        notes, and the active data source -- every numeric pick, step_status, and the tail trim
+        reset to their defaults. Used by _on_unit_change (see its docstring for why those picks
+        can't just be carried forward)."""
+        old = self.state
+        self.state = PickState(
+            pressure_col=old.pressure_col,
+            rate_col=old.rate_col,
+            volume_col=old.volume_col,
+            pressure_is_bhp=old.pressure_is_bhp,
+            pressure_unit=old.pressure_unit,
+            rate_unit=old.rate_unit,
+            volume_unit=old.volume_unit,
+            density_ppg=old.density_ppg,
+            tvd_ft=old.tvd_ft,
+            well_name=old.well_name,
+            formation=old.formation,
+            alpha=old.alpha,
+            resample_step=old.resample_step,
+            notes=old.notes,
+            active_source=old.active_source,
+        )
 
     def _write_log_row(self, entry: store.TestEntry):
         """Build and upsert one dfit_log.csv row for `entry` from the current state/res, then
@@ -814,9 +903,13 @@ class DfitApp:
         self._save_current_queue_picks()
         self._load_test(entry)
 
-    def _load_questionnaire(self, csv_path: str):
+    def _load_questionnaire(self, csv_path: str, well_hint: Optional[str] = None):
         """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill
         density/TVD/well name/formation.
+
+        `well_hint` disambiguates a multi-sheet workbook (see questionnaire._select_sheet) --
+        falls back to the data file's own stem when not given (single-file mode; folder mode
+        passes the entry's test_id via _load_common).
 
         Best-effort only: a missing or malformed questionnaire must never block the CSV load
         already underway, so any failure here is swallowed and just leaves the provenance label
@@ -829,7 +922,8 @@ class DfitApp:
             xlsx_path, find_warnings = find_questionnaire(csv_path)
             if xlsx_path is None:
                 return
-            result = parse_questionnaire(xlsx_path)
+            hint = well_hint if well_hint is not None else pathlib.Path(csv_path).stem
+            result = parse_questionnaire(xlsx_path, well_hint=hint)
         except Exception:
             return
 
@@ -858,6 +952,9 @@ class DfitApp:
         self.state.rate_col = self.var_rate.get() or None
         self.state.volume_col = self.var_volume.get() or None
         self.state.pressure_is_bhp = self.var_isbhp.get()
+        self.state.pressure_unit = self.var_pressure_unit.get()
+        self.state.rate_unit = self.var_rate_unit.get()
+        self.state.volume_unit = self.var_volume_unit.get()
         # This can fire mid-edit (e.g. on autosave), so a non-empty but
         # unparseable entry ("8." mid-keystroke) must not null out a
         # previously-good, already-logged value -- only an explicitly
@@ -868,6 +965,13 @@ class DfitApp:
         self.state.formation = self.var_formation.get().strip()
         self.state.alpha = _to_float(self.var_alpha.get()) or 1.0
         self.state.resample_step = _to_float(self.var_step.get()) or 30.0
+        # Belt-and-suspenders: refresh_unit_detection also runs at the top of every compute_all,
+        # but doing it here too means td.unit_factors reflects the just-synced overrides before
+        # anything (e.g. a step seeder) reads a channel off self.td directly.
+        if self.td is not None:
+            io_load.refresh_unit_detection(
+                self.td, self.state.pressure_col, self.state.rate_col, self.state.volume_col,
+                self.state.pressure_unit, self.state.rate_unit, self.state.volume_unit)
 
     def _apply_config(self):
         if self.td is None:
@@ -1185,6 +1289,7 @@ class DfitApp:
         self._update_stepbar()
         self._update_panel_visibility()
         self._update_panel()
+        self._update_unit_labels()
 
     def _update_stepbar(self):
         """Disable breadcrumb buttons for steps still ``not_visited`` (so a click is only ever
@@ -1573,6 +1678,19 @@ class DfitApp:
             text="NWB complexity*" if (use_tangent_ref and gf_visited) else "NWB complexity")
         self.warn_lbl.config(text="\n".join(r.warnings) if r.warnings else "")
 
+    def _update_unit_labels(self):
+        """Gray "(detected unit)" hint beside each of the three unit dropdowns, from
+        `td.unit_detections` -- refreshed every `refresh()` call (compute_all just rebuilt that
+        cache) so it always reflects the current channel mapping/override, not just the
+        load-time guess."""
+        if self.td is None:
+            return
+        for col, lbl in ((self.state.pressure_col, self.lbl_pressure_unit),
+                         (self.state.rate_col, self.lbl_rate_unit),
+                         (self.state.volume_col, self.lbl_volume_unit)):
+            det = self.td.unit_detections.get(col) if col else None
+            lbl.config(text=f"({det.unit})" if det is not None else "")
+
     # ---- persistence ----------------------------------------------------------------------------
     def _save_picks(self):
         if self.td is None:
@@ -1661,6 +1779,9 @@ class DfitApp:
         self.var_rate.set(self.state.rate_col or "")
         self.var_volume.set(self.state.volume_col or "")
         self.var_isbhp.set(self.state.pressure_is_bhp)
+        self.var_pressure_unit.set(self.state.pressure_unit)
+        self.var_rate_unit.set(self.state.rate_unit)
+        self.var_volume_unit.set(self.state.volume_unit)
         self.var_density.set("" if self.state.density_ppg is None else str(self.state.density_ppg))
         self.var_tvd.set("" if self.state.tvd_ft is None else str(self.state.tvd_ft))
         self.var_well.set(self.state.well_name)

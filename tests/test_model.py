@@ -4,9 +4,14 @@ step_status persistence specifically)."""
 
 import json
 
-from dfit_tool.model import PickState, _decode, compute_all
+import numpy as np
+import pytest
 
-from tests.helpers import injection_state, make_testdata
+from dfit_tool import units
+from dfit_tool.io_load import TestData as IoTestData
+from dfit_tool.model import PickState, TangentPick, _decode, compute_all
+
+from tests.helpers import PRESSURE_COL, injection_state, make_testdata
 
 
 def test_decode_migrates_old_eff_isip_line_anchor_to_min_dpdg_g(tmp_path):
@@ -78,3 +83,87 @@ def test_decode_defaults_well_name_and_formation_for_legacy_save():
     loaded = _decode(d)
     assert loaded.well_name == ""
     assert loaded.formation == ""
+
+
+# --------------------------------------------------------------------------------------------------
+# unit detection wiring: compute_all refreshes td's unit-detection cache and converts a
+# header-suffixed metric pressure column before any downstream value is computed (see
+# io_load.refresh_unit_detection / units.py / ../CLAUDE.md's Approach section).
+# --------------------------------------------------------------------------------------------------
+def _kpa_testdata():
+    """The same synthetic record as `helpers.make_testdata`, but with the pressure channel
+    renamed to carry a "(KPA)" header suffix and its raw values rescaled so that, once
+    converted back by `io_load.detect_channel_unit`, they numerically match the psi fixture."""
+    td_psi = make_testdata()
+    kpa_col = "PRESSURE (KPA)"
+    df = td_psi.df.copy()
+    df[kpa_col] = df[PRESSURE_COL] / units.KPA_TO_PSI
+    del df[PRESSURE_COL]
+    return IoTestData(path="<synthetic>", df=df, datetime_col=td_psi.datetime_col,
+                      t_s=td_psi.t_s, columns=list(df.columns)), kpa_col
+
+
+def test_decode_without_new_unit_fields_defaults_to_auto():
+    # An old save predating pressure_unit/rate_unit/volume_unit lacks the keys entirely -- the
+    # known-field filter in _decode must default them to "auto", not raise.
+    loaded = _decode({"pressure_col": "P"})
+    assert loaded.pressure_unit == "auto"
+    assert loaded.rate_unit == "auto"
+    assert loaded.volume_unit == "auto"
+
+
+def test_compute_all_converts_header_suffixed_kpa_pressure_to_psi_range():
+    td_kpa, kpa_col = _kpa_testdata()
+    state = injection_state(td_kpa)
+    state.pressure_col = kpa_col
+
+    td_psi = make_testdata()
+    state_psi = injection_state(td_psi)
+
+    res_kpa = compute_all(state, td_kpa)
+    res_psi = compute_all(state_psi, td_psi)
+
+    # Converted BHP lands in the same field range as the untouched psi fixture -- not the raw
+    # ~7x-larger kPa numbers.
+    np.testing.assert_allclose(res_kpa.bhp_all, res_psi.bhp_all, rtol=1e-6)
+
+    # Apparent ISIP/Shmin: a stand-in TangentPick anchored at t_shutin_s, same construction as
+    # test_variable_compliance.py's, gives apparent_isip a value on both -- they must agree since
+    # the conversion happened before this pick was ever interpreted.
+    state.isip_tangent = TangentPick(anchor_x=res_kpa.t_shutin_s, anchor_y=4500.0, slope=-10.0)
+    state_psi.isip_tangent = TangentPick(anchor_x=res_psi.t_shutin_s, anchor_y=4500.0, slope=-10.0)
+    res_kpa = compute_all(state, td_kpa)
+    res_psi = compute_all(state_psi, td_psi)
+
+    assert res_kpa.apparent_isip is not None
+    assert res_kpa.apparent_isip == pytest.approx(res_psi.apparent_isip, rel=1e-6)
+
+
+def test_compute_all_kpa_conversion_warns_and_sets_note():
+    td_kpa, kpa_col = _kpa_testdata()
+    state = injection_state(td_kpa)
+    state.pressure_col = kpa_col
+
+    res = compute_all(state, td_kpa)
+
+    assert any("kpa" in w.lower() for w in res.warnings)
+    assert "kpa" in res.unit_conversion_note.lower()
+
+
+def test_compute_all_kpa_conversion_idempotent_across_repeated_calls():
+    td_kpa, kpa_col = _kpa_testdata()
+    state = injection_state(td_kpa)
+    state.pressure_col = kpa_col
+
+    res1 = compute_all(state, td_kpa)
+    res2 = compute_all(state, td_kpa)
+
+    np.testing.assert_allclose(res1.bhp_all, res2.bhp_all)
+    assert res1.unit_conversion_note == res2.unit_conversion_note
+
+
+def test_compute_all_field_units_pressure_has_no_conversion_note():
+    td = make_testdata()
+    state = injection_state(td)
+    res = compute_all(state, td)
+    assert res.unit_conversion_note == ""

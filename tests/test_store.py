@@ -799,6 +799,38 @@ def test_log_row_has_tail_trim_reason(tmp_path):
     assert row["tail_trim_reason"] == "low_pressure"
 
 
+def test_log_columns_includes_units_note_after_shmin_liberty():
+    assert "units_note" in store.LOG_COLUMNS
+    assert store.LOG_COLUMNS.index("units_note") == store.LOG_COLUMNS.index("Shmin_liberty") + 1
+
+
+def test_build_log_row_maps_units_note(tmp_path):
+    td = make_testdata()
+    state = injection_state(td)
+    res = compute_all(state, td)
+    res.unit_conversion_note = "pressure: kpa×0.145038 (header)"
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = os.path.join(str(tmp_path), "well1.csv")
+
+    row = store.build_log_row(entry, active_path, str(tmp_path), state, td, res)
+
+    assert row["units_note"] == "pressure: kpa×0.145038 (header)"
+
+
+def test_load_log_backfills_missing_units_note(tmp_path):
+    old_columns = [c for c in store.LOG_COLUMNS if c != "units_note"]
+    old_df = pd.DataFrame([{c: "" for c in old_columns}])
+    old_df.loc[0, "test_id"] = "well1"
+    path = tmp_path / store.LOG_FILENAME
+    old_df.to_csv(path, index=False)
+
+    loaded = store.load_log(str(tmp_path))
+
+    assert list(loaded.columns) == store.LOG_COLUMNS
+    assert loaded.loc[0, "test_id"] == "well1"
+    assert pd.isna(loaded.loc[0, "units_note"])
+
+
 def test_load_log_backfills_missing_near_wellbore_complexity(tmp_path):
     old_columns = [c for c in store.LOG_COLUMNS if c != "near_wellbore_complexity"]
     old_df = pd.DataFrame([{c: "" for c in old_columns}])

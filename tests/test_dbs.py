@@ -211,6 +211,25 @@ def test_triple_collision_same_name_and_tag_all_columns_distinct(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------------
+# unit detection: a synthetic DBS (no header suffix at all -- .DBS channel names never carry a
+# parenthesized unit) with a kPa-scale pressure column must fall through to the magnitude
+# heuristic alone.
+# --------------------------------------------------------------------------------------------------
+def test_dbs_pressure_with_no_header_suffix_detected_via_heuristic(tmp_path):
+    path = tmp_path / "metric.dbs"
+    records = [(i, 90000.0 + i, 0.0) for i in range(5)]
+    write_dbs(path, [("Surf Press [Csg]", "THCS"), ("Rate", "SLRT")], records, interval_min=1.0)
+
+    td = io_load.load_dbs(str(path))
+    io_load.refresh_unit_detection(td, "Surf Press [Csg]")
+
+    det = td.unit_detections["Surf Press [Csg]"]
+    assert det.unit == "kpa"
+    assert det.source == "heuristic"
+    assert det.confidence == "high"
+
+
+# --------------------------------------------------------------------------------------------------
 # dispatcher
 # --------------------------------------------------------------------------------------------------
 def test_load_dispatches_on_extension(tmp_path):

@@ -17,7 +17,7 @@ from typing import Optional
 
 import numpy as np
 
-from . import interpret, resample
+from . import interpret, io_load, resample
 from .gfunction import g_time
 from .io_load import ChannelConfig, TestData
 
@@ -40,6 +40,12 @@ class PickState:
     rate_col: Optional[str] = None
     volume_col: Optional[str] = None
     pressure_is_bhp: bool = False
+    # Per-channel unit override, "auto" (the default) meaning "detect it" -- see
+    # io_load.detect_channel_unit/refresh_unit_detection. Old saves lack these keys and take the
+    # "auto" default via _decode's known-field filter, no migration needed.
+    pressure_unit: str = "auto"
+    rate_unit: str = "auto"
+    volume_unit: str = "auto"
     density_ppg: Optional[float] = None
     tvd_ft: Optional[float] = None
     well_name: str = ""
@@ -286,6 +292,12 @@ class DerivedResults:
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
 
+    # Compact summary of any non-1.0 unit conversion applied this compute (see
+    # io_load.refresh_unit_detection / UnitDetection) -- e.g. "pressure: kpa×0.145038 (header)".
+    # Empty when every mapped channel resolved to factor 1.0. Logged to dfit_log.csv's
+    # units_note column.
+    unit_conversion_note: str = ""
+
     warnings: list[str] = field(default_factory=list)
 
 
@@ -317,9 +329,30 @@ def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
 
 
 def compute_all(state: PickState, td: TestData) -> DerivedResults:
-    """Compute every derived value that the current PickState supports. Missing picks -> None."""
+    """Compute every derived value that the current PickState supports. Missing picks -> None.
+
+    Side effect: this refreshes `td`'s unit-detection cache (`unit_factors`/`unit_detections`/
+    `unit_warnings`, via `io_load.refresh_unit_detection`) from the state's current column
+    mapping and per-channel unit overrides, before anything reads a channel through `td.column`/
+    `td.pressure_surface`/`td.bhp` (including the `picks` seeders, which run compute_all first).
+    It is idempotent -- rebuilt from the untouched raw df every call, so repeated calls never
+    compound a conversion -- so this is safe to do unconditionally on every recompute rather than
+    only on a mapping/override change.
+    """
     res = DerivedResults()
     cfg = state.channel_config()
+
+    unit_warnings = io_load.refresh_unit_detection(
+        td, state.pressure_col, state.rate_col, state.volume_col,
+        state.pressure_unit, state.rate_unit, state.volume_unit)
+    res.warnings.extend(unit_warnings)
+    notes = []
+    for kind, col in (("pressure", state.pressure_col), ("rate", state.rate_col),
+                      ("volume", state.volume_col)):
+        det = td.unit_detections.get(col) if col else None
+        if det is not None and det.factor != 1.0:
+            notes.append(f"{kind}: {det.unit}×{det.factor:.6g} ({det.source})")
+    res.unit_conversion_note = "; ".join(notes)
 
     if not state.pressure_col:
         res.warnings.append("No pressure channel selected")

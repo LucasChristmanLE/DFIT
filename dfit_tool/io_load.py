@@ -27,6 +27,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from . import units
+
 # Excel's day-zero (the epoch that already accounts for the 1900 leap-year bug).
 _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 _PRIMARY_DT_FORMAT = "%m/%d/%Y %H:%M:%S"
@@ -231,6 +233,115 @@ def suggest_channels(columns: list[str]) -> dict[str, Optional[str]]:
 
 
 # --------------------------------------------------------------------------------------------------
+# unit detection: header suffix -> magnitude heuristic -> per-channel override
+# --------------------------------------------------------------------------------------------------
+@dataclass
+class UnitDetection:
+    """One channel's resolved unit and the field-units conversion factor for it.
+
+    ``source`` is one of ``"header"`` (a recognized parenthesized suffix in the column name),
+    ``"heuristic"`` (pressure-only magnitude classification, see ``classify_pressure_magnitude``),
+    ``"inherited"`` (rate/volume borrowing the file-level pressure verdict -- see
+    ``detect_channel_unit``), or ``"override"`` (the analyst's per-channel unit dropdown).
+    ``confidence`` is ``"high"`` or ``"low"``; only a low-confidence pressure heuristic call
+    triggers its own warning even at factor 1.0 -- see ``_maybe_warn``.
+    """
+    unit: str
+    factor: float
+    source: str
+    confidence: str
+
+
+def classify_pressure_magnitude(values: np.ndarray) -> tuple[str, str]:
+    """Guess psi vs. kPa purely from magnitude: the 99th percentile of finite samples (not the
+    raw max, which the near-G=0 water-hammer spike or a stray outlier can blow out of proportion)
+    against thresholds wide enough apart that a real DFIT never straddles them --
+    Strathcona's kPa data peaks ~90,050 kPa (~13,060 psi-equivalent), a field-unit test tops out
+    in the low thousands of psi.
+
+    ``< 15,000`` -> psi/high; ``>= 20,000`` -> kpa/high; the 15-20k overlap band has no clean
+    single-unit reading, so it defaults to psi/low (the historically assumed unit, kept for
+    backward compatibility) rather than guessing; fewer than 2 finite samples is the same
+    can't-tell case (psi/low)."""
+    finite = values[np.isfinite(values)] if len(values) else np.asarray([], dtype=float)
+    if finite.size < 2:
+        return "psi", "low"
+    p99 = float(np.percentile(finite, 99))
+    if p99 < 15000.0:
+        return "psi", "high"
+    if p99 >= 20000.0:
+        return "kpa", "high"
+    return "psi", "low"
+
+
+_UNIT_LOOKUP = {"pressure": units.lookup_pressure, "rate": units.lookup_rate,
+                "volume": units.lookup_volume}
+_UNIT_FACTORS = {"pressure": units.PRESSURE_FACTORS, "rate": units.RATE_FACTORS,
+                 "volume": units.VOLUME_FACTORS}
+
+
+def detect_channel_unit(colname: str, values: np.ndarray, kind: str, override: str,
+                        pressure_detection: Optional[UnitDetection] = None) -> UnitDetection:
+    """Resolve one channel's unit, in priority order: the analyst's per-channel override (when
+    not ``"auto"``) -> the column name's parenthesized header suffix (``_unit_of``) -> a
+    kind-specific fallback.
+
+    ``kind`` is ``"pressure"``, ``"rate"``, or ``"volume"``. The pressure fallback is the
+    magnitude heuristic (``classify_pressure_magnitude``). Rate and volume get no standalone
+    heuristic -- 1 m3/min == 6.29 bpm, and the two unit ranges overlap with no clean threshold --
+    so they instead inherit the file-level pressure verdict passed in as `pressure_detection`:
+    any non-psi pressure unit (kpa, mpa, or bar) means metric rate/volume too (m3/min / m3),
+    anything else means field units (bpm / bbl), always at low confidence (an inference from
+    another channel's verdict, not direct evidence, whichever way it lands). A channel's own
+    header suffix always wins over that inheritance.
+    """
+    lookup = _UNIT_LOOKUP[kind]
+    if override != "auto":
+        hit = lookup(override)
+        if hit is not None:
+            canon, factor = hit
+            return UnitDetection(unit=canon, factor=factor, source="override", confidence="high")
+    header_unit = _unit_of(colname)
+    if header_unit is not None:
+        hit = lookup(header_unit)
+        if hit is not None:
+            canon, factor = hit
+            return UnitDetection(unit=canon, factor=factor, source="header", confidence="high")
+    if kind == "pressure":
+        unit, confidence = classify_pressure_magnitude(values)
+        return UnitDetection(unit=unit, factor=_UNIT_FACTORS["pressure"][unit], source="heuristic",
+                             confidence=confidence)
+    # rate/volume: inherit the file-level pressure verdict rather than guess independently. Any
+    # non-psi pressure unit (kpa, mpa, bar) means metric -- not just kpa, or an MPa- or bar-
+    # headed file would leave an unlabeled rate/volume at a field-unit factor of 1.0 with no
+    # warning. Always "low" confidence: this is an inference from another channel's verdict, not
+    # direct evidence, whichever way it lands.
+    metric = pressure_detection is not None and pressure_detection.unit != "psi"
+    if kind == "rate":
+        unit = "m3/min" if metric else "bpm"
+    else:
+        unit = "m3" if metric else "bbl"
+    return UnitDetection(unit=unit, factor=_UNIT_FACTORS[kind][unit], source="inherited",
+                         confidence="low")
+
+
+def _maybe_warn(kind: str, det: UnitDetection) -> list[str]:
+    """Warning policy for one channel's ``UnitDetection``: always warn when the resolved factor
+    isn't 1.0 (a real conversion happened, silent would hide it); also warn on a low-confidence
+    pressure heuristic call even at factor 1.0 (the magnitude call itself is uncertain, even
+    though it landed on the assumed-default unit). Silent for a factor-1.0 inherited/header/
+    override detection -- that's the ordinary field-units load, and warning on every load would
+    just be noise."""
+    label = kind.capitalize()
+    if det.factor != 1.0:
+        return [f"{label} converted from {det.unit} ×{det.factor:.6g} ({det.source})"]
+    if kind == "pressure" and det.source == "heuristic" and det.confidence == "low":
+        return [f"{label} magnitude ambiguous between psi and kPa; defaulted to psi — "
+                "verify with the unit dropdown"]
+    return []
+
+
+# --------------------------------------------------------------------------------------------------
 # data container + config
 # --------------------------------------------------------------------------------------------------
 @dataclass
@@ -261,13 +372,27 @@ class TestData:
     datetime_col: str
     t_s: np.ndarray = field(repr=False)  # elapsed seconds from first sample
     columns: list[str] = field(default_factory=list)
+    # Unit-conversion cache, rebuilt by refresh_unit_detection: {column name -> multiply-by-this
+    # factor to reach field units}. Defaults empty -> factor 1.0 everywhere -> zero behavior
+    # change for any caller that never invokes detection (see units.py's design note / ../CLAUDE.md).
+    unit_factors: dict[str, float] = field(default_factory=dict, repr=False)
+    unit_detections: dict[str, "UnitDetection"] = field(default_factory=dict, repr=False)
+    unit_warnings: list[str] = field(default_factory=list, repr=False)
 
     @property
     def n(self) -> int:
         return len(self.df)
 
     def column(self, name: str) -> np.ndarray:
-        return pd.to_numeric(self.df[name], errors="coerce").to_numpy(dtype=float)
+        """Raw numeric values for `name`, scaled by its cached unit factor (see unit_factors).
+
+        Lazy, not eager: the underlying df is never mutated for unit conversion, so re-running
+        refresh_unit_detection (an override change, a remap) always recomputes from the untouched
+        raw data -- there is structurally no double-conversion risk.
+        """
+        raw = pd.to_numeric(self.df[name], errors="coerce").to_numpy(dtype=float)
+        factor = self.unit_factors.get(name, 1.0)
+        return raw * factor if factor != 1.0 else raw
 
     def pressure_surface(self, cfg: ChannelConfig) -> np.ndarray:
         return self.column(cfg.pressure_col)
@@ -293,6 +418,52 @@ class TestData:
 def hydrostatic_head(mw_ppg: float, tvd_ft: float) -> float:
     """Hydrostatic head in psi for a static fluid column (field units)."""
     return PSI_PER_PPG_FT * mw_ppg * tvd_ft
+
+
+def refresh_unit_detection(td: TestData, pressure_col: Optional[str],
+                           rate_col: Optional[str] = None, volume_col: Optional[str] = None,
+                           pressure_unit: str = "auto", rate_unit: str = "auto",
+                           volume_unit: str = "auto") -> list[str]:
+    """Rebuild `td.unit_factors`/`td.unit_detections`/`td.unit_warnings` from the raw, untouched
+    columns in `td.df` -- lazy detection, not eager conversion (see units.py's module docstring).
+    Idempotent: calling this again with the same arguments recomputes the same factors from the
+    same raw data every time, so there is no compounding risk from calling it on every recompute.
+
+    Plain-string params (not a PickState) so io_load stays below model.py in the import graph --
+    model.compute_all calls this at the top of every compute_all with the state's column names
+    and unit overrides. `pressure_col`/`rate_col`/`volume_col` may be empty/None (channel not yet
+    mapped); that channel is then simply skipped, leaving no key in the resulting dicts and no
+    warning for it. A column name that doesn't exist in `td.df` (a foreign picks JSON, or a
+    folder-mode source switch that leaves a stale column name in `PickState`) is skipped the same
+    way rather than raising a `KeyError` -- it just gets no detection entry, so `column()` falls
+    back to factor 1.0 for it. Returns the list of warnings from this detection pass --
+    compute_all extends `DerivedResults.warnings` with it.
+    """
+    factors: dict[str, float] = {}
+    detections: dict[str, UnitDetection] = {}
+    warnings: list[str] = []
+
+    pressure_detection: Optional[UnitDetection] = None
+    if pressure_col and pressure_col in td.df.columns:
+        raw = pd.to_numeric(td.df[pressure_col], errors="coerce").to_numpy(dtype=float)
+        pressure_detection = detect_channel_unit(pressure_col, raw, "pressure", pressure_unit)
+        factors[pressure_col] = pressure_detection.factor
+        detections[pressure_col] = pressure_detection
+        warnings.extend(_maybe_warn("pressure", pressure_detection))
+
+    for col, override, kind in ((rate_col, rate_unit, "rate"), (volume_col, volume_unit, "volume")):
+        if not col or col not in td.df.columns:
+            continue
+        raw = pd.to_numeric(td.df[col], errors="coerce").to_numpy(dtype=float)
+        det = detect_channel_unit(col, raw, kind, override, pressure_detection=pressure_detection)
+        factors[col] = det.factor
+        detections[col] = det
+        warnings.extend(_maybe_warn(kind, det))
+
+    td.unit_factors = factors
+    td.unit_detections = detections
+    td.unit_warnings = warnings
+    return warnings
 
 
 # --------------------------------------------------------------------------------------------------

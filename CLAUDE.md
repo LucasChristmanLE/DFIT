@@ -56,7 +56,9 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
 - **Leaf math (numpy only).** `gfunction.py` is the Nolte G-function and G-time (α=1
   default, α=0.5 option). `interpret.py` is the interpretation math: te, apparent/effective
   ISIP, Shmin, net pressure, pore pressure, plus the `suggest_*` auto-pick helpers. These
-  take arrays and pick parameters and return numbers.
+  take arrays and pick parameters and return numbers. `units.py` is the unit-conversion leaf
+  below both `io_load` and `questionnaire`: conversion constants, factor tables, and
+  header/alias token lookups for pressure/rate/volume — no `dfit_tool` imports of its own.
 - **Compute core (pure python/numpy).** `resample.py` does the 30-psi pressure-increment
   resampling, the diagnostic derivatives (dP/dG, G·dP/dG, d²P/dG², t·dP/dt), and the
   tail guard. `model.py` holds `PickState` (the serializable set of interpreter choices),
@@ -64,9 +66,11 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   truth: it produces every reported value and every array the plots need.
 - **IO.** `io_load.py` loads CSV and the reverse-engineered Fracpro `.DBS` binary format
   (`load()` dispatches on extension), parses datetimes including leaked Excel serials,
-  suggests channel roles, and converts surface pressure to BHP hydrostatically
-  (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in where flow → 0). `questionnaire.py`
-  parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD.
+  suggests channel roles, converts surface pressure to BHP hydrostatically
+  (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in where flow → 0), and detects/converts
+  per-channel units via `units.py` (see Unit detection and conversion below). `questionnaire.py`
+  parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD, also using
+  `units.py` for meter/kg-m3 conversions.
 - **Interaction (matplotlib only, no Tkinter).** `picks.py` has the event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`,
   `SpanController`, `ModifierSpanController`, `HoverCursorController`, and the
@@ -103,6 +107,7 @@ Import graph:
     model → interpret, resample, io_load
     resample → gfunction
     store → model, questionnaire
+    io_load, questionnaire → units
 
 `picks.py`, `plots.py`, and `sliders.py` never import Tkinter, so the whole interaction
 layer runs headless under the Agg backend and the shell could be ported off Tkinter without
@@ -514,6 +519,74 @@ figures and explanatory text side by side with the pickers. Content lives in
 `dfit_tool/assets/guide/`. Both buttons open the same reused `ttk.Notebook` window and just
 select their tab (`ui.py:_open_guide`).
 
+**Unit detection and conversion.** Everything downstream of the IO boundary (fixed psi
+offsets, the hydrostatic constant, plot labels, panel rows, `dfit_log.csv` columns) stays
+field-unit (psi/bpm/bbl); metric input is normalized at the boundary instead. Detection order
+per channel (`io_load.detect_channel_unit`): a per-channel UI override (anything but `"auto"`)
+→ the column header's parenthesized suffix (`_unit_of`, e.g. `"CASING Pressure (KPAg)"`) →
+a kind-specific fallback. Pressure's fallback is the magnitude heuristic
+(`classify_pressure_magnitude`): 99th percentile of finite samples, `< 15,000` → psi/high,
+`>= 20,000` → kpa/high, the 15-20k overlap band → psi/low (no clean single-unit reading, so it
+defaults to the historically-assumed unit). Rate and volume get no standalone heuristic (the
+bpm/m3-min ranges overlap with no clean threshold) and instead inherit the file-level pressure
+verdict -- any non-psi pressure unit means metric rate/volume too, always at low confidence
+(an inference from another channel, not direct evidence) -- but a channel's own header suffix
+always wins over that inheritance. Conversion is lazy: `TestData.column()` multiplies the raw,
+never-mutated df column by a cached factor in `td.unit_factors` (default 1.0 = no-op for any
+caller that never invokes detection); `io_load.refresh_unit_detection` rebuilds
+`unit_factors`/`unit_detections`/`unit_warnings` from the raw columns and is idempotent, so
+`model.compute_all` calls it at the top of every recompute (before any channel read, including
+picks seeders) rather than caching a detection result across state changes. Warning policy
+(`_maybe_warn`) is never-silent-on-a-real-conversion: always warn when a resolved factor isn't
+1.0, also warn on a low-confidence pressure heuristic call even at factor 1.0 (the classification
+itself is uncertain even though it landed on the default unit) -- silent only for the ordinary
+factor-1.0 field-units load. `PickState` carries `pressure_unit`/`rate_unit`/`volume_unit`
+(each `"auto"` by default; old saves lacking the keys take the dataclass default, no migration
+needed). `ui._on_unit_change` mirrors `_on_source_change`: changing a channel's unit away from
+its current value pops a confirm dialog (an override rescales the same column under existing
+picks -- `isip_tangent` stores an absolute psi anchor, `te_s` feeds `g_time`), reverting the
+combobox on decline; accept resets picks via `_reset_picks_keep_mapping` (channel mapping, unit
+overrides, density/TVD, well/formation, alpha, resample step, notes, and active source carry
+forward; numeric picks/step_status/tail_trim reset) and returns to Overview. With no file
+loaded (`self.td is None`) it just reverts the combobox before ever reaching the dialog.
+`store.LOG_COLUMNS` carries one `units_note` column (tail-appended, per the append-only
+convention), mapped from `DerivedResults.unit_conversion_note` -- a compact summary of every
+non-1.0 factor applied (e.g. `"pressure: kpa×0.145038 (header)"`).
+
+`questionnaire.py` gained matching metric handling: a TVD cell is read as meters, detected any of
+three ways -- an explicit meter suffix (`mTVD`/`mKB`/`mMD`/bare `m`/`metre(s)`/`meter(s)`, checked
+immediately after the matched number so a bare number stays feet); the label itself spelled
+`mTVD` (e.g. `"mTVD: 3368"`); or a delimiter-bounded meter token in the gap between the label and
+the number (e.g. `"TVD (mKB): 3368"`, `"TVD in mKB = 3368"`) -- and is converted via
+`units.M_TO_FT` *before* the `_TVD_MIN`/`_TVD_MAX` range filter -- ordering matters, since a
+meters value like 3368 sits inside the feet-assumed 1000-25000 window and would otherwise be
+silently accepted as feet; density gained a kg/m3 unit (`units.KGM3_TO_PPG`) alongside the
+existing ppg/SG/psi-per-ft forms, and a fluid-name fallback (`"fresh water"`/`"freshwater"`/
+`"water"`, exact trimmed whole-cell match) that assumes 8.34 ppg with a warning when a cell names
+the fluid but gives no number at all. Multi-well workbooks
+(`parse_questionnaire(path, well_hint=...)`) disambiguate a
+multi-sheet workbook by matching `well_hint` against each sheet's title, then its "Well Name"
+answer cell; a positive match narrows to that one sheet, but a missing hint or no match reads
+the *whole* workbook (concatenating every sheet's cells) rather than guessing `sheets[0]`
+alone -- narrowing only ever happens on a positive match, so a `scripts/` caller that passes no
+hint at all still finds data that happens to live on a later sheet (e.g. behind a cover/
+instructions sheet). `well_hint` itself comes from `ui.py`: folder mode passes the queue
+entry's `test_id`, single-file mode passes the data-file stem (`ui._load_questionnaire`). The
+match (`questionnaire._sheet_match_length`) is delimiter-bounded containment in both
+directions -- the contained string must sit between non-alphanumeric characters or a string edge
+in the container, so a short hint like "1H" can't false-match inside "21H" -- and when more than
+one sheet matches, the one with the longest matched text wins, with a warning naming the chosen
+sheet.
+
+Accepted gaps, deliberately not solved: a psi-pressure file with an unlabeled metric rate/volume
+is undetectable in-band (the per-channel override dropdown is the escape hatch); and there is no
+filename-based unit sniffing, ever -- the corpus has a "Metric"-named DBS file that holds psi
+data byte-identical to its non-metric-named sibling, so a filename heuristic would misclassify it.
+In `questionnaire.py`'s TVD label matching, a digit-ending token right before an `mTVD` label
+(e.g. `"Zone 2 mTVD: 3368"`) and a suffix-only TVD-first cell with no colon label (e.g.
+`"3368 mTVD / mMD 6656"`) are still read as feet/MD respectively -- inherent label-vs-suffix
+ambiguity, not fixed.
+
 ## Not built / notes
 
 - `scipy` is pinned in `requirements.txt` and probed by `start-app.ps1` but is not currently
@@ -534,6 +607,9 @@ select their tab (`ui.py:_open_guide`).
   loads that JSON into the workspace but does not re-sync the Source combobox to it (the
   Skip-test button does re-sync, via `_apply_loaded_state`'s `_goto` -> `refresh` ->
   `_update_stepbar` -> `_update_skip_test_btn` chain).
+- A per-channel unit override (`ui._on_unit_change`) mirrors the Source-switch limitation above:
+  it only persists to disk on the next save (queue navigation, Finish, or Skip test), not
+  immediately.
 - A pre-`step_status` legacy picks JSON, reloaded, can silently re-run the Overview auto-trim
   seeder and change reported numbers. `infer_step_status` backfills `step_status` for saves made
   before it existed, but it omits `"overview"` from that backfill, so `"overview"` still reads
