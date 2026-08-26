@@ -596,17 +596,36 @@ def relative_stiffness(p_eff: np.ndarray, h: np.ndarray) -> np.ndarray:
         return np.where(dh != 0, -dp / dh, np.nan)
 
 
-def suggest_stiffness_upturn_index(S: np.ndarray, rise_frac: float = 0.10) -> Optional[int]:
-    """Index of the stiffness upturn: the relative minimum of S, then the same C-A +10%-rise
-    rule ``suggest_contact_clear_index`` uses for the dP/dG elbow, applied to S instead. Falls
-    back to the min itself when S never rises that much to its right (a shape with no clear
-    upturn). ``None`` only when no finite positive sample exists at all -- S can be negative or
-    zero near a dh sign flip, which is never a legitimate stiffness minimum to anchor on."""
+def suggest_stiffness_upturn_index(
+    S: np.ndarray, G: Optional[np.ndarray] = None, g_min: float = 1.0, rise_frac: float = 0.10
+) -> Optional[int]:
+    """Index of the stiffness upturn: the global minimum of S among the masked candidates
+    below, then the same C-A +10%-rise rule ``suggest_contact_clear_index`` uses for the
+    dP/dG elbow, applied to S instead. Falls back to the min itself when S never rises that
+    much to its right (a shape with no clear upturn).
+
+    S is a ratio of first differences and is noisy near G=0, where an early-noise sample can
+    land below the true upturn's minimum (the unmasked global min then sits near the highest
+    p_eff instead of at the actual contact). ``G``, when given, is the G-time array aligned
+    with S (S[i] pairs with grid sample i+1, so pass ``res.diagnostics.G[1:]``) and masks the
+    min-search candidates to ``G >= g_min`` -- the same convention ``suggest_min_dpdg_index``
+    uses to keep dP/dG's own elbow search clear of the water-hammer spike. Falls back to all
+    finite positive samples when that mask is empty (a record entirely below G=1) or when
+    ``G`` is not given at all.
+
+    ``None`` only when no finite positive sample exists at all -- S can be negative or zero
+    near a dh sign flip, which is never a legitimate stiffness minimum to anchor on."""
     S = np.asarray(S, dtype=float)
     positive = np.isfinite(S) & (S > 0)
     if not positive.any():
         return None
-    candidates = np.where(positive)[0]
+    mask = positive
+    if G is not None:
+        G = np.asarray(G, dtype=float)
+        g_masked = positive & (G >= g_min)
+        if g_masked.any():
+            mask = g_masked
+    candidates = np.where(mask)[0]
     min_idx = int(candidates[np.argmin(S[candidates])])
     idx = suggest_contact_clear_index(S, min_idx, rise_frac=rise_frac)
     return idx if idx is not None else min_idx

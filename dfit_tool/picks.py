@@ -1489,7 +1489,8 @@ def seed_stiffness(state: PickState, res: DerivedResults) -> None:
         return
     if res.stiffness_S is None:
         return
-    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    # stiffness_S[i] pairs with grid sample i+1, so the G slice aligned with it is G[1:].
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
     if idx is None:
         return
     state.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])

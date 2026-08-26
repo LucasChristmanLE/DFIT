@@ -574,6 +574,14 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
                      fontsize=10)
         return ViewDefaults()
     p_eff, S = res.stiffness_p_eff[1:], res.stiffness_S
+    finite_pos = np.isfinite(S) & (S > 0)
+    if not finite_pos.any():
+        # A log-scaled axis needs at least one positive sample to have anything to draw --
+        # set_yscale("log") ahead of this check drew an axis-only plot plus a matplotlib
+        # UserWarning ("Data has no positive values..."). Guard branch instead, same style as
+        # the missing-arrays branch above.
+        ax.set_title("Stiffness -- no positive relative-stiffness samples to plot", fontsize=10)
+        return ViewDefaults()
     ax.plot(p_eff, S, color="black", lw=1.0, marker=".", ms=3)
     ax.set_yscale("log")
     ax.set_xlabel("effective pressure (psi)")
@@ -602,11 +610,9 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         p_lo, p_hi = float(np.nanmin(finite_p)), float(np.nanmax(finite_p))
         pad = 0.05 * max(p_hi - p_lo, 1.0)
         xlim = (p_lo - pad, p_hi + pad)
-    finite_pos = np.isfinite(S) & (S > 0)
-    ylim = None
-    if finite_pos.any():
-        y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
-        ylim = (y_lo * 0.5, y_hi * 2.0)  # log-safe floor/pad
+    # finite_pos is already known non-empty -- the all-non-positive case returned above.
+    y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
+    ylim = (y_lo * 0.5, y_hi * 2.0)  # log-safe floor/pad
     return ViewDefaults(xlim=xlim, ylim=ylim)
 
 

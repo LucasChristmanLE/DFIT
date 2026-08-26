@@ -188,7 +188,7 @@ Preserve these when changing the code.
 
 ## Testing
 
-Tests live in `tests/` (~21 files). `tests/conftest.py` forces the Agg backend before
+Tests live in `tests/` (~22 files). `tests/conftest.py` forces the Agg backend before
 `matplotlib.pyplot` is imported, so the suite runs with no display or Tk. Synthetic data
 comes from `tests/helpers.make_testdata` (a DFIT-shaped `TestData`) and
 `helpers.injection_state`; tests drive controllers with real synthesized `MouseEvent`s.
@@ -568,6 +568,17 @@ existing `porepressure_skipped` clause, so a PC-F test with neither step's `step
 still reports `"done"`. `ui._last_step()` needs no separate stiffness case: it already reports
 `"loglog"` under PC-F, which is correct since PC-F skips both steps.
 
+PC-F is not the only way to land on an empty stiffness plot -- `plots.render_stiffness` shows
+an instructional title in place of the plot (no exception, no blank axes) whenever
+`res.stiffness_S` is `None`, which `model.compute_all`'s stiffness block leaves unset in any of
+four gate failures: `state.min_dpdg_G` not yet picked, no pore-pressure estimate (this is where
+the PC-F case actually surfaces, transitively, per `stiffness_skipped` above), `res.te_s`
+unavailable, or fewer than 4 resampled points surviving (the tail trim, an aggressive resample
+step, or a short record can all produce this). A separate guard inside the same renderer handles
+a fifth, arrays-present-but-degenerate case: `stiffness_S` computed but entirely
+non-positive/non-finite (no positive sample to log-scale against) also renders an instructional
+title rather than an axis-only log plot.
+
 An in-app "Interpretation guide" window (opened from the "Interpretation guide..." buttons on
 the G-function step's closure-scenario panel and the log-log/pore-pressure steps'
 postclosure-scenario panel) shows the ResFrac closure (C-A...C-D) and postclosure (PC-A...PC-F)
@@ -676,3 +687,10 @@ ambiguity, not fixed.
   ISIP/net pressure/pore pressure with no analyst action. This is a known consequence of the
   park-and-apply design colliding with an unrelated legacy-migration gap, not something the tail
   trim feature itself can detect or guard against.
+- Adding "stiffness" as an 8th workflow step is an accepted migration consequence for saves
+  finished under the old 7-step workflow: those have a 7-key `step_status` with no
+  `"stiffness"` entry, so `store.status_for` now reports them `"in_progress"` (not `"done"`)
+  until the analyst opens the test and visits or skips the stiffness step. This is deliberate --
+  the stiffness Shmin genuinely doesn't exist for those saves yet, so `"in_progress"` is the
+  accurate status, not a bug -- and `infer_step_status` can't backfill it, since that function
+  only runs when the loaded `step_status` is empty, not when it's merely missing one key.

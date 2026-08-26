@@ -615,6 +615,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         edge = res.diagnostics.G[-1]
         stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", state.min_dpdg_G),
                                       ("closure", state.closure_G)) if g is not None and g > edge]
+        # stiffness_pick_P is stored in pressure, not G, so it can't be compared against
+        # edge -- compare against the trimmed record's lowest kept pressure instead. rs.p is
+        # strictly decreasing (the 30-psi resampling invariant), so rs.p[-1] is that low end,
+        # and p_eff's tail equals rs.p past the min-dP/dG pick -- a pick below rs.p[-1] no
+        # longer sits on the curve.
+        if (state.stiffness_pick_P is not None and res.resampled is not None
+                and len(res.resampled.p) and state.stiffness_pick_P < res.resampled.p[-1]):
+            stale.append("stiffness")
         # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
         # array (dg.t), not G -- see the pp block below -- so a pp_window affected by the trim
         # can silently shrink (still fits, just off fewer samples) or empty outright (blanking

@@ -87,7 +87,9 @@ def test_h_function_matches_mcclure_oracle_loop():
 
 
 def test_h_function_single_point_is_just_the_offset_term():
-    """n=1: no j<i terms at all, isolating the (p_eff[0]-Pres)*sqrt(dt+te/2) offset term."""
+    """n=1: no j<i terms at all, isolating the (p_eff[0]-Pres)*sqrt(dt+te/2) offset term. The
+    hand-checked expected value hard-codes 600/2 (not 600 or some other divisor), so this is
+    what actually pins the te/2 factor specifically."""
     dt_s = np.array([0.0])
     p_eff = np.array([5000.0])
     h = interpret.h_function(dt_s, p_eff, 3000.0, 600.0)
@@ -95,8 +97,10 @@ def test_h_function_single_point_is_just_the_offset_term():
 
 
 def test_h_function_te_over_two_offset_shifts_every_term():
-    """Doubling te shifts the sqrt(dt + te/2) offset term alone; hand-check against the oracle
-    with a different te to pin the te/2 factor specifically (not just te)."""
+    """Doubling te shifts the sqrt(dt + te/2) offset term alone; checked against the oracle at
+    two different te values to confirm h_function tracks te changes the same way the oracle
+    does. The oracle itself already bakes in te/2, so matching it here doesn't independently
+    pin that divisor -- see test_h_function_single_point_is_just_the_offset_term for that."""
     dt_s = np.array([0.0, 60.0, 150.0])
     p_eff = np.array([4000.0, 3900.0, 3750.0])
     pore_pressure = 2500.0
@@ -159,6 +163,29 @@ def test_suggest_stiffness_upturn_index_ignores_non_finite_and_negative_candidat
     S = np.array([np.nan, -3.0, 20.0, 8.0, 9.0, 40.0])
     # positive-finite candidates are [20, 8, 9, 40] at indices [2,3,4,5]; min is 8.0 at idx 3.
     assert interpret.suggest_stiffness_upturn_index(S) == 4
+
+
+def test_suggest_stiffness_upturn_index_masks_out_early_noise_below_g_min():
+    # Global min (2.0 at idx 1) sits below G=1.0 (early noise); the masked min among G>=1.0
+    # candidates (idx 2..5) is 8.0 at idx 3, which then rises >=10% at idx 4 (9.0 >= 8.8).
+    S = np.array([50.0, 2.0, 20.0, 8.0, 9.0, 40.0])
+    G = np.array([0.1, 0.5, 1.2, 1.4, 1.6, 1.8])
+    assert interpret.suggest_stiffness_upturn_index(S, G) == 4
+
+
+def test_suggest_stiffness_upturn_index_falls_back_when_g_mask_is_empty():
+    # Entire record sits below G=1.0 -- falls back to the unmasked candidate set, same result
+    # as the no-G case: min at idx 2 (8.0), rises >=10% at idx 3 (9.0 >= 8.8).
+    S = np.array([50.0, 20.0, 8.0, 9.0, 15.0, 40.0])
+    G = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    assert interpret.suggest_stiffness_upturn_index(S, G) == 3
+
+
+def test_suggest_stiffness_upturn_index_no_g_given_is_unmasked():
+    S = np.array([50.0, 2.0, 20.0, 8.0, 9.0, 40.0])
+    assert interpret.suggest_stiffness_upturn_index(S) == interpret.suggest_stiffness_upturn_index(
+        S, G=None
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -267,7 +294,7 @@ def test_stale_stiffness_pick_reports_none_when_gate_fails():
     """A stale pick with the underlying arrays gone (e.g. PC-F chosen after the pick was made)
     must report nothing -- shmin_stiffness is only ever set inside the same gate as the arrays."""
     td, st, res = _state_with_pore_pressure()
-    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
     st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
     res2 = compute_all(st, td)
     assert res2.shmin_stiffness is not None  # sanity: pick + gate both satisfied
@@ -280,11 +307,50 @@ def test_stale_stiffness_pick_reports_none_when_gate_fails():
 
 
 # --------------------------------------------------------------------------------------------------
+# model.compute_all: stiffness_pick_P joins the stale-pick warning
+# --------------------------------------------------------------------------------------------------
+def test_stale_stiffness_pick_beyond_trim_warns():
+    """stiffness_pick_P is stored in pressure, not G, so it can't be compared against
+    diagnostics.G[-1] like contact/min-dP/dG/closure -- it must instead be compared against
+    the trimmed record's lowest kept pressure (rs.p[-1], since rs.p is strictly decreasing). A
+    trim that raises that low end above the pick means the pick no longer sits on the curve."""
+    td, st, res = _state_with_pore_pressure()
+    dg = res.diagnostics
+    rs = res.resampled
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, dg.G[1:])
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+
+    # Trim right at the picked sample's own dt -- the retrimmed record's low end (rs.p[-1])
+    # then sits above (higher pressure than) the picked value.
+    st.tail_trim_dt = float(rs.dt[idx])
+    res2 = compute_all(st, td)
+
+    assert res2.resampled.p[-1] > st.stiffness_pick_P  # sanity: pick now off the curve
+    assert any("stiffness" in w for w in res2.warnings)
+    assert any("beyond the tail trim" in w for w in res2.warnings)
+
+
+def test_stale_stiffness_pick_absent_when_pick_survives_the_trim():
+    td, st, res = _state_with_pore_pressure()
+    dg = res.diagnostics
+    rs = res.resampled
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, dg.G[1:])
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+
+    # Trim well after the picked sample's own dt -- the pick still sits on the retrimmed curve.
+    st.tail_trim_dt = float(rs.dt[idx + 5])
+    res2 = compute_all(st, td)
+
+    assert res2.resampled.p[-1] <= st.stiffness_pick_P  # sanity: pick still on the curve
+    assert not any("stiffness" in w and "beyond the tail trim" in w for w in res2.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
 # model.compute_all: Shmin(stiffness) = picked pressure - 75 psi
 # --------------------------------------------------------------------------------------------------
 def test_shmin_stiffness_is_pick_minus_75_psi():
     td, st, res = _state_with_pore_pressure()
-    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
     pick_P = float(res.stiffness_p_eff[1:][idx])
     st.stiffness_pick_P = pick_P
 
@@ -333,9 +399,21 @@ def test_seed_stiffness_sets_pick_from_the_upturn_suggestion():
 
     picks.seed_stiffness(st, res)
 
-    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
     expected = float(res.stiffness_p_eff[1:][idx])
     assert st.stiffness_pick_P == pytest.approx(expected)
+
+
+def test_seed_stiffness_lands_below_the_early_noise_not_near_the_top_of_the_span():
+    """S is noisy near G=0; the unmasked global min used to land on early noise near the
+    HIGHEST p_eff instead of the actual upturn. The g_min=1.0 mask fixes that -- the chosen
+    sample's G must sit at or above 1.0 (the suggest_min_dpdg_index convention)."""
+    td, st, res = _state_with_pore_pressure()
+
+    picks.seed_stiffness(st, res)
+
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
+    assert res.diagnostics.G[1:][idx] >= 1.0
 
 
 def test_seed_stiffness_is_registered_in_seeders():
@@ -357,6 +435,28 @@ def test_render_stiffness_guard_branch_when_arrays_missing():
 
     assert defaults == plots.ViewDefaults()
     assert "requires" in ax.get_title().lower()
+
+
+def test_render_stiffness_guard_branch_when_all_s_non_positive_no_warnings():
+    """An all-non-positive S must not reach ax.set_yscale("log") -- that drew an axis-only log
+    plot plus a matplotlib UserWarning ("Data has no positive values...") before this fix."""
+    import warnings
+    from dfit_tool.model import DerivedResults
+
+    td = make_testdata()
+    st = injection_state(td)
+    res = DerivedResults()
+    res.stiffness_p_eff = np.array([5000.0, 4900.0, 4800.0, 4700.0])
+    res.stiffness_S = np.array([-1.0, 0.0, np.nan])
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        defaults = plots.render_stiffness(ax, td, st, res)
+
+    assert defaults == plots.ViewDefaults()
+    assert "no positive" in ax.get_title().lower()
 
 
 def test_render_stiffness_full_branch_has_log_yscale_and_pick_gid():
@@ -512,7 +612,7 @@ def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
 
 def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
     td, st, res = _state_with_pore_pressure()
-    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
     st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
     st.tvd_ft = 10000.0
     res = compute_all(st, td)
@@ -526,3 +626,67 @@ def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
     assert row["Shmin_stiffness"] == pytest.approx(res.shmin_stiffness)
     assert row["Shmin_stiffness_gradient"] == pytest.approx(res.shmin_stiffness_gradient)
     assert list(row.keys()) == store.LOG_COLUMNS
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.DfitApp._update_stepbar force-disables the "porepressure" and "stiffness" breadcrumbs under
+# PC-F -- duck-typed stand-in pattern (fake buttons capturing .state()/.configure() calls), no
+# real tk.Tk(), same approach as test_folder_mode.py's _FakeButton for .config().
+# --------------------------------------------------------------------------------------------------
+class _FakeStepButton:
+    def __init__(self):
+        self.disabled = None
+        self.style = None
+
+    def state(self, specs):
+        self.disabled = "disabled" in specs
+
+    def configure(self, **kw):
+        if "style" in kw:
+            self.style = kw["style"]
+
+
+class _FakeNextButton:
+    def __init__(self):
+        self.text = None
+        self.style = None
+
+    def configure(self, **kw):
+        if "text" in kw:
+            self.text = kw["text"]
+        if "style" in kw:
+            self.style = kw["style"]
+
+
+def _update_stepbar_stub(postclosure_scenario, step_status, step="loglog"):
+    stub = types.SimpleNamespace()
+    stub.state = PickState(postclosure_scenario=postclosure_scenario, step_status=step_status)
+    stub.step = step
+    stub.step_buttons = {k: _FakeStepButton() for k, _ in ui.STEPS}
+    stub.next_btn = _FakeNextButton()
+    stub._update_skip_test_btn = lambda: None
+    stub._last_step = types.MethodType(DfitApp._last_step, stub)
+    stub._update_stepbar = types.MethodType(DfitApp._update_stepbar, stub)
+    return stub
+
+
+def test_update_stepbar_force_disables_porepressure_and_stiffness_under_pcf():
+    visited = {k: "visited" for k, _ in ui.STEPS}  # every breadcrumb otherwise reachable
+    stub = _update_stepbar_stub("PC-F no peak", visited)
+
+    stub._update_stepbar()
+
+    assert stub.step_buttons["porepressure"].disabled is True
+    assert stub.step_buttons["stiffness"].disabled is True
+    # a non-PC-F-affected, already-visited step stays reachable.
+    assert stub.step_buttons["loglog"].disabled is False
+
+
+def test_update_stepbar_leaves_porepressure_and_stiffness_enabled_without_pcf():
+    visited = {k: "visited" for k, _ in ui.STEPS}
+    stub = _update_stepbar_stub("PC-A linear", visited)
+
+    stub._update_stepbar()
+
+    assert stub.step_buttons["porepressure"].disabled is False
+    assert stub.step_buttons["stiffness"].disabled is False
