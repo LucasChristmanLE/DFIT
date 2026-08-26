@@ -444,5 +444,12 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "pore_pressure_gradient": res.pore_pressure_gradient,
         "Shmin_stiffness": res.shmin_stiffness,
         "Shmin_stiffness_gradient": res.shmin_stiffness_gradient,
-        "stiffness_no_upturn": state.stiffness_no_upturn,
+        # Blank, not the stored flag, once PC-F skips the stiffness step: an analyst can check
+        # "No slope change apparent" on the stiffness step, go Back, and switch to PC-F, which
+        # makes the step unreachable (so the checkbox can never be unchecked again). The flag
+        # itself is left alone in the picks JSON on purpose -- switching back off PC-F revives
+        # it -- mirroring how a stale pp_window pick is suppressed, not cleared, under PC-F (see
+        # model.py's pore-pressure block comment). Blank here matches every other stiffness
+        # output going blank for a test whose stiffness curve never existed under PC-F.
+        "stiffness_no_upturn": "" if model.stiffness_skipped(state) else state.stiffness_no_upturn,
     }

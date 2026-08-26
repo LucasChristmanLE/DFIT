@@ -581,7 +581,13 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # set_yscale("log") ahead of this check drew an axis-only plot plus a matplotlib
         # UserWarning ("Data has no positive values..."). Guard branch instead, same style as
         # the missing-arrays branch above.
-        ax.set_title("Stiffness -- no positive relative-stiffness samples to plot", fontsize=10)
+        title = "Stiffness -- no positive relative-stiffness samples to plot"
+        if state.stiffness_no_upturn:
+            # The recorded finding still belongs in the title even though there is nothing to
+            # plot -- otherwise this branch silently drops it and looks like a data problem
+            # rather than the analyst's own "no slope change apparent" call.
+            title += " -- no slope change apparent (Shmin not reported)"
+        ax.set_title(title, fontsize=10)
         return ViewDefaults()
     ax.plot(p_eff, S, color="black", lw=1.0, marker=".", ms=3)
     ax.set_yscale("log")

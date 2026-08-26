@@ -248,13 +248,22 @@ Per-test deliverables:
   one. `picks.seed_stiffness` itself no-ops when the flag is set, so a reloaded save with it
   doesn't get a line parked on next visit. `render_stiffness` draws no pick vline/marker while
   the flag is set and titles the plot "Relative stiffness — no slope change apparent (Shmin
-  not reported)"; the curve stays in the step's PNG export either way. The test still
-  finishes `"done"`, not `"skipped"` — checking the box and clicking Finish walks
-  `step_status` normally (`model.infer_step_status`'s stiffness clause and the checkbox path
-  both mark the step `"done"` off the flag alone, no pick required), unlike the per-step Skip
-  button, which would mark the whole test `"skipped"` in `store.status_for`; `store.status_for`
-  itself needs no change. Logged to the tail-appended `stiffness_no_upturn` column
-  (`store.LOG_COLUMNS`) as `True`/`False`.
+  not reported)"; the curve stays in the step's PNG export either way. The checkbox itself
+  never touches `step_status` — checking it and clicking Finish walks `step_status` normally,
+  the same "visited this step, then advanced" path any other step takes, no pick required.
+  Only `model.infer_step_status` (the legacy backfill for saves made before `step_status`
+  existed) treats the flag alone as sufficient to mark the step `"done"` on reload, since a
+  pre-existing save has no walk to replay. A checked box followed by navigating away *without*
+  Finish therefore leaves the step merely `"visited"`, so the whole test reads `"in_progress"`
+  in `store.status_for` — correct, since the analyst hasn't actually finished the test yet, and
+  distinct from the per-step Skip button, which marks the whole test `"skipped"` regardless of
+  how far it got. Logged to the tail-appended `stiffness_no_upturn` column (`store.LOG_COLUMNS`)
+  as `True`/`False` — except once `model.stiffness_skipped(state)` is true (PC-F), when
+  `store.build_log_row` logs blank instead of the stored flag: switching to PC-F after checking
+  the box makes the step unreachable (so the box can never be unchecked again), and the flag is
+  left alone in the picks JSON on purpose (switching back off PC-F revives it) rather than
+  cleared, so the log row must blank it itself, matching every other stiffness output going
+  blank under PC-F.
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and

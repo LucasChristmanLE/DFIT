@@ -461,6 +461,29 @@ def test_render_stiffness_guard_branch_when_all_s_non_positive_no_warnings():
     assert "no positive" in ax.get_title().lower()
 
 
+def test_render_stiffness_guard_branch_all_non_positive_with_no_upturn_flag_titles_finding():
+    """The all-non-positive early return must not silently drop the recorded finding when
+    stiffness_no_upturn is also set -- otherwise the degenerate-curve title looks like a data
+    problem instead of the analyst's own "no slope change apparent" call."""
+    from dfit_tool.model import DerivedResults
+
+    td = make_testdata()
+    st = injection_state(td)
+    st.stiffness_no_upturn = True
+    res = DerivedResults()
+    res.stiffness_p_eff = np.array([5000.0, 4900.0, 4800.0, 4700.0])
+    res.stiffness_S = np.array([-1.0, 0.0, np.nan])
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    defaults = plots.render_stiffness(ax, td, st, res)
+
+    assert defaults == plots.ViewDefaults()
+    title = ax.get_title().lower()
+    assert "no positive" in title
+    assert "no slope change apparent" in title
+
+
 def test_render_stiffness_full_branch_has_log_yscale_and_pick_gid():
     td, st, res = _state_with_pore_pressure()
     picks.seed_stiffness(st, res)
@@ -810,6 +833,30 @@ def test_log_row_has_stiffness_no_upturn_column_at_the_tail(tmp_path):
     assert row2["stiffness_no_upturn"] is False
 
 
+def test_build_log_row_blanks_stiffness_no_upturn_under_pcf(tmp_path):
+    """A stiffness_no_upturn flag set before the analyst backs up and switches to PC-F must log
+    blank, not the stale True -- the stiffness step is unreachable under PC-F (so the checkbox
+    can never be unchecked again), and every other stiffness output already blanks in that
+    scenario (see test_stiffness_arrays_none_under_pcf)."""
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_no_upturn = True
+    st.postclosure_scenario = "PC-F no peak"
+    res = compute_all(st, td)
+    assert stiffness_skipped(st) is True  # sanity
+
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = str(tmp_path / "well1.csv")
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+
+    assert row["stiffness_no_upturn"] == ""
+
+    # Flipping back to a non-PC-F scenario revives the (never-cleared) flag in the logged row.
+    st.postclosure_scenario = "PC-A linear"
+    res = compute_all(st, td)
+    row2 = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row2["stiffness_no_upturn"] is True
+
+
 def test_full_walk_with_no_upturn_flag_derives_done_not_skipped():
     """A full workflow walk where every other step has real picks and stiffness instead carries
     stiffness_no_upturn -- store.status_for must derive "done", not "skipped": the per-step Skip
@@ -894,3 +941,79 @@ def test_on_stiffness_no_upturn_check_sets_flag_without_reseeding():
 
     assert stub.state.stiffness_no_upturn is True
     assert stub.state.stiffness_pick_P is None
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.DfitApp._update_panel_visibility: duck-typed stand-in pattern (fake pack/pack_forget frames),
+# no real tk.Tk(). Covers frm_cscen/frm_pcscen/frm_stiffness visibility across all eight steps and
+# the var_stiffness_no_upturn resync on entry to "stiffness".
+# --------------------------------------------------------------------------------------------------
+class _FakeFrame:
+    def __init__(self):
+        self.packed = False
+        self.pack_calls = []
+        self.forget_calls = 0
+
+    def pack(self, **kw):
+        self.packed = True
+        self.pack_calls.append(kw)
+
+    def pack_forget(self):
+        self.packed = False
+        self.forget_calls += 1
+
+
+def _panel_visibility_stub(stiffness_no_upturn=False):
+    stub = types.SimpleNamespace()
+    stub.frm_cscen = _FakeFrame()
+    stub.frm_pcscen = _FakeFrame()
+    stub.frm_stiffness = _FakeFrame()
+    stub.sep_before_notes = object()
+    stub.var_stiffness_no_upturn = _Var()
+    stub.state = PickState(stiffness_no_upturn=stiffness_no_upturn)
+    stub._update_ppaxis_enabled = lambda: None
+    stub._update_panel_visibility = types.MethodType(DfitApp._update_panel_visibility, stub)
+    return stub
+
+
+def test_update_panel_visibility_frm_stiffness_only_on_stiffness_step():
+    stub = _panel_visibility_stub()
+    for key, _ in ui.STEPS:
+        stub.step = key
+        stub._update_panel_visibility()
+        assert stub.frm_stiffness.packed == (key == "stiffness")
+
+
+def test_update_panel_visibility_frm_cscen_only_on_gfunction():
+    stub = _panel_visibility_stub()
+    for key, _ in ui.STEPS:
+        stub.step = key
+        stub._update_panel_visibility()
+        assert stub.frm_cscen.packed == (key == "gfunction")
+
+
+def test_update_panel_visibility_frm_pcscen_only_on_loglog_and_porepressure():
+    stub = _panel_visibility_stub()
+    for key, _ in ui.STEPS:
+        stub.step = key
+        stub._update_panel_visibility()
+        assert stub.frm_pcscen.packed == (key in ("loglog", "porepressure"))
+
+
+def test_update_panel_visibility_resyncs_var_from_state_on_stiffness_entry():
+    stub = _panel_visibility_stub(stiffness_no_upturn=True)
+    stub.step = "stiffness"
+
+    stub._update_panel_visibility()
+
+    assert stub.var_stiffness_no_upturn.get() is True
+
+
+def test_update_panel_visibility_does_not_touch_var_off_the_stiffness_step():
+    stub = _panel_visibility_stub(stiffness_no_upturn=True)
+    stub.var_stiffness_no_upturn.set(False)  # simulate a stale value from a previous step
+    stub.step = "gfunction"
+
+    stub._update_panel_visibility()
+
+    assert stub.var_stiffness_no_upturn.get() is False
