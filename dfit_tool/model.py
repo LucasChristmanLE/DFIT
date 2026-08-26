@@ -94,6 +94,14 @@ class PickState:
     pp_axis: str = "tm12"  # "tm12" (t^-1/2) or "tm1" (t^-1)
     pp_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
 
+    # --- step 9: relative stiffness (URTeC-2019-123 A.8/A.9) -- a draggable vline pick on the
+    # semilog-y stiffness-vs-effective-pressure plot, in psi. Comparison-only: feeds
+    # Shmin(stiffness) = this - 75 psi (interpret.shmin_compliance) and nothing else. Needs the
+    # pore-pressure estimate (see stiffness_skipped/compute_all), so it is skipped end to end
+    # under PC-F exactly like porepressure. Old saves lack this key and take the default via
+    # _decode's known-field filter, no migration needed. ---
+    stiffness_pick_P: Optional[float] = None
+
     notes: str = ""
 
     # --- step-bar breadcrumb: absent key means "not_visited"; other values are "visited"/
@@ -205,6 +213,8 @@ def infer_step_status(state: PickState) -> dict[str, str]:
         status["loglog"] = "done"
     if state.pp_window is not None:
         status["porepressure"] = "done"
+    if state.stiffness_pick_P is not None:
+        status["stiffness"] = "done"
     return status
 
 
@@ -225,6 +235,13 @@ def porepressure_skipped(state: PickState) -> bool:
     """PC-F (no peak): the derivative never peaks, so no postclosure line exists and
     the pore-pressure step is skipped entirely."""
     return state.postclosure_scenario.startswith("PC-F")
+
+
+def stiffness_skipped(state: PickState) -> bool:
+    """The stiffness step needs a pore-pressure estimate (the h-function's Pres term), which
+    PC-F never yields -- mirrors porepressure_skipped exactly, and is consulted at every call
+    site the same way (see ../CLAUDE.md)."""
+    return porepressure_skipped(state)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -253,6 +270,10 @@ class DerivedResults:
     shmin_variable: Optional[float] = None
     shmin_rapid: Optional[float] = None
     shmin_liberty: Optional[float] = None
+    # Comparison-only fourth Shmin estimate (URTeC-2019-123 A.8/A.9 relative stiffness) --
+    # picked pressure - 75 psi (interpret.shmin_compliance). Never feeds net pressure or the
+    # shared reference ISIP; see the stiffness block in compute_all.
+    shmin_stiffness: Optional[float] = None
     closure_time_compliance_s: Optional[float] = None
     closure_time_tangent_s: Optional[float] = None
     closure_time_variable_s: Optional[float] = None
@@ -281,6 +302,7 @@ class DerivedResults:
     shmin_tangent_gradient: Optional[float] = None
     shmin_liberty_gradient: Optional[float] = None
     shmin_rapid_gradient: Optional[float] = None
+    shmin_stiffness_gradient: Optional[float] = None
     pore_pressure_gradient: Optional[float] = None
 
     # arrays for plotting (not serialized)
@@ -305,6 +327,13 @@ class DerivedResults:
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
+
+    # Relative-stiffness plot arrays (URTeC-2019-123 A.8/A.9): stiffness_p_eff is full length
+    # (aligned with res.resampled/diagnostics.G), stiffness_S is one shorter (aligned with
+    # stiffness_p_eff[1:]) -- see the stiffness block in compute_all. Not serialized
+    # (DerivedResults never is).
+    stiffness_p_eff: Optional[np.ndarray] = field(default=None, repr=False)
+    stiffness_S: Optional[np.ndarray] = field(default=None, repr=False)
 
     # Compact summary of any non-1.0 unit conversion applied this compute (see
     # io_load.refresh_unit_detection / UnitDetection) -- e.g. "pressure: kpa×0.145038 (header)".
@@ -357,6 +386,7 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
         ("shmin_tangent", "shmin_tangent_gradient"),
         ("shmin_liberty", "shmin_liberty_gradient"),
         ("shmin_rapid", "shmin_rapid_gradient"),
+        ("shmin_stiffness", "shmin_stiffness_gradient"),
         ("pore_pressure", "pore_pressure_gradient"),
     )
     # Gates both warnings below: a just-opened test has no picks yet, so there is nothing to
@@ -690,6 +720,32 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             expo = -0.5 if state.pp_axis == "tm12" else -1.0
             x = dg.t[m] ** expo
             res.pore_pressure = interpret.pore_pressure(x, dg.p[m])
+
+    # Relative stiffness (URTeC-2019-123 A.8/A.9): a fourth, comparison-only Shmin estimate at
+    # the upturn where the h-function-derived relative stiffness S rises off its minimum --
+    # i.e. where the fracture walls come into contact. p_eff (effective pressure, paper 3.1.1)
+    # is the actual resampled pressure at/after the min-dP/dG pick, and the P-vs-G tangent
+    # extrapolation from that pick before it (same construction as eff_isip_line_compliance,
+    # anchored at min_dpdg_G instead of contact_G). Gated on the pore-pressure estimate (the
+    # h-function's Pres term) existing -- which transitively covers PC-F, see
+    # stiffness_skipped -- and on >= 4 resampled points, the minimum this O(n^2) construction
+    # needs to be meaningful. shmin_stiffness is set INSIDE this gate: a stale pick whose
+    # arrays are no longer computable must report nothing.
+    if (state.min_dpdg_G is not None and res.pore_pressure is not None and res.te_s
+            and res.resampled is not None and res.diagnostics is not None
+            and len(res.resampled.p) >= 4):
+        dg = res.diagnostics
+        rs = res.resampled
+        i_min = int(np.nanargmin(np.abs(dg.G - state.min_dpdg_G)))
+        anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, rs.p, i_min, half=4)
+        line = anchor_y + slope * (dg.G - anchor_x)
+        idx = np.arange(len(rs.p))
+        p_eff = np.where(idx < i_min, line, rs.p)
+        h = interpret.h_function(rs.dt, p_eff, res.pore_pressure, res.te_s)
+        res.stiffness_p_eff = p_eff
+        res.stiffness_S = interpret.relative_stiffness(p_eff, h)
+        if state.stiffness_pick_P is not None:
+            res.shmin_stiffness = interpret.shmin_compliance(state.stiffness_pick_P)
 
     _resolve_gradients(state, res)
 

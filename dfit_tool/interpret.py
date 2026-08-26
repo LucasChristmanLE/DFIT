@@ -548,3 +548,65 @@ def loglog_slope(t: np.ndarray, dp: np.ndarray, i0: int, i1: int) -> float:
         return float("nan")
     m, _ = fit_line(np.log10(t[good]), np.log10(dp[good]))
     return m
+
+
+# --------------------------------------------------------------------------------------------------
+# relative stiffness (URTeC-2019-123 A.8/A.9): the h-function is a time-convolution leakoff
+# integral against a pore-pressure estimate; relative stiffness S = -dP_eff/dh, and its upturn
+# off the minimum marks the fracture walls coming into contact -- a fourth, comparison-only
+# Shmin estimate (see model.compute_all's stiffness block).
+# --------------------------------------------------------------------------------------------------
+def h_function(dt_s: np.ndarray, p_eff: np.ndarray, pore_pressure_psi: float,
+              te_s: float) -> np.ndarray:
+    """McClure's O(n^2) reference construction (URTeC-2019-123 A.8), vectorized:
+
+        h[i] = (p_eff[0] - Pres)*sqrt(dt[i] + te/2) + sum_{j<i} (p_eff[j+1]-p_eff[j])*sqrt(dt[i]-dt[j])
+
+    His reference code carries dt in minutes and pressure in MPa (psi/145.04); both factors
+    cancel out of this relative quantity, so this implementation takes dt in seconds and
+    pressure in psi directly, matching every other unit in this module. ``dt_s`` must be
+    non-decreasing (post-shut-in elapsed time) so every ``dt[i]-dt[j]`` term (j < i) is >= 0.
+    """
+    dt_s = np.asarray(dt_s, dtype=float)
+    p_eff = np.asarray(p_eff, dtype=float)
+    n = len(dt_s)
+    term0 = (p_eff[0] - pore_pressure_psi) * np.sqrt(dt_s + te_s / 2.0)
+    dp = np.diff(p_eff)
+    # outer[i, j] = dt[i] - dt[j], for j in [0, n-2] (dp's own indices); masked to the strictly
+    # lower triangle (j < i) so only the j<i terms of the sum contribute. Masking (as 0/1) BEFORE
+    # the sqrt, rather than after, keeps every sqrt argument >= 0 -- the masked-out (j >= i)
+    # entries would otherwise be negative (dt increasing) and raise/NaN for no reason, since
+    # they're zeroed out immediately after anyway.
+    outer = dt_s[:, None] - dt_s[None, :-1]
+    mask = np.tril(np.ones((n, max(n - 1, 0))), k=-1)
+    sqrt_term = np.sqrt(outer * mask)
+    return term0 + sqrt_term @ dp
+
+
+def relative_stiffness(p_eff: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """Relative system stiffness S[i] = -(p_eff[i+1]-p_eff[i]) / (h[i+1]-h[i]), length n-1,
+    aligned with ``p_eff[1:]``/``h[1:]``. ``np.errstate`` suppresses the divide/invalid warnings
+    a dh == 0 sample would otherwise raise -- np.where still evaluates -dp/dh everywhere before
+    selecting, so those warnings fire on the full arrays regardless of the mask."""
+    p_eff = np.asarray(p_eff, dtype=float)
+    h = np.asarray(h, dtype=float)
+    dp = np.diff(p_eff)
+    dh = np.diff(h)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(dh != 0, -dp / dh, np.nan)
+
+
+def suggest_stiffness_upturn_index(S: np.ndarray, rise_frac: float = 0.10) -> Optional[int]:
+    """Index of the stiffness upturn: the relative minimum of S, then the same C-A +10%-rise
+    rule ``suggest_contact_clear_index`` uses for the dP/dG elbow, applied to S instead. Falls
+    back to the min itself when S never rises that much to its right (a shape with no clear
+    upturn). ``None`` only when no finite positive sample exists at all -- S can be negative or
+    zero near a dh sign flip, which is never a legitimate stiffness minimum to anchor on."""
+    S = np.asarray(S, dtype=float)
+    positive = np.isfinite(S) & (S > 0)
+    if not positive.any():
+        return None
+    candidates = np.where(positive)[0]
+    min_idx = int(candidates[np.argmin(S[candidates])])
+    idx = suggest_contact_clear_index(S, min_idx, rise_frac=rise_frac)
+    return idx if idx is not None else min_idx
