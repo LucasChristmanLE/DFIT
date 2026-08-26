@@ -27,7 +27,8 @@ PICKS_SUFFIX = ".dfit_picks.json"  # <test_folder>/<test_id>.dfit_picks.json
 
 # Deliberately duplicated from ui.py's STEPS keys, not imported -- ui.py imports tkinter at
 # module level, and store.py must stay importable with no Tk on the path (see module docstring).
-STEP_KEYS = ("overview", "injection", "isip", "gfunction", "tangent", "loglog", "porepressure")
+STEP_KEYS = ("overview", "injection", "isip", "gfunction", "tangent", "loglog", "porepressure",
+             "stiffness")
 
 # Column order: the 33 original schema columns, then the appended per-method columns the tool
 # computes beyond that schema. CSV only for now; a parquet mirror alongside dfit_log.csv is a
@@ -63,6 +64,11 @@ LOG_COLUMNS = [
     "Shmin_liberty_gradient",
     "Shmin_rapid_gradient",
     "pore_pressure_gradient",
+    # Relative-stiffness comparison-only Shmin (URTeC-2019-123 A.8/A.9, the "stiffness" step) --
+    # tail-appended per the append-only convention rather than sitting with the other Shmin
+    # gradients above.
+    "Shmin_stiffness",
+    "Shmin_stiffness_gradient",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -256,7 +262,7 @@ def save_picks_for(entry: TestEntry, state: PickState) -> None:
 # --------------------------------------------------------------------------------------------------
 def status_for(state: Optional[PickState]) -> str:
     """The folder-mode status for `state`: "new" (no picks / never visited a step), "done" and
-    "in_progress" are purely derived from step_status -- all seven steps accounted for and none
+    "in_progress" are purely derived from step_status -- all eight steps accounted for and none
     skipped is "done", all accounted for with >=1 skipped is "skipped", otherwise
     "in_progress" -- except "skipped" can also come from explicit_status, the whole-test
     Skip-test button, which overrides the derivation at any point in the workflow regardless of
@@ -268,17 +274,22 @@ def status_for(state: Optional[PickState]) -> str:
     if not any(k in state.step_status for k in STEP_KEYS):
         return "new"
     pp_auto = model.porepressure_skipped(state)
+    stiff_auto = model.stiffness_skipped(state)
 
     def _accounted(key: str) -> bool:
-        # PC-F ("no peak") skips the pore-pressure step end to end, so it may have no
-        # step_status entry at all -- and any entry it does have (from a session where the
-        # analyst hit Skip before choosing PC-F) is not a user decision worth reporting.
+        # PC-F ("no peak") skips the pore-pressure AND stiffness steps end to end, so either may
+        # have no step_status entry at all -- and any entry either does have (from a session
+        # where the analyst hit Skip before choosing PC-F) is not a user decision worth
+        # reporting.
         if key == "porepressure" and pp_auto:
+            return True
+        if key == "stiffness" and stiff_auto:
             return True
         return state.step_status.get(key) in ("done", "skipped")
 
     def _user_skipped(key: str) -> bool:
         return not (key == "porepressure" and pp_auto) \
+            and not (key == "stiffness" and stiff_auto) \
             and state.step_status.get(key) == "skipped"
 
     if not all(_accounted(k) for k in STEP_KEYS):
@@ -428,4 +439,6 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "Shmin_liberty_gradient": res.shmin_liberty_gradient,
         "Shmin_rapid_gradient": res.shmin_rapid_gradient,
         "pore_pressure_gradient": res.pore_pressure_gradient,
+        "Shmin_stiffness": res.shmin_stiffness,
+        "Shmin_stiffness_gradient": res.shmin_stiffness_gradient,
     }

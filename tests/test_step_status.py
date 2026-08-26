@@ -124,6 +124,7 @@ def test_field_step_mapping_matches_spec():
         "net (variable)": "tangent",
         "pore pressure": "porepressure",
         "pore pressure grad": "porepressure",
+        "Shmin stiffness": "stiffness",
     }
     assert FIELD_STEP == expected
 
@@ -140,12 +141,14 @@ def test_next_step_advances_and_clamps_at_last():
     assert next_step("overview") == "injection"
     assert next_step("injection") == "isip"
     assert next_step("loglog") == "porepressure"
-    assert next_step("porepressure") == "porepressure"  # no-op at last
+    assert next_step("porepressure") == "stiffness"
+    assert next_step("stiffness") == "stiffness"  # no-op at last
 
 
 def test_prev_step_retreats_and_clamps_at_first():
     assert prev_step("injection") == "overview"
     assert prev_step("isip") == "injection"
+    assert prev_step("stiffness") == "porepressure"
     assert prev_step("porepressure") == "loglog"
     assert prev_step("overview") == "overview"  # no-op at first
 

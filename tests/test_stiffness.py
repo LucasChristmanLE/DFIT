@@ -13,14 +13,16 @@ transcription keeps psi/seconds, matching h_function's own units -- see its docs
 from __future__ import annotations
 
 import math
+import types
 
 import numpy as np
 import pytest
 
 from matplotlib.figure import Figure
 
-from dfit_tool import interpret, picks, plots
-from dfit_tool.model import compute_all
+from dfit_tool import interpret, picks, plots, store, ui
+from dfit_tool.model import PickState, compute_all, porepressure_skipped, stiffness_skipped
+from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
 
 
@@ -386,3 +388,141 @@ def test_render_stiffness_no_pick_line_when_pick_unset():
 def test_stiffness_is_in_renderers_after_porepressure():
     keys = list(plots.RENDERERS.keys())
     assert keys.index("stiffness") == keys.index("porepressure") + 1
+
+
+# --------------------------------------------------------------------------------------------------
+# model.stiffness_skipped mirrors porepressure_skipped
+# --------------------------------------------------------------------------------------------------
+def test_stiffness_skipped_mirrors_porepressure_skipped_under_pcf():
+    st = PickState(postclosure_scenario="PC-F no peak")
+    assert stiffness_skipped(st) is True
+    assert stiffness_skipped(st) == porepressure_skipped(st)
+
+
+def test_stiffness_skipped_mirrors_porepressure_skipped_otherwise():
+    st = PickState(postclosure_scenario="PC-A linear")
+    assert stiffness_skipped(st) is False
+    assert stiffness_skipped(st) == porepressure_skipped(st)
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.STEPS / picks.SEEDERS / plots.RENDERERS / store.STEP_KEYS all agree, "stiffness" included.
+# --------------------------------------------------------------------------------------------------
+def test_stiffness_is_the_last_ui_step():
+    assert ui.STEPS[-1][0] == "stiffness"
+
+
+def test_stiffness_in_all_four_registries():
+    assert "stiffness" in picks.SEEDERS
+    assert "stiffness" in plots.RENDERERS
+    assert "stiffness" in store.STEP_KEYS
+    assert "stiffness" in [k for k, _ in ui.STEPS]
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.DfitApp._goto redirects "stiffness" to "loglog" under PC-F, same as "porepressure" --
+# duck-typed stand-in pattern from test_pcf_skip.py's _goto_stub, no real tk.Tk().
+# --------------------------------------------------------------------------------------------------
+def _goto_stub(postclosure_scenario):
+    stub = types.SimpleNamespace()
+    stub.td = object()
+    stub.state = PickState(postclosure_scenario=postclosure_scenario,
+                           step_status={k: "visited" for k, _ in ui.STEPS})
+    stub.step = "injection"
+    stub._seed_step = lambda key: None
+    stub._refresh_calls = []
+    stub.refresh = lambda: stub._refresh_calls.append(True)
+    stub._goto = types.MethodType(DfitApp._goto, stub)
+    return stub
+
+
+def test_goto_stiffness_redirects_to_loglog_under_pcf():
+    stub = _goto_stub("PC-F no peak")
+    stub._goto("stiffness")
+    assert stub.step == "loglog"
+
+
+def test_goto_stiffness_lands_on_stiffness_under_non_pcf():
+    stub = _goto_stub("PC-A linear")
+    stub._goto("stiffness")
+    assert stub.step == "stiffness"
+
+
+def test_last_step_is_stiffness_for_non_pcf():
+    stub = types.SimpleNamespace()
+    stub.state = PickState(postclosure_scenario="PC-A linear")
+    stub._last_step = types.MethodType(DfitApp._last_step, stub)
+    assert stub._last_step() == "stiffness"
+
+
+def test_last_step_is_loglog_under_pcf():
+    stub = types.SimpleNamespace()
+    stub.state = PickState(postclosure_scenario="PC-F no peak")
+    stub._last_step = types.MethodType(DfitApp._last_step, stub)
+    assert stub._last_step() == "loglog"
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.PANEL_FIELDS / FIELD_STEP: the new "Shmin stiffness" row
+# --------------------------------------------------------------------------------------------------
+def test_shmin_stiffness_panel_field_maps_to_stiffness_step():
+    assert "Shmin stiffness" in ui.PANEL_FIELDS
+    assert ui.FIELD_STEP["Shmin stiffness"] == "stiffness"
+
+
+# --------------------------------------------------------------------------------------------------
+# store.status_for: stiffness is accounted for like porepressure, including the PC-F carve-out.
+# --------------------------------------------------------------------------------------------------
+def test_status_for_pcf_without_stiffness_step_is_done():
+    st = PickState(
+        postclosure_scenario="PC-F no peak",
+        step_status={
+            "overview": "done", "injection": "done", "isip": "done", "gfunction": "done",
+            "tangent": "done", "loglog": "done",
+        },
+    )
+    assert store.status_for(st) == "done"
+
+
+def test_status_for_non_pcf_missing_stiffness_step_is_in_progress():
+    st = PickState(
+        postclosure_scenario="PC-A linear",
+        step_status={
+            "overview": "done", "injection": "done", "isip": "done", "gfunction": "done",
+            "tangent": "done", "loglog": "done", "porepressure": "done",
+        },
+    )
+    assert store.status_for(st) == "in_progress"
+
+
+def test_status_for_all_eight_steps_done_is_done():
+    st = PickState(
+        postclosure_scenario="PC-A linear",
+        step_status={k: "done" for k in store.STEP_KEYS},
+    )
+    assert store.status_for(st) == "done"
+
+
+# --------------------------------------------------------------------------------------------------
+# store.LOG_COLUMNS / build_log_row: Shmin_stiffness + Shmin_stiffness_gradient, tail-appended.
+# --------------------------------------------------------------------------------------------------
+def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
+    assert store.LOG_COLUMNS[-2:] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+
+
+def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
+    td, st, res = _state_with_pore_pressure()
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+    st.tvd_ft = 10000.0
+    res = compute_all(st, td)
+    assert res.shmin_stiffness is not None
+    assert res.shmin_stiffness_gradient == pytest.approx(res.shmin_stiffness / st.tvd_ft)
+
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = str(tmp_path / "well1.csv")
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+
+    assert row["Shmin_stiffness"] == pytest.approx(res.shmin_stiffness)
+    assert row["Shmin_stiffness_gradient"] == pytest.approx(res.shmin_stiffness_gradient)
+    assert list(row.keys()) == store.LOG_COLUMNS

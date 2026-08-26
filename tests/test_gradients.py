@@ -1,8 +1,8 @@
-"""Pressure gradients (psi/ft): compute_all's _resolve_gradients depth-normalizes seven reported
+"""Pressure gradients (psi/ft): compute_all's _resolve_gradients depth-normalizes eight reported
 pressures -- apparent ISIP, the three compliance-family Shmins (compliance/variable/tangent),
-Shmin Liberty, Shmin rapid, and pore pressure -- each strictly its own source value / state.tvd_ft,
-with no cross-field fallback. Gated on tvd_ft being not None, finite, and > 0; every gradient
-stays None otherwise. Mirrors the pattern in test_shmin_liberty.py.
+Shmin Liberty, Shmin rapid, Shmin stiffness, and pore pressure -- each strictly its own source
+value / state.tvd_ft, with no cross-field fallback. Gated on tvd_ft being not None, finite, and
+> 0; every gradient stays None otherwise. Mirrors the pattern in test_shmin_liberty.py.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def test_all_gradients_none_when_tvd_invalid(bad_tvd, expected_warning):
 
 
 # --------------------------------------------------------------------------------------------------
-# The warning above is gated on at least one of the seven source values existing -- a freshly-
+# The warning above is gated on at least one of the eight source values existing -- a freshly-
 # opened test with no picks yet must stay quiet, or the warning would be permanent noise from the
 # moment a file loads.
 # --------------------------------------------------------------------------------------------------

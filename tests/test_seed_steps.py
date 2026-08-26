@@ -305,7 +305,7 @@ def test_seed_pp_non_destructive():
 # --------------------------------------------------------------------------------------------------
 # SEEDERS dict shape + seed_defaults is fully gone
 # --------------------------------------------------------------------------------------------------
-def test_seeders_covers_exactly_the_seven_step_keys():
+def test_seeders_covers_exactly_the_step_keys():
     assert set(picks.SEEDERS.keys()) == {k for k, _ in ui.STEPS}
 
 

@@ -1,4 +1,4 @@
-"""Tkinter/ttk shell: file open, channel mapping, the seven-step canvas, live value panel.
+"""Tkinter/ttk shell: file open, channel mapping, the eight-step canvas, live value panel.
 
 Hosts the matplotlib canvas and wires the per-step pickers from picks.py to a recompute+redraw
 loop. Holds no interpretation logic itself -- every number comes from model.compute_all.
@@ -24,7 +24,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, interpret, io_load, picks, plots, sliders, store
 from .model import (PickState, TangentPick, compute_all, infer_step_status,
-                    porepressure_skipped, step_gate_error)
+                    porepressure_skipped, step_gate_error, stiffness_skipped)
 from .plots import D2_AXIS_GID, ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -38,6 +38,7 @@ STEPS = [
     ("tangent", "Tangent"),
     ("loglog", "Log-log"),
     ("porepressure", "Pore pressure"),
+    ("stiffness", "Stiffness"),
 ]
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid"]
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
@@ -59,7 +60,7 @@ _PC_HINTS = {
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 
-# The 22 result-panel rows, in display order -- module level (not just a literal inside
+# The 23 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP", "apparent ISIP grad",
@@ -69,6 +70,7 @@ PANEL_FIELDS = [
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
     "delta closure", "pore pressure", "pore pressure grad",
+    "Shmin stiffness",
 ]
 
 # Which step "owns" each panel field -- _update_panel shows "-" for a field whose step is still
@@ -102,6 +104,9 @@ FIELD_STEP = {
     "net (variable)": "tangent",
     "pore pressure": "porepressure",
     "pore pressure grad": "porepressure",
+    # Comparison-only fourth Shmin estimate (URTeC-2019-123 A.8/A.9 relative stiffness) -- no
+    # panel gradient row, same precedent as "Shmin Liberty" (gradient is CSV-only).
+    "Shmin stiffness": "stiffness",
 }
 
 
@@ -1147,10 +1152,13 @@ class DfitApp:
 
         A "porepressure" destination redirects to "loglog" whenever PC-F skips the pore-pressure
         step -- this one place covers the log-log Skip button, resume-on-load
-        (first_not_visited_step), and any other programmatic jump."""
+        (first_not_visited_step), and any other programmatic jump. "stiffness" redirects the
+        same way, independently, whenever PC-F skips it too (stiffness_skipped)."""
         if self.td is None:
             return
         if step == "porepressure" and porepressure_skipped(self.state):
+            step = "loglog"
+        if step == "stiffness" and stiffness_skipped(self.state):
             step = "loglog"
         if self.state.step_status.get(step, "not_visited") == "not_visited":
             self._seed_step(step)
@@ -1199,8 +1207,9 @@ class DfitApp:
 
     def _last_step(self) -> str:
         """The effective last step of the workflow: "loglog" when the postclosure scenario is
-        PC-F (no peak, so there is no postclosure line and the pore-pressure step is skipped),
-        else the actual last entry in STEPS ("porepressure")."""
+        PC-F (no peak, so there is no postclosure line and the pore-pressure AND stiffness steps
+        are both skipped -- stiffness needs the pore-pressure estimate), else the actual last
+        entry in STEPS ("stiffness")."""
         if porepressure_skipped(self.state):
             return "loglog"
         return STEPS[-1][0]
@@ -1301,16 +1310,18 @@ class DfitApp:
         honored for a reached step) and highlight the current step. Bold text rather than an
         Accent.TButton style -- that style name is theme-specific and not guaranteed to exist.
 
-        The "porepressure" breadcrumb is force-disabled whenever PC-F skips that step, even if
-        it was visited earlier in the session (e.g. the analyst picked PC-F after already
-        reaching pore pressure) -- _goto redirects that destination to "loglog" regardless, so
-        the button must not look reachable."""
+        The "porepressure" and "stiffness" breadcrumbs are force-disabled whenever PC-F skips
+        those steps, even if either was visited earlier in the session (e.g. the analyst picked
+        PC-F after already reaching pore pressure) -- _goto redirects both destinations to
+        "loglog" regardless, so neither button must look reachable."""
         style = ttk.Style()
         style.configure("StepCurrent.TButton", font=("TkDefaultFont", 9, "bold"))
         skip_pp = porepressure_skipped(self.state)
+        skip_stiff = stiffness_skipped(self.state)
         for key, btn in self.step_buttons.items():
             status = self.state.step_status.get(key, "not_visited")
-            reachable = status != "not_visited" and not (key == "porepressure" and skip_pp)
+            reachable = status != "not_visited" and not (
+                (key == "porepressure" and skip_pp) or (key == "stiffness" and skip_stiff))
             btn.state(["!disabled"] if reachable else ["disabled"])
             btn.configure(style="StepCurrent.TButton" if key == self.step else "TButton")
         # On the effective last step the Next button becomes Finish (bold, like the current-step
@@ -1629,6 +1640,30 @@ class DfitApp:
                 self.refresh()
             self._controllers.append(picks.SpanController(self.ax, on_span))
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
+        elif step == "stiffness":
+            res = self.res
+            if res.stiffness_S is not None:
+                p_eff = res.stiffness_p_eff[1:]
+
+                def commit_stiffness(x):
+                    # DragLineController commits the raw dragged x -- snap it to the nearest
+                    # curve sample's pressure first (picks._nearest is a plain argmin over |diff|,
+                    # so it works fine against p_eff's non-increasing order too).
+                    idx = picks._nearest(p_eff, x)
+                    picks.commit_stiffness_point(self.state, float(p_eff[idx]))
+                    self.refresh()
+
+                ctrl = picks.DragLineController(self.canvas, self.ax,
+                                                handlers={"stiffness_pick": commit_stiffness})
+                self._controllers.append(ctrl)
+                self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
+                self.hint_lbl.config(
+                    text="Drag the blue dashed line to the stiffness upturn (fracture-wall "
+                         "contact).")
+            else:
+                self.hint_lbl.config(
+                    text="Stiffness plot unavailable until the min-dP/dG pick and a "
+                         "pore-pressure estimate exist.")
 
     def _update_panel(self):
         r = self.res
@@ -1671,6 +1706,7 @@ class DfitApp:
             "delta closure": s(r.delta_closure),
             "pore pressure": s(r.pore_pressure),
             "pore pressure grad": s(r.pore_pressure_gradient, "{:.3f}"),
+            "Shmin stiffness": s(r.shmin_stiffness),
         }
         for k, v in vals.items():
             owning_step = FIELD_STEP[k]

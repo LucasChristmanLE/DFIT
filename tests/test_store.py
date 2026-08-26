@@ -429,12 +429,12 @@ def test_status_for_all_done_is_done():
 
 
 def test_status_for_done_and_skipped_mix_is_skipped():
-    # All six steps accounted for, but one was a per-step Skip > -- the derivation now reports
+    # All eight steps accounted for, but one was a per-step Skip > -- the derivation now reports
     # that as "skipped" rather than "done" (a step_status skip is a real user decision, unlike
     # the PC-F clause below, which is a scenario the workflow forces rather than chooses).
     st = PickState(step_status={
         "overview": "done", "injection": "done", "isip": "done", "gfunction": "skipped",
-        "tangent": "done", "loglog": "done", "porepressure": "done",
+        "tangent": "done", "loglog": "done", "porepressure": "done", "stiffness": "done",
     })
     assert store.status_for(st) == "skipped"
 
