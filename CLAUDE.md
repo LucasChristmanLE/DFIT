@@ -6,7 +6,7 @@ Guidance for working in this repository.
 
 An interactive tool for interpreting a single diagnostic fracture injection test (DFIT)
 by the compliance method. A Tkinter/ttk shell hosts an embedded matplotlib canvas. The
-interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and walks seven
+interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and walks eight
 workflow steps, making draggable picks on each plot. Every reported number is derived from
 one pure function, `model.compute_all`.
 
@@ -17,10 +17,12 @@ results up into a per-root `dfit_log.csv` master log. The sidebar and the log ex
 folder mode; single-file mode is otherwise unchanged. There is still no cross-test
 aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
-The seven steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
-porepressure. Overview shows the entire dataset, unclamped, and hosts the always-on tail-trim
-line; Injection is the zoomed injection-window view with the draggable start/shut-in lines and
-the te/Vinj/qmax title.
+The eight steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
+porepressure → stiffness. Overview shows the entire dataset, unclamped, and hosts the always-on
+tail-trim line; Injection is the zoomed injection-window view with the draggable start/shut-in
+lines and the te/Vinj/qmax title; stiffness is a semilog-y relative-stiffness-vs-effective-
+pressure plot (URTeC-2019-123 A.8/A.9) that needs the pore-pressure estimate, so it comes last
+and is skipped end to end under PC-F exactly like porepressure (`model.stiffness_skipped`).
 
 ## Commands
 
@@ -145,7 +147,7 @@ exactly two ways to end a test, both in the bottom stepbar: Finish (completed it
 test (park it) -- `ui._advance_queue` is their shared auto-advance tail, scanning circularly
 from just after the current entry for the next `"new"`-status one and reporting when the
 queue is exhausted rather than looping forever. `"done"` and `"in_progress"` are purely
-derived from `step_status` (all seven steps accounted for and none skipped is `"done"`, all
+derived from `step_status` (all eight steps accounted for and none skipped is `"done"`, all
 accounted for with >=1 skipped is `"skipped"`, otherwise `"in_progress"`); `"done"` is never a
 manual choice. Skip test (`ui._skip_test`) is the one capability that has no other
 expression: a toggle button that flags the whole test `state.explicit_status = "skipped"`
@@ -222,6 +224,16 @@ Per-test deliverables:
   Shown as the "Shmin Liberty" panel row and logged to the `Shmin_liberty` column only — it is
   not drawn on any plot and feeds no other derived value (no net pressure, no shared reference
   ISIP, no complexity).
+- **Shmin, stiffness** — picked pressure − 75 psi (`interpret.shmin_compliance`), the same
+  offset as Shmin compliance but a different construction: the pick sits on the 8th
+  ("stiffness") step's relative-stiffness-vs-effective-pressure plot (URTeC-2019-123 A.8/A.9),
+  at the upturn where the fracture walls come into contact (`interpret.h_function`/
+  `relative_stiffness`/`suggest_stiffness_upturn_index`, auto-seeded then draggable). Needs the
+  pore-pressure estimate (the h-function's Pres term), so it is skipped end to end under PC-F
+  exactly like porepressure (`model.stiffness_skipped`). Comparison-only, like Shmin Liberty:
+  shown as the "Shmin stiffness" panel row and logged to the `Shmin_stiffness`/
+  `Shmin_stiffness_gradient` columns only — never drawn into net pressure, the shared reference
+  ISIP, or complexity.
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and
@@ -230,9 +242,9 @@ Per-test deliverables:
   axis chosen by the postclosure scenario.
 - **Pressure gradients** — depth-normalized (psi/ft) form of a pressure, `value / state.tvd_ft`
   (`interpret.pressure_gradient`, `model._resolve_gradients`). Three rows in the panel (apparent
-  ISIP grad, Shmin compliance grad, pore pressure grad, each inline under its parent) plus four
-  more logged only to `dfit_log.csv` (Shmin variable/tangent/Liberty/rapid gradient) — seven
-  columns total. `tvd_ft` must be not-None, finite, and `> 0`, or every gradient blanks to
+  ISIP grad, Shmin compliance grad, pore pressure grad, each inline under its parent) plus five
+  more logged only to `dfit_log.csv` (Shmin variable/tangent/Liberty/rapid/stiffness gradient) —
+  eight columns total. `tvd_ft` must be not-None, finite, and `> 0`, or every gradient blanks to
   `None`/`"-"`; nothing upstream enforces that (`io_load.bhp_inputs_ready` accepts `tvd_ft =
   0.0`), so this guard is the only thing standing between the feature and a divide-by-zero.
   Every gradient field is strictly its own source value / TVD — no cross-field fallback in the
@@ -242,7 +254,7 @@ Per-test deliverables:
   fields. An unusable `tvd_ft` (missing, non-numeric, zero, negative, or non-finite) is never
   silent once there's something to report: `_resolve_gradients` appends a warning naming the
   problem ("TVD not set..." or "TVD `<value>` is not a positive number..."), gated on at least
-  one of the seven source values being non-None so a freshly-opened test with no picks yet
+  one of the eight source values being non-None so a freshly-opened test with no picks yet
   stays quiet. It deliberately coexists with the separate "Surface pressure selected but
   density/TVD not set" warning (`compute_all`) rather than being suppressed by it — that one is
   about BHP reliability, this one is about the gradients not being reported, and the panel
@@ -542,7 +554,19 @@ true, the pore-pressure step is skipped end to end: `ui._last_step()` reports `"
 any `"porepressure"` destination (the log-log Skip button, resume-on-load, a breadcrumb click)
 to `"loglog"`; `_update_stepbar` force-disables the porepressure breadcrumb even if that step
 was visited earlier in the session; and `plots.save_all_step_pngs` omits the porepressure PNG
-(the other six keep their `RENDERERS`-order numbering).
+(the other steps keep their `RENDERERS`-order numbering).
+
+**Stiffness skip.** `model.stiffness_skipped(state)` mirrors `porepressure_skipped(state)`
+exactly (it is the same PC-F check): the relative-stiffness plot's h-function needs a
+pore-pressure estimate as its `Pres` term, and PC-F never yields one. Every place the
+pore-pressure skip is consulted has an independent stiffness counterpart -- `_goto` redirects a
+`"stiffness"` destination to `"loglog"` the same way it redirects `"porepressure"`;
+`_update_stepbar` force-disables the stiffness breadcrumb under the same condition;
+`plots.save_all_step_pngs` also omits `"8_stiffness.png"`; and `store.status_for`'s
+`_accounted`/`_user_skipped` PC-F carve-outs are OR'd with `stiffness_skipped` alongside the
+existing `porepressure_skipped` clause, so a PC-F test with neither step's `step_status` entry
+still reports `"done"`. `ui._last_step()` needs no separate stiffness case: it already reports
+`"loglog"` under PC-F, which is correct since PC-F skips both steps.
 
 An in-app "Interpretation guide" window (opened from the "Interpretation guide..." buttons on
 the G-function step's closure-scenario panel and the log-log/pore-pressure steps'
