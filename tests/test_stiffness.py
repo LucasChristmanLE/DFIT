@@ -17,7 +17,9 @@ import math
 import numpy as np
 import pytest
 
-from dfit_tool import interpret, picks
+from matplotlib.figure import Figure
+
+from dfit_tool import interpret, picks, plots
 from dfit_tool.model import compute_all
 from tests.helpers import make_testdata, injection_state
 
@@ -288,3 +290,99 @@ def test_shmin_stiffness_is_pick_minus_75_psi():
 
     assert res2.shmin_stiffness == pytest.approx(pick_P - interpret.COMPLIANCE_OFFSET_PSI)
     assert res2.shmin_stiffness == pytest.approx(interpret.shmin_compliance(pick_P))
+
+
+# --------------------------------------------------------------------------------------------------
+# picks.commit_stiffness_point
+# --------------------------------------------------------------------------------------------------
+def test_commit_stiffness_point_is_a_pure_one_liner():
+    from dfit_tool.model import PickState
+    st = PickState()
+    picks.commit_stiffness_point(st, 4321.5)
+    assert st.stiffness_pick_P == pytest.approx(4321.5)
+
+
+# --------------------------------------------------------------------------------------------------
+# picks.seed_stiffness: non-destructive, no-op without arrays, upturn pick from the suggestion
+# --------------------------------------------------------------------------------------------------
+def test_seed_stiffness_no_op_when_arrays_missing():
+    td = make_testdata()
+    st = injection_state(td)
+    res = compute_all(st, td)  # no gfunction/pp picks -> res.stiffness_S is None
+    assert res.stiffness_S is None
+
+    picks.seed_stiffness(st, res)
+
+    assert st.stiffness_pick_P is None
+
+
+def test_seed_stiffness_non_destructive():
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_pick_P = 1234.5
+
+    picks.seed_stiffness(st, res)
+
+    assert st.stiffness_pick_P == pytest.approx(1234.5)
+
+
+def test_seed_stiffness_sets_pick_from_the_upturn_suggestion():
+    td, st, res = _state_with_pore_pressure()
+    assert st.stiffness_pick_P is None
+
+    picks.seed_stiffness(st, res)
+
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    expected = float(res.stiffness_p_eff[1:][idx])
+    assert st.stiffness_pick_P == pytest.approx(expected)
+
+
+def test_seed_stiffness_is_registered_in_seeders():
+    assert picks.SEEDERS["stiffness"] is picks.seed_stiffness
+
+
+# --------------------------------------------------------------------------------------------------
+# plots.render_stiffness
+# --------------------------------------------------------------------------------------------------
+def test_render_stiffness_guard_branch_when_arrays_missing():
+    td = make_testdata()
+    st = injection_state(td)
+    res = compute_all(st, td)
+    assert res.stiffness_S is None
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    defaults = plots.render_stiffness(ax, td, st, res)
+
+    assert defaults == plots.ViewDefaults()
+    assert "requires" in ax.get_title().lower()
+
+
+def test_render_stiffness_full_branch_has_log_yscale_and_pick_gid():
+    td, st, res = _state_with_pore_pressure()
+    picks.seed_stiffness(st, res)
+    res = compute_all(st, td)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    defaults = plots.render_stiffness(ax, td, st, res)
+
+    assert ax.get_yscale() == "log"
+    assert any(l.get_gid() == "stiffness_pick" for l in ax.get_lines())
+    assert defaults.ylim is not None
+    assert defaults.ylim[0] > 0.0
+
+
+def test_render_stiffness_no_pick_line_when_pick_unset():
+    td, st, res = _state_with_pore_pressure()
+    assert st.stiffness_pick_P is None
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    plots.render_stiffness(ax, td, st, res)
+
+    assert not any(l.get_gid() == "stiffness_pick" for l in ax.get_lines())
+
+
+def test_stiffness_is_in_renderers_after_porepressure():
+    keys = list(plots.RENDERERS.keys())
+    assert keys.index("stiffness") == keys.index("porepressure") + 1

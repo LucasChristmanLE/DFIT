@@ -23,7 +23,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from . import interpret
-from .model import DerivedResults, PickState, porepressure_skipped
+from .model import DerivedResults, PickState, porepressure_skipped, stiffness_skipped
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -562,6 +562,54 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     return ViewDefaults(xlim=(0.0, xhi))
 
 
+def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
+    """Step 8: relative system stiffness (semilog-y) vs effective pressure (URTeC-2019-123
+    A.8/A.9) -- the upturn where the fracture walls come into contact gives a fourth,
+    comparison-only Shmin estimate. Needs the min-dP/dG pick and a pore-pressure estimate (the
+    h-function's Pres term); skipped end to end under PC-F (model.stiffness_skipped), which
+    never yields one."""
+    ax.clear()
+    if res.stiffness_S is None:
+        ax.set_title("Stiffness -- requires the min-dP/dG pick and a pore-pressure estimate",
+                     fontsize=10)
+        return ViewDefaults()
+    p_eff, S = res.stiffness_p_eff[1:], res.stiffness_S
+    ax.plot(p_eff, S, color="black", lw=1.0, marker=".", ms=3)
+    ax.set_yscale("log")
+    ax.set_xlabel("effective pressure (psi)")
+    ax.set_ylabel("relative stiffness")
+    ax.grid(True, which="both", alpha=0.3)
+
+    if state.stiffness_pick_P is not None:
+        ax.axvline(state.stiffness_pick_P, color="tab:blue", ls="--", lw=1.4,
+                   gid="stiffness_pick")
+        # A small non-draggable marker at the curve intersection, for readability only -- p_eff
+        # is non-increasing by construction (rs.p is strictly decreasing), so np.interp (which
+        # needs an ascending x) gets both arrays reversed for this lookup alone.
+        s_at_pick = float(np.interp(state.stiffness_pick_P, p_eff[::-1], S[::-1]))
+        ax.plot(state.stiffness_pick_P, s_at_pick, "o", color="tab:blue", ms=5)
+        if res.shmin_stiffness is not None:
+            ax.set_title(f"Stiffness   Shmin(stiffness)={res.shmin_stiffness:.0f} psi",
+                         fontsize=10)
+        else:
+            ax.set_title("Stiffness", fontsize=10)
+    else:
+        ax.set_title("Stiffness -- pick the upturn", fontsize=10)
+
+    finite_p = p_eff[np.isfinite(p_eff)]
+    xlim = None
+    if finite_p.size:
+        p_lo, p_hi = float(np.nanmin(finite_p)), float(np.nanmax(finite_p))
+        pad = 0.05 * max(p_hi - p_lo, 1.0)
+        xlim = (p_lo - pad, p_hi + pad)
+    finite_pos = np.isfinite(S) & (S > 0)
+    ylim = None
+    if finite_pos.any():
+        y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
+        ylim = (y_lo * 0.5, y_hi * 2.0)  # log-safe floor/pad
+    return ViewDefaults(xlim=xlim, ylim=ylim)
+
+
 RENDERERS = {
     "overview": render_overview,
     "injection": render_injection,
@@ -570,6 +618,7 @@ RENDERERS = {
     "tangent": render_tangent,
     "loglog": render_loglog,
     "porepressure": render_porepressure,
+    "stiffness": render_stiffness,
 }
 
 
@@ -645,16 +694,18 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
     """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
-    order: overview -> injection -> isip -> gfunction -> tangent -> loglog -> porepressure).
-    Returns the written paths in that order. Skips "porepressure" when
-    ``porepressure_skipped(state)`` (PC-F: no postclosure line, nothing to render) -- the
-    numbering from ``enumerate`` still runs over all of RENDERERS so the other six filenames are
-    unaffected; the pore-pressure file is simply absent. Used by ``ui._finish``, but
-    headless/Tkinter-free like the rest of this module."""
+    order: overview -> injection -> isip -> gfunction -> tangent -> loglog -> porepressure ->
+    stiffness). Returns the written paths in that order. Two independent skips, each PC-F-gated
+    (porepressure_skipped/stiffness_skipped): "porepressure" (no postclosure line, nothing to
+    render) and "stiffness" (no pore-pressure estimate for the h-function) -- the numbering from
+    ``enumerate`` still runs over all of RENDERERS so the other filenames are unaffected; the
+    skipped ones are simply absent. Used by ``ui._finish``, but headless/Tkinter-free like the
+    rest of this module."""
     paths = []
     skip_pp = porepressure_skipped(state)
+    skip_stiff = stiffness_skipped(state)
     for i, key in enumerate(RENDERERS, start=1):
-        if key == "porepressure" and skip_pp:
+        if (key == "porepressure" and skip_pp) or (key == "stiffness" and skip_stiff):
             continue
         fig = render_step_figure(key, td, state, res, views.get(key))
         path = os.path.join(out_dir, f"{i}_{key}.png")

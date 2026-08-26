@@ -1110,6 +1110,13 @@ def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
     state.tail_trim_reason = ""
 
 
+def commit_stiffness_point(state: PickState, x: float) -> None:
+    """DragLineController commit for the relative-stiffness upturn pick (stiffness step): the
+    picked pressure feeds Shmin(stiffness) = x - 75 psi (model.compute_all,
+    interpret.shmin_compliance)."""
+    state.stiffness_pick_P = float(x)
+
+
 def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:
     """Re-suggest the contact pick from the just-selected closure scenario (an explicit user
     action, so it may overwrite a previous contact pick). Pure state mutation -- no matplotlib.
@@ -1473,6 +1480,21 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
         state.pp_window = (lo, float(dg.t[-1]))
 
 
+def seed_stiffness(state: PickState, res: DerivedResults) -> None:
+    """Relative-stiffness upturn pick, from interpret.suggest_stiffness_upturn_index -- same
+    park-and-refine pattern as every other step. No-op when the stiffness arrays aren't
+    computed (res.stiffness_S is None: no min-dP/dG pick yet, no pore-pressure estimate, PC-F,
+    or too few resampled points -- see model.compute_all's stiffness block)."""
+    if state.stiffness_pick_P is not None:
+        return
+    if res.stiffness_S is None:
+        return
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S)
+    if idx is None:
+        return
+    state.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+
+
 # seed_tail_trim is deliberately absent here -- see its docstring for why ui._seed_step calls
 # it directly instead.
 SEEDERS = {
@@ -1483,4 +1505,5 @@ SEEDERS = {
     "tangent": seed_tangent,
     "loglog": seed_loglog,
     "porepressure": seed_pp,
+    "stiffness": seed_stiffness,
 }
