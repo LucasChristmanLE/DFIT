@@ -106,10 +106,12 @@ def test_field_step_mapping_matches_spec():
         "Vinj (bbl)": "injection",
         "qmax (bpm)": "injection",
         "apparent ISIP": "isip",
+        "apparent ISIP grad": "isip",
         "eff ISIP (compliance)": "gfunction",
         "NWB complexity": "gfunction",
         "contact P": "gfunction",
         "Shmin compliance": "gfunction",
+        "Shmin compliance grad": "gfunction",
         "tc compliance (min)": "gfunction",
         "net (compliance)": "gfunction",
         "Shmin tangent": "tangent",
@@ -121,6 +123,7 @@ def test_field_step_mapping_matches_spec():
         "tc variable (min)": "tangent",
         "net (variable)": "tangent",
         "pore pressure": "porepressure",
+        "pore pressure grad": "porepressure",
     }
     assert FIELD_STEP == expected
 

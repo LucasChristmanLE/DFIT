@@ -228,6 +228,25 @@ Per-test deliverables:
   logged to the `near_wellbore_complexity` column.
 - **Pore pressure** — intercept of the late-time postclosure line on the t^(−1/2) or t^(−1)
   axis chosen by the postclosure scenario.
+- **Pressure gradients** — depth-normalized (psi/ft) form of a pressure, `value / state.tvd_ft`
+  (`interpret.pressure_gradient`, `model._resolve_gradients`). Three rows in the panel (apparent
+  ISIP grad, Shmin compliance grad, pore pressure grad, each inline under its parent) plus four
+  more logged only to `dfit_log.csv` (Shmin variable/tangent/Liberty/rapid gradient) — seven
+  columns total. `tvd_ft` must be not-None, finite, and `> 0`, or every gradient blanks to
+  `None`/`"-"`; nothing upstream enforces that (`io_load.bhp_inputs_ready` accepts `tvd_ft =
+  0.0`), so this guard is the only thing standing between the feature and a divide-by-zero.
+  Every gradient field is strictly its own source value / TVD — no cross-field fallback in the
+  model layer, so `Shmin_compliance_gradient` stays blank under C-D exactly as `Shmin_compliance`
+  does, and `Shmin_rapid_gradient` is what carries that case in the CSV. The panel's rapid
+  substitution (below) is a `ui.py` display choice on top of that, not a property of these
+  fields. An unusable `tvd_ft` (missing, non-numeric, zero, negative, or non-finite) is never
+  silent once there's something to report: `_resolve_gradients` appends a warning naming the
+  problem ("TVD not set..." or "TVD `<value>` is not a positive number..."), gated on at least
+  one of the seven source values being non-None so a freshly-opened test with no picks yet
+  stays quiet. It deliberately coexists with the separate "Surface pressure selected but
+  density/TVD not set" warning (`compute_all`) rather than being suppressed by it — that one is
+  about BHP reliability, this one is about the gradients not being reported, and the panel
+  stacks warnings one per line.
 
 **Net pressure** = shared reference ISIP − Shmin. All three methods (compliance, tangent,
 variable) subtract their own Shmin from one shared reference ISIP: the compliance effective
@@ -428,12 +447,15 @@ range; `interpret.RAPID_CLOSURE_OFFSET_PSI`), shown in the G-function title
 (`interpret.format_shmin_rapid`, verbose form). Net pressure is deliberately not
 derived from it -- there is no `net_pressure_rapid`.
 
-**Panel asterisks.** Two result-panel rows carry a trailing `*` on the label when the number in
-them came from a fallback rather than the primary construction. Both are display-only, set in
-`ui._update_panel` by mutating `self.name_lbls[...]`, and both are gated on the same
-`not_visited` check the value column uses, so an asterisk can never sit next to a `"-"`. Both
-reset to plain text on the else branch, since the label widgets persist across refreshes.
-Neither is explained in the panel itself.
+**Panel asterisks.** Three result-panel rows carry a trailing `*` on the label when the number in
+them came from a fallback rather than the primary construction. All three are display-only, set in
+`ui._update_panel` by mutating `self.name_lbls[...]`. The actual rule is that the gate matches
+whatever makes the value column render a real number instead of `"-"`, so an asterisk can never
+sit next to a `"-"`: two of the three rows blank only on the same `not_visited` check the value
+column uses, but `"Shmin compliance grad*"` has a second blanking path the value column also
+respects (see below) and so needs a second clause in its gate. All reset to plain text on the
+else branch, since the label widgets persist across refreshes. None is explained in the panel
+itself.
 
 - `"Shmin compliance*"` -- `shmin_rapid` has no panel row of its own; it stands in for the
   compliance Shmin in that row when `use_rapid = shmin_compliance is None and shmin_rapid is not
@@ -442,6 +464,17 @@ Neither is explained in the panel itself.
   (C-D clears the contact, and `compute_all` only sets `shmin_rapid` for C-D), so the fallback is
   unambiguous. The G-function title separately carries the verbose
   `Shmin(rapid)=9325 ±75 (ISIP − 100–250)` whenever this is showing.
+- `"Shmin compliance grad*"` -- shadows the `"Shmin compliance*"` row directly above it, same
+  `use_rapid` gate, selecting `shmin_rapid_gradient` instead of `shmin_compliance_gradient` for
+  the value. Unlike the parent row there is no `±75` half-range in a gradient value (not worth
+  rendering), so the label asterisk is the only marker here. `shmin_rapid_gradient` itself gets
+  no panel row of its own, mirroring `shmin_rapid`. This row has a second blanking path the
+  parent row does not: `model._resolve_gradients`'s `tvd_ft > 0` guard, which blanks every
+  gradient (including `shmin_rapid_gradient`) regardless of `use_rapid` -- reachable on a
+  C-D-rapid test with no TVD entered (e.g. a `pressure_is_bhp` downhole-gauge record, where TVD
+  is never needed). So this row's gate adds a third clause, `r.shmin_rapid_gradient is not
+  None`, on top of `use_rapid and gf_visited` -- without it the label would show the asterisk
+  over a `"-"` value in that state.
 - `"NWB complexity*"` -- complexity is apparent ISIP minus the *shared reference* effective ISIP,
   and this marks the case where that reference fell back to the tangent effective ISIP:
   `use_tangent_ref = near_wellbore_complexity is not None and net_pressure_isip_source ==

@@ -12,6 +12,7 @@ the single source of truth for every reported value.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field, asdict, fields
 from typing import Optional
 
@@ -269,6 +270,19 @@ class DerivedResults:
     delta_closure: Optional[float] = None
     pore_pressure: Optional[float] = None
 
+    # Depth-normalized (psi/ft) forms of the pressures above, each strictly its own source value
+    # / TVD -- no cross-field fallback. shmin_compliance_gradient is therefore None under C-D, in
+    # step with shmin_compliance, and shmin_rapid_gradient is the only one set there; the panel's
+    # rapid-substitution display (ui.py's use_rapid) is a display choice, not a property of these
+    # fields. See _resolve_gradients.
+    apparent_isip_gradient: Optional[float] = None
+    shmin_compliance_gradient: Optional[float] = None
+    shmin_variable_gradient: Optional[float] = None
+    shmin_tangent_gradient: Optional[float] = None
+    shmin_liberty_gradient: Optional[float] = None
+    shmin_rapid_gradient: Optional[float] = None
+    pore_pressure_gradient: Optional[float] = None
+
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
     bhp_all: Optional[np.ndarray] = field(default=None, repr=False)
@@ -325,6 +339,58 @@ def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
             res.net_pressure_tangent = interpret.net_pressure(ref, res.shmin_tangent)
         if res.shmin_variable is not None:
             res.net_pressure_variable = interpret.net_pressure(ref, res.shmin_variable)
+    return res
+
+
+def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedResults":
+    """Depth-normalize every reported pressure to psi/ft. Bails, leaving every gradient None,
+    unless ``state.tvd_ft`` is set, finite, and > 0 -- nothing upstream guarantees this
+    (``io_load.bhp_inputs_ready`` accepts ``tvd_ft = 0.0`` and the UI entry is free-form), so
+    this guard is the only thing between the feature and a divide-by-zero. Each gradient is
+    strictly its own source value / TVD -- no cross-field fallback. Bailing is never silent: it
+    appends a warning naming the reason, gated on there being at least one source value to
+    normalize."""
+    pairs = (
+        ("apparent_isip", "apparent_isip_gradient"),
+        ("shmin_compliance", "shmin_compliance_gradient"),
+        ("shmin_variable", "shmin_variable_gradient"),
+        ("shmin_tangent", "shmin_tangent_gradient"),
+        ("shmin_liberty", "shmin_liberty_gradient"),
+        ("shmin_rapid", "shmin_rapid_gradient"),
+        ("pore_pressure", "pore_pressure_gradient"),
+    )
+    # Gates both warnings below: a just-opened test has no picks yet, so there is nothing to
+    # normalize and nothing worth saying. Neither is suppressed when compute_all's "Surface
+    # pressure selected but density/TVD not set" has already fired -- that one is about BHP
+    # reliability, these are about the gradients not being reported, and the panel stacks
+    # warnings one per line. Do not collapse them.
+    has_source = any(getattr(res, src_attr) is not None for src_attr, _ in pairs)
+    if state.tvd_ft is None:
+        if has_source:
+            res.warnings.append("TVD not set -- psi/ft gradients not reported; enter TVD in "
+                                "the side panel")
+        return res
+    # Coerce rather than crash: `_decode`'s contract is that old or foreign JSON never raises,
+    # and this is the first code path that reads `tvd_ft` unconditionally, so a hand-edited or
+    # foreign save carrying a string (or other non-numeric) `tvd_ft` has to reach the same
+    # "no gradients" bail instead of raising out of `math.isfinite`. It reports the value it
+    # got, not "not set" -- the two are different analyst-facing problems.
+    try:
+        tvd = float(state.tvd_ft)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is not hypothetical: json.load turns a huge integer literal into a Python
+        # int, and float() raises on one too large for a double (a float literal like 1e400
+        # parses to inf instead and takes the isfinite path below).
+        tvd = math.nan
+    if not math.isfinite(tvd) or tvd <= 0:
+        if has_source:
+            res.warnings.append(f"TVD {state.tvd_ft!r} is not a positive number -- psi/ft "
+                                "gradients not reported")
+        return res
+    for src_attr, grad_attr in pairs:
+        src = getattr(res, src_attr)
+        if src is not None:
+            setattr(res, grad_attr, interpret.pressure_gradient(src, tvd))
     return res
 
 
@@ -624,5 +690,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             expo = -0.5 if state.pp_axis == "tm12" else -1.0
             x = dg.t[m] ** expo
             res.pore_pressure = interpret.pore_pressure(x, dg.p[m])
+
+    _resolve_gradients(state, res)
 
     return res

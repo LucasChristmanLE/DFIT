@@ -168,3 +168,104 @@ def test_update_panel_shmin_liberty_blanks_when_gfunction_not_visited():
     stub = _panel_stub(res, state)
     stub._update_panel()
     assert stub.value_lbls["Shmin Liberty"].text == "-"
+
+
+# --------------------------------------------------------------------------------------------------
+# Gradient rows: "apparent ISIP grad", "Shmin compliance grad", "pore pressure grad" -- each
+# inline directly under its parent row.
+# --------------------------------------------------------------------------------------------------
+def test_gradient_rows_present_directly_under_their_parents():
+    for parent, grad in (("apparent ISIP", "apparent ISIP grad"),
+                         ("Shmin compliance", "Shmin compliance grad"),
+                         ("pore pressure", "pore pressure grad")):
+        assert grad in ui.PANEL_FIELDS
+        assert ui.PANEL_FIELDS.index(grad) == ui.PANEL_FIELDS.index(parent) + 1
+
+
+def test_gradient_rows_owned_by_same_step_as_their_parent():
+    assert ui.FIELD_STEP["apparent ISIP grad"] == ui.FIELD_STEP["apparent ISIP"] == "isip"
+    assert (ui.FIELD_STEP["Shmin compliance grad"] == ui.FIELD_STEP["Shmin compliance"]
+            == "gfunction")
+    assert (ui.FIELD_STEP["pore pressure grad"] == ui.FIELD_STEP["pore pressure"]
+            == "porepressure")
+
+
+def test_no_shmin_rapid_grad_row():
+    # shmin_rapid_gradient (the model field, logged to the CSV) gets no panel row of its own --
+    # same precedent as shmin_rapid itself, which folds into "Shmin compliance" via the asterisk.
+    assert "Shmin rapid grad" not in ui.PANEL_FIELDS
+    assert "Shmin rapid grad" not in ui.FIELD_STEP
+
+
+def test_update_panel_gradient_rows_render_3_decimals():
+    res = DerivedResults(apparent_isip_gradient=0.6543, shmin_compliance_gradient=0.5987,
+                         pore_pressure_gradient=0.4321)
+    state = PickState(step_status={"isip": "done", "gfunction": "done",
+                                   "porepressure": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.value_lbls["apparent ISIP grad"].text == "0.654"
+    assert stub.value_lbls["Shmin compliance grad"].text == "0.599"
+    assert stub.value_lbls["pore pressure grad"].text == "0.432"
+
+
+def test_update_panel_gradient_rows_blank_when_not_visited():
+    res = DerivedResults(apparent_isip_gradient=0.6543, shmin_compliance_gradient=0.5987,
+                         pore_pressure_gradient=0.4321)
+    state = PickState(step_status={})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.value_lbls["apparent ISIP grad"].text == "-"
+    assert stub.value_lbls["Shmin compliance grad"].text == "-"
+    assert stub.value_lbls["pore pressure grad"].text == "-"
+
+
+def test_update_panel_cd_rapid_marks_shmin_compliance_grad_row_too():
+    # The parent row's asterisk pair extends to the grad row: same use_rapid gate, no ±75
+    # half-range in the value (a gradient of that band isn't worth rendering).
+    res = DerivedResults(shmin_compliance=None, shmin_rapid=9325.0,
+                         shmin_compliance_gradient=None, shmin_rapid_gradient=0.9325)
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad*"
+    assert stub.value_lbls["Shmin compliance grad"].text == "0.932"
+
+
+def test_update_panel_non_rapid_shmin_compliance_grad_row_plain():
+    res = DerivedResults(shmin_compliance=9200.0, shmin_rapid=None,
+                         shmin_compliance_gradient=0.92, shmin_rapid_gradient=None)
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
+    assert stub.value_lbls["Shmin compliance grad"].text == "0.920"
+
+
+def test_update_panel_cd_rapid_no_tvd_leaves_grad_row_plain():
+    # use_rapid is True and gfunction is visited (the parent row's own asterisk gate), but
+    # model._resolve_gradients' tvd_ft > 0 guard blanked shmin_rapid_gradient (e.g. a
+    # pressure_is_bhp downhole-gauge test with no TVD entered), so the grad row's value is "-".
+    # The label must stay plain -- an asterisk here would sit next to a "-", violating the panel
+    # invariant that an asterisk never marks a blank value.
+    res = DerivedResults(shmin_compliance=None, shmin_rapid=9325.0,
+                         shmin_compliance_gradient=None, shmin_rapid_gradient=None)
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
+    assert stub.value_lbls["Shmin compliance grad"].text == "-"
+
+
+def test_update_panel_shmin_compliance_grad_asterisk_clears_on_second_refresh():
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(DerivedResults(shmin_compliance=None, shmin_rapid=9325.0,
+                                      shmin_compliance_gradient=None,
+                                      shmin_rapid_gradient=0.9325), state)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad*"
+
+    stub.res = DerivedResults(shmin_compliance=9200.0, shmin_rapid=None,
+                              shmin_compliance_gradient=0.92, shmin_rapid_gradient=None)
+    stub._update_panel()
+    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"

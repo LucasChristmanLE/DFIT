@@ -53,6 +53,16 @@ LOG_COLUMNS = [
     "tail_trim_reason",
     "Shmin_liberty",
     "units_note",
+    # Depth-normalized (psi/ft) forms of the pressures above, each strictly its own psi column /
+    # tvd -- Shmin_rapid_gradient sits here with the other Shmin gradients rather than adjacent to
+    # Shmin_rapid, since the append-only convention forbids inserting mid-list.
+    "apparent_ISIP_gradient",
+    "Shmin_compliance_gradient",
+    "Shmin_variable_gradient",
+    "Shmin_tangent_gradient",
+    "Shmin_liberty_gradient",
+    "Shmin_rapid_gradient",
+    "pore_pressure_gradient",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -411,4 +421,11 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "tail_trim_reason": state.tail_trim_reason,
         "Shmin_liberty": res.shmin_liberty,
         "units_note": res.unit_conversion_note,
+        "apparent_ISIP_gradient": res.apparent_isip_gradient,
+        "Shmin_compliance_gradient": res.shmin_compliance_gradient,
+        "Shmin_variable_gradient": res.shmin_variable_gradient,
+        "Shmin_tangent_gradient": res.shmin_tangent_gradient,
+        "Shmin_liberty_gradient": res.shmin_liberty_gradient,
+        "Shmin_rapid_gradient": res.shmin_rapid_gradient,
+        "pore_pressure_gradient": res.pore_pressure_gradient,
     }

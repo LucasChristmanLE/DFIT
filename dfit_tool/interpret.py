@@ -305,6 +305,11 @@ def near_wellbore_complexity(apparent_isip: float, reference_isip: float) -> flo
     return apparent_isip - reference_isip
 
 
+def pressure_gradient(pressure_psi: float, tvd_ft: float) -> float:
+    """Pressure gradient in psi/ft = pressure / TVD. Callers guard tvd_ft > 0."""
+    return pressure_psi / tvd_ft
+
+
 # --------------------------------------------------------------------------------------------------
 # pore pressure (postclosure)
 # --------------------------------------------------------------------------------------------------
