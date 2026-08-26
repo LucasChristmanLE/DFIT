@@ -101,6 +101,12 @@ class PickState:
     # under PC-F exactly like porepressure. Old saves lack this key and take the default via
     # _decode's known-field filter, no migration needed. ---
     stiffness_pick_P: Optional[float] = None
+    # Explicit negative finding: "no slope change apparent" on the relative-stiffness plot --
+    # same precedent as closure scenario C-C's "no contact -> no Shmin". Suppresses only the
+    # reported shmin_stiffness (compute_all); the pick, arrays, and curve are untouched, so
+    # unchecking restores whatever was already picked. Old saves lack this key and take the
+    # default via _decode's known-field filter, no migration needed. ---
+    stiffness_no_upturn: bool = False
 
     notes: str = ""
 
@@ -213,7 +219,7 @@ def infer_step_status(state: PickState) -> dict[str, str]:
         status["loglog"] = "done"
     if state.pp_window is not None:
         status["porepressure"] = "done"
-    if state.stiffness_pick_P is not None:
+    if state.stiffness_pick_P is not None or state.stiffness_no_upturn:
         status["stiffness"] = "done"
     return status
 
@@ -620,7 +626,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         # strictly decreasing (the 30-psi resampling invariant), so rs.p[-1] is that low end,
         # and p_eff's tail equals rs.p past the min-dP/dG pick -- a pick below rs.p[-1] no
         # longer sits on the curve.
-        if (state.stiffness_pick_P is not None and res.resampled is not None
+        # A suppressed pick (stiffness_no_upturn) reports no value at all, so it can't be
+        # reported stale -- there's nothing downstream for a clamp to silently corrupt.
+        if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
+                and res.resampled is not None
                 and len(res.resampled.p) and state.stiffness_pick_P < res.resampled.p[-1]):
             stale.append("stiffness")
         # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
@@ -752,7 +761,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         h = interpret.h_function(rs.dt, p_eff, res.pore_pressure, res.te_s)
         res.stiffness_p_eff = p_eff
         res.stiffness_S = interpret.relative_stiffness(p_eff, h)
-        if state.stiffness_pick_P is not None:
+        # stiffness_no_upturn is an explicit negative finding ("no slope change apparent") --
+        # it blanks only the reported value; the pick itself is left in state so unchecking
+        # restores it rather than losing it.
+        if state.stiffness_pick_P is not None and not state.stiffness_no_upturn:
             res.shmin_stiffness = interpret.shmin_compliance(state.stiffness_pick_P)
 
     _resolve_gradients(state, res)

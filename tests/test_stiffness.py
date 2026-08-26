@@ -21,7 +21,9 @@ import pytest
 from matplotlib.figure import Figure
 
 from dfit_tool import interpret, picks, plots, store, ui
-from dfit_tool.model import PickState, compute_all, porepressure_skipped, stiffness_skipped
+from dfit_tool.model import (
+    PickState, compute_all, infer_step_status, porepressure_skipped, stiffness_skipped,
+)
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
 
@@ -607,7 +609,10 @@ def test_status_for_all_eight_steps_done_is_done():
 # store.LOG_COLUMNS / build_log_row: Shmin_stiffness + Shmin_stiffness_gradient, tail-appended.
 # --------------------------------------------------------------------------------------------------
 def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
-    assert store.LOG_COLUMNS[-2:] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+    # "stiffness_no_upturn" was appended after these two later still (see
+    # test_log_row_has_stiffness_no_upturn_column_at_the_tail below), so this checks the -3:-1
+    # slice rather than the very tail.
+    assert store.LOG_COLUMNS[-3:-1] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
 
 
 def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
@@ -690,3 +695,202 @@ def test_update_stepbar_leaves_porepressure_and_stiffness_enabled_without_pcf():
 
     assert stub.step_buttons["porepressure"].disabled is False
     assert stub.step_buttons["stiffness"].disabled is False
+
+
+# --------------------------------------------------------------------------------------------------
+# "No slope change apparent" (state.stiffness_no_upturn): explicit negative finding -- blanks
+# shmin_stiffness while leaving the pick/arrays/curve alone, and the step still finishes "done".
+# --------------------------------------------------------------------------------------------------
+def test_no_upturn_flag_blanks_shmin_but_keeps_arrays():
+    td, st, res = _state_with_pore_pressure()
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+    st.stiffness_no_upturn = True
+
+    res2 = compute_all(st, td)
+
+    assert res2.shmin_stiffness is None
+    assert res2.stiffness_p_eff is not None
+    assert res2.stiffness_S is not None
+
+
+def test_no_upturn_flag_suppresses_the_stale_pick_warning():
+    """Same setup as test_stale_stiffness_pick_beyond_trim_warns (a pick pushed off the curve
+    by a trim) -- with the flag set, the pick reports nothing, so it can't be reported stale."""
+    td, st, res = _state_with_pore_pressure()
+    dg = res.diagnostics
+    rs = res.resampled
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, dg.G[1:])
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])
+    st.tail_trim_dt = float(rs.dt[idx])
+    st.stiffness_no_upturn = True
+
+    res2 = compute_all(st, td)
+
+    assert res2.resampled.p[-1] > st.stiffness_pick_P  # sanity: pick still off the curve
+    assert not any("stiffness" in w and "beyond the tail trim" in w for w in res2.warnings)
+
+
+def test_render_stiffness_no_upturn_draws_no_pick_and_titles_the_finding():
+    td, st, res = _state_with_pore_pressure()
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
+    st.stiffness_pick_P = float(res.stiffness_p_eff[1:][idx])  # a pick exists...
+    st.stiffness_no_upturn = True                              # ...but is suppressed
+    res = compute_all(st, td)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+
+    plots.render_stiffness(ax, td, st, res)
+
+    assert not any(l.get_gid() == "stiffness_pick" for l in ax.get_lines())
+    assert "no slope change apparent" in ax.get_title().lower()
+    # the curve itself is still evidence -- one plotted line remains (the stiffness curve).
+    assert len(ax.get_lines()) == 1
+
+
+def test_seed_stiffness_no_op_when_no_upturn_flag_set():
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_no_upturn = True
+    assert st.stiffness_pick_P is None
+
+    picks.seed_stiffness(st, res)
+
+    assert st.stiffness_pick_P is None
+
+
+def test_infer_step_status_marks_stiffness_done_on_flag_alone():
+    st = PickState(stiffness_no_upturn=True)
+    status = infer_step_status(st)
+    assert status["stiffness"] == "done"
+
+
+def test_infer_step_status_stiffness_not_done_without_pick_or_flag():
+    st = PickState()
+    status = infer_step_status(st)
+    assert "stiffness" not in status
+
+
+def test_no_upturn_flag_round_trips_through_json(tmp_path):
+    st = PickState(stiffness_no_upturn=True)
+    path = str(tmp_path / "picks.json")
+    st.to_json(path)
+
+    loaded = PickState.from_json(path)
+
+    assert loaded.stiffness_no_upturn is True
+
+
+def test_missing_key_decodes_to_false(tmp_path):
+    """A dict without the key (an old save) must decode to the dataclass default, False --
+    no migration needed, per the known-field filter in model._decode."""
+    from dfit_tool.model import _decode
+
+    d = {"well_name": "w1"}
+    st = _decode(d)
+    assert st.stiffness_no_upturn is False
+
+
+def test_log_row_has_stiffness_no_upturn_column_at_the_tail(tmp_path):
+    assert store.LOG_COLUMNS[-1] == "stiffness_no_upturn"
+
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_no_upturn = True
+    res = compute_all(st, td)
+
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = str(tmp_path / "well1.csv")
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+
+    assert row["stiffness_no_upturn"] is True
+    assert list(row.keys()) == store.LOG_COLUMNS
+
+    st.stiffness_no_upturn = False
+    res = compute_all(st, td)
+    row2 = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row2["stiffness_no_upturn"] is False
+
+
+def test_full_walk_with_no_upturn_flag_derives_done_not_skipped():
+    """A full workflow walk where every other step has real picks and stiffness instead carries
+    stiffness_no_upturn -- store.status_for must derive "done", not "skipped": the per-step Skip
+    button is the only thing that marks a step (and thence, via explicit_status, a whole test)
+    "skipped"; this flag is a different, legitimate way to finish the step."""
+    td, st, res = _state_with_pore_pressure()
+    # _state_with_pore_pressure sets pp_window (via seed_pp) but never the log-log span itself --
+    # set it directly so infer_step_status also accounts for "loglog".
+    st.loglog_window = (float(res.diagnostics.t[0]), float(res.diagnostics.t[-1]))
+    st.stiffness_no_upturn = True
+    assert st.stiffness_pick_P is None
+    st.step_status = infer_step_status(st)
+    # infer_step_status deliberately never backfills "overview" (see its docstring) -- add it
+    # here the same way a real session would (Overview is always visited first).
+    st.step_status["overview"] = "done"
+
+    assert st.step_status["stiffness"] == "done"
+    assert store.status_for(st) == "done"
+
+
+# --------------------------------------------------------------------------------------------------
+# ui.DfitApp._on_stiffness_no_upturn: duck-typed stand-in pattern (no real tk.Tk()), mirroring
+# test_folder_mode.py's _on_source_change tests.
+# --------------------------------------------------------------------------------------------------
+class _Var:
+    def __init__(self, value=None):
+        self.value = value
+
+    def set(self, v):
+        self.value = v
+
+    def get(self):
+        return self.value
+
+
+def test_on_stiffness_no_upturn_uncheck_reseeds_when_pick_missing():
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_no_upturn = True
+    stub = types.SimpleNamespace()
+    stub.state = st
+    stub.res = res
+    stub.var_stiffness_no_upturn = _Var(False)  # simulating the analyst unchecking the box
+    stub._refresh_calls = []
+    stub.refresh = lambda: stub._refresh_calls.append(True)
+    stub._on_stiffness_no_upturn = types.MethodType(DfitApp._on_stiffness_no_upturn, stub)
+
+    stub._on_stiffness_no_upturn()
+
+    assert stub.state.stiffness_no_upturn is False
+    idx = interpret.suggest_stiffness_upturn_index(res.stiffness_S, res.diagnostics.G[1:])
+    expected = float(res.stiffness_p_eff[1:][idx])
+    assert stub.state.stiffness_pick_P == pytest.approx(expected)
+    assert stub._refresh_calls == [True]
+
+
+def test_on_stiffness_no_upturn_uncheck_leaves_existing_pick_alone():
+    td, st, res = _state_with_pore_pressure()
+    st.stiffness_no_upturn = True
+    st.stiffness_pick_P = 1234.5  # pre-existing pick, must survive the uncheck untouched
+    stub = types.SimpleNamespace()
+    stub.state = st
+    stub.res = res
+    stub.var_stiffness_no_upturn = _Var(False)
+    stub.refresh = lambda: None
+    stub._on_stiffness_no_upturn = types.MethodType(DfitApp._on_stiffness_no_upturn, stub)
+
+    stub._on_stiffness_no_upturn()
+
+    assert stub.state.stiffness_pick_P == pytest.approx(1234.5)
+
+
+def test_on_stiffness_no_upturn_check_sets_flag_without_reseeding():
+    td, st, res = _state_with_pore_pressure()
+    stub = types.SimpleNamespace()
+    stub.state = st
+    stub.res = res
+    stub.var_stiffness_no_upturn = _Var(True)  # simulating the analyst checking the box
+    stub.refresh = lambda: None
+    stub._on_stiffness_no_upturn = types.MethodType(DfitApp._on_stiffness_no_upturn, stub)
+
+    stub._on_stiffness_no_upturn()
+
+    assert stub.state.stiffness_no_upturn is True
+    assert stub.state.stiffness_pick_P is None

@@ -567,7 +567,8 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     A.8/A.9) -- the upturn where the fracture walls come into contact gives a fourth,
     comparison-only Shmin estimate. Needs the min-dP/dG pick and a pore-pressure estimate (the
     h-function's Pres term); skipped end to end under PC-F (model.stiffness_skipped), which
-    never yields one."""
+    never yields one. state.stiffness_no_upturn records the negative finding "no slope change
+    apparent" -- the curve still draws, but no pick vline/marker and a title saying so."""
     ax.clear()
     if res.stiffness_S is None:
         ax.set_title("Stiffness -- requires the min-dP/dG pick and a pore-pressure estimate",
@@ -588,7 +589,14 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.set_ylabel("relative stiffness")
     ax.grid(True, which="both", alpha=0.3)
 
-    if state.stiffness_pick_P is not None:
+    if state.stiffness_no_upturn:
+        # Explicit negative finding, same precedent as closure scenario C-C's "no contact ->
+        # no Shmin": the curve is still evidence (kept on the plot and in PNG exports), but
+        # there is no upturn to mark, so no vline/marker -- and shmin_stiffness is None
+        # (model.compute_all), so no title should imply otherwise.
+        ax.set_title("Relative stiffness -- no slope change apparent (Shmin not reported)",
+                     fontsize=10)
+    elif state.stiffness_pick_P is not None:
         ax.axvline(state.stiffness_pick_P, color="tab:blue", ls="--", lw=1.4,
                    gid="stiffness_pick")
         # A small non-draggable marker at the curve intersection, for readability only -- p_eff

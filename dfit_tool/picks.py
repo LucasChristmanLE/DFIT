@@ -1484,8 +1484,12 @@ def seed_stiffness(state: PickState, res: DerivedResults) -> None:
     """Relative-stiffness upturn pick, from interpret.suggest_stiffness_upturn_index -- same
     park-and-refine pattern as every other step. No-op when the stiffness arrays aren't
     computed (res.stiffness_S is None: no min-dP/dG pick yet, no pore-pressure estimate, PC-F,
-    or too few resampled points -- see model.compute_all's stiffness block)."""
+    or too few resampled points -- see model.compute_all's stiffness block), or when the
+    analyst has already recorded "no slope change apparent" -- a reloaded save with that flag
+    must not get a line parked on first visit."""
     if state.stiffness_pick_P is not None:
+        return
+    if state.stiffness_no_upturn:
         return
     if res.stiffness_S is None:
         return

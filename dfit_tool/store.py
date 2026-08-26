@@ -69,6 +69,9 @@ LOG_COLUMNS = [
     # gradients above.
     "Shmin_stiffness",
     "Shmin_stiffness_gradient",
+    # "No slope change apparent" negative finding (stiffness step) -- tail-appended per the
+    # append-only convention.
+    "stiffness_no_upturn",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -441,4 +444,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "pore_pressure_gradient": res.pore_pressure_gradient,
         "Shmin_stiffness": res.shmin_stiffness,
         "Shmin_stiffness_gradient": res.shmin_stiffness_gradient,
+        "stiffness_no_upturn": state.stiffness_no_upturn,
     }

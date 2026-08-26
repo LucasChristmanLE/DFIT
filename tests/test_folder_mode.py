@@ -445,6 +445,7 @@ def _apply_stub():
     stub.var_rate_unit = _Var()
     stub.var_volume_unit = _Var()
     stub.var_showd2 = _Var()
+    stub.var_stiffness_no_upturn = _Var()
     stub.quest_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.txt_notes = _Text()
     stub._views = {"stale": "leftover"}
@@ -481,7 +482,8 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
                       density_ppg=8.5, tvd_ft=9000.0, well_name="Foo State 1H",
                       formation="Eagle Ford", alpha=0.5, resample_step=15.0,
                       closure_scenario="C-A clear", postclosure_scenario="PC-A linear",
-                      pp_axis="tm1", show_d2pdg2=True, notes="hi", step_status={"injection": "done"})
+                      pp_axis="tm1", show_d2pdg2=True, stiffness_no_upturn=True, notes="hi",
+                      step_status={"injection": "done"})
 
     stub._apply_loaded_state(state)
 
@@ -499,6 +501,7 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
     assert stub.var_pcscen.value == "PC-A linear"
     assert stub.var_ppaxis.value == "tm1"
     assert stub.var_showd2.value is True
+    assert stub.var_stiffness_no_upturn.value is True
     assert stub.txt_notes.content == "hi"
 
 
@@ -709,6 +712,7 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     stub.var_pcscen = _Var("PC-A linear")
     stub.var_ppaxis = _Var("tm1")
     stub.var_showd2 = _Var(True)
+    stub.var_stiffness_no_upturn = _Var(True)
     stub._views = {"gfunction": "stale"}
     stub._goto_calls = []
     stub._goto = lambda step: stub._goto_calls.append(step)
@@ -724,6 +728,7 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     assert stub.var_pcscen.value == ""
     assert stub.var_ppaxis.value == "tm12"
     assert stub.var_showd2.value is False
+    assert stub.var_stiffness_no_upturn.value is False
     assert stub._views == {k: None for k, _ in STEPS}
     assert stub._goto_calls == ["overview"]
 

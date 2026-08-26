@@ -464,6 +464,14 @@ class DfitApp:
         ttk.Button(self.frm_pcscen, text="Interpretation guide...",
                    command=lambda: self._open_guide("postclosure")).pack(anchor="w", pady=(6, 0))
 
+        # Stiffness step's "no slope change apparent" negative finding -- same step-gated frame
+        # pattern as frm_cscen/frm_pcscen above, shown only on "stiffness".
+        self.frm_stiffness = ttk.Frame(panel)
+        self.var_stiffness_no_upturn = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_stiffness, text="No slope change apparent",
+                        variable=self.var_stiffness_no_upturn,
+                        command=self._on_stiffness_no_upturn).pack(anchor="w")
+
         self.sep_before_notes = ttk.Separator(panel)
         self.sep_before_notes.pack(fill="x", pady=6)
         ttk.Label(panel, text="Notes").pack(anchor="w")
@@ -565,6 +573,7 @@ class DfitApp:
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
+        self.var_stiffness_no_upturn.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -805,6 +814,7 @@ class DfitApp:
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
+        self.var_stiffness_no_upturn.set(False)
         self._views = {k: None for k, _ in STEPS}
         self._goto("overview")
 
@@ -1026,6 +1036,15 @@ class DfitApp:
 
     def _on_showd2(self):
         self.state.show_d2pdg2 = self.var_showd2.get()
+        self.refresh()
+
+    def _on_stiffness_no_upturn(self):
+        """Toggle the stiffness step's negative finding. On UNCHECK, if no pick exists yet
+        (the step's first-visit seeder already fired once and won't fire again), seed one now
+        so the analyst isn't left with no line and no way to get one."""
+        self.state.stiffness_no_upturn = self.var_stiffness_no_upturn.get()
+        if not self.state.stiffness_no_upturn and self.state.stiffness_pick_P is None:
+            picks.seed_stiffness(self.state, self.res)
         self.refresh()
 
     # ---- interpretation guide window --------------------------------------------------------------
@@ -1333,11 +1352,13 @@ class DfitApp:
         self._update_skip_test_btn()
 
     def _update_panel_visibility(self):
-        """Show the closure-scenario widgets only on "gfunction" and the postclosure/pp-axis
-        widgets only on "loglog"/"porepressure" -- packed relative to sep_before_notes so
-        re-showing never reorders the panel."""
+        """Show the closure-scenario widgets only on "gfunction", the postclosure/pp-axis
+        widgets only on "loglog"/"porepressure", and the stiffness "no slope change apparent"
+        checkbox only on "stiffness" -- each packed relative to sep_before_notes so re-showing
+        never reorders the panel."""
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
+        self.frm_stiffness.pack_forget()
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
         if self.step in ("loglog", "porepressure"):
@@ -1345,6 +1366,9 @@ class DfitApp:
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
             # just lock/unlock the radios to match.
             self._update_ppaxis_enabled()
+        if self.step == "stiffness":
+            self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
+            self.frm_stiffness.pack(fill="x", before=self.sep_before_notes)
 
     def _twin_axes(self):
         """The step's twin (secondary y) Axes if it has one, else None.
@@ -1642,7 +1666,11 @@ class DfitApp:
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
         elif step == "stiffness":
             res = self.res
-            if res.stiffness_S is not None:
+            if self.state.stiffness_no_upturn:
+                # No line to drag -- the option is an explicit "there is no upturn to pick".
+                self.hint_lbl.config(
+                    text="No slope change apparent -- uncheck to restore the pick line.")
+            elif res.stiffness_S is not None:
                 p_eff = res.stiffness_p_eff[1:]
 
                 def commit_stiffness(x):
@@ -1851,6 +1879,7 @@ class DfitApp:
         self.var_pcscen.set(self.state.postclosure_scenario)
         self.var_ppaxis.set(self.state.pp_axis)
         self.var_showd2.set(self.state.show_d2pdg2)
+        self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved

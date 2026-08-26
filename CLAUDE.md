@@ -234,6 +234,27 @@ Per-test deliverables:
   shown as the "Shmin stiffness" panel row and logged to the `Shmin_stiffness`/
   `Shmin_stiffness_gradient` columns only — never drawn into net pressure, the shared reference
   ISIP, or complexity.
+- **"No slope change apparent"** (`state.stiffness_no_upturn`, a side-panel checkbox visible
+  only on the stiffness step) is the explicit negative finding: some tests show no abrupt
+  slope change on the relative-stiffness plot, and this records that as a legitimate outcome
+  rather than endorsing the auto-seeded line — same precedent as closure scenario C-C's "no
+  contact → no Shmin". Checking it blanks `shmin_stiffness` (`model.compute_all` gates the
+  value, not the arrays: `stiffness_p_eff`/`stiffness_S` still compute and the curve still
+  renders) and suppresses the stale-pick warning for that pick (a suppressed pick reports
+  nothing, so it can't be stale). The pick itself (`state.stiffness_pick_P`) is left alone —
+  unchecking restores whatever was already picked, or, if none exists yet (the step's
+  first-visit seeder already ran and won't re-fire), `ui._on_stiffness_no_upturn` calls
+  `picks.seed_stiffness` on uncheck so the analyst isn't left with no line and no way to get
+  one. `picks.seed_stiffness` itself no-ops when the flag is set, so a reloaded save with it
+  doesn't get a line parked on next visit. `render_stiffness` draws no pick vline/marker while
+  the flag is set and titles the plot "Relative stiffness — no slope change apparent (Shmin
+  not reported)"; the curve stays in the step's PNG export either way. The test still
+  finishes `"done"`, not `"skipped"` — checking the box and clicking Finish walks
+  `step_status` normally (`model.infer_step_status`'s stiffness clause and the checkbox path
+  both mark the step `"done"` off the flag alone, no pick required), unlike the per-step Skip
+  button, which would mark the whole test `"skipped"` in `store.status_for`; `store.status_for`
+  itself needs no change. Logged to the tail-appended `stiffness_no_upturn` column
+  (`store.LOG_COLUMNS`) as `True`/`False`.
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and
