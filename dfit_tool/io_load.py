@@ -819,9 +819,8 @@ def load_dbs(path: str) -> TestData:
         if valid_n < idx_i64.size:
             dropped = idx_i64.size - valid_n
             load_warnings.append(
-                f"{dropped} of {n_samples} declared sample(s) after sample number {valid_n} "
-                "did not show the sample index continuing to advance and look like unrecorded "
-                "padding (a preallocated recording buffer not fully written); dropped."
+                f"File declares {n_samples:,} samples but only the first {valid_n:,} were "
+                f"recorded; ignored {dropped:,} empty trailing records."
             )
             rec = rec[:valid_n]
 

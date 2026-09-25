@@ -248,7 +248,7 @@ def test_trailing_zero_idx_padding_is_truncated(tmp_path):
     assert td.t_s[-1] != 0.0
     np.testing.assert_allclose(td.column("Pressure"), [float(i) * 10.0 for i in range(k)])
     assert len(td.load_warnings) == 1
-    assert "3 of 9" in td.load_warnings[0]
+    assert "ignored 3 empty trailing records" in td.load_warnings[0]
 
 
 def test_legitimate_idx_gap_not_truncated(tmp_path):
