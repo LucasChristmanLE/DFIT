@@ -1480,23 +1480,61 @@ class DfitApp:
                     and len(res.resampled_full.dt)):
                 dt_full = res.resampled_full.dt
                 t_shutin_s = res.t_shutin_s
+                guard_dt = res.resampled_full.guard_dt
+                post_mask = self.td.t_s >= res.t_shutin_s
+                raw_dt_post = self.td.t_s[post_mask] - res.t_shutin_s
 
                 def commit_trim(x_hours):
                     dt_target = x_hours * 3600.0 - t_shutin_s
-                    idx = picks._nearest(dt_full, dt_target)
-                    idx = max(idx, 2)   # never trim below 3 kept points; clamp before the clear
-                                        # check so a <=3-point record can only clear, never index
-                                        # past the end
-                    dt = None if idx >= len(dt_full) - 1 else float(dt_full[idx])
-                    picks.commit_tail_trim(self.state, dt)
+                    if guard_dt is not None and dt_target > guard_dt:
+                        # Deliberate override: snap against the RAW record, not the resampled
+                        # grid -- the resampler may have kept nothing new past the guard at all
+                        # (e.g. a permanently-elevated tail), but the analyst can still choose to
+                        # include it. Never clear to None here even at the raw record's last
+                        # sample: clearing would fall back through resolve_tail_cut_dt to
+                        # guard_dt again, defeating the whole point of the override.
+                        idx = picks._nearest(raw_dt_post, dt_target)
+                        dt = float(raw_dt_post[idx])
+                    else:
+                        # dt_target is at/before the guard (or there's no guard at all): restrict
+                        # the snap candidates to samples at/before it. dt_full itself can carry
+                        # points PAST guard_dt now (stop_at_guard=False), so snapping against the
+                        # unrestricted array can pick one of those whenever it happens to be
+                        # numerically nearer than any pre-guard sample (a sparse pre-guard decline
+                        # and a denser post-guard one) -- silently crossing into override
+                        # territory even though the analyst never dragged past the guard. Masking
+                        # first reproduces exactly the kept-point set stop_at_guard=True would
+                        # have produced, so this is provably equivalent to the tool's pre-override
+                        # behavior for every no-guard/at-or-before-guard case.
+                        candidates = dt_full if guard_dt is None else dt_full[dt_full <= guard_dt]
+                        if len(candidates) == 0:  # should be impossible (dt_full always has the
+                            dt = None             # dt=0 reference point), but never index into
+                                                   # an empty array -- fall back to clearing.
+                        else:
+                            idx = picks._nearest(candidates, dt_target)
+                            idx = max(idx, 2)  # never trim below 3 kept points; clamp before the
+                                               # clear check so a <=3-point record can only clear,
+                                               # never index past the end
+                            dt = None if idx >= len(candidates) - 1 else float(candidates[idx])
+                    picks.commit_tail_trim(self.state, dt, guard_dt)
                     self.refresh()
 
                 ctrl = picks.DragLineController(self.canvas, self.ax,
                                                 handlers={"tail_trim": commit_trim})
                 self._controllers.append(ctrl)
                 self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
-                self.hint_lbl.config(text="Drag the blue dashed line to trim a bad tail; release "
-                                          "it at the right edge to clear the trim.")
+                hint = ("Drag the blue dashed line to trim a bad tail; release it at the right "
+                        "edge to clear the trim.")
+                if guard_dt is not None:
+                    # The tail guard has fired for this record -- releasing at the right edge
+                    # doesn't just clear back to the (already-guard-clamped) default here, it
+                    # also overrides the guard by extending the cutoff to the record's end
+                    # (though the resampler may have nothing new to report there -- see the
+                    # warning shown after the drag).
+                    hint = ("Drag the blue dashed line to trim a bad tail; release it at the "
+                            "right edge to override the tail guard and extend the cutoff to "
+                            "the end of the record.")
+                self.hint_lbl.config(text=hint)
             else:
                 self.hint_lbl.config(
                     text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists.")

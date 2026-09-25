@@ -83,11 +83,11 @@ def test_post_shutin_only_mask_low_reading_before_start_does_not_fire():
     assert not any(_WARNING_SNIPPET in w for w in res.warnings)
 
 
-def test_absent_when_rise_guard_excludes_the_low_reading():
-    """A late reading below 100 psi that the resampler's own rise guard (a sustained >30 psi
-    rise above the running minimum, held >= 60 s) already excludes from resampled/resampled_full
-    must not trigger the warning -- trimming wouldn't change any computed value, since that data
-    was never used."""
+def _seeded_with_guard_then_crash_past_it():
+    """Rise guard fires partway through the post-shut-in decline, then a genuine further decline
+    resumes and crashes well below 100 psi -- stop_at_guard=False means resampled_full actually
+    keeps new points there (a real further decline, not a permanently-elevated tail), so there is
+    real data past guard_dt for an override to reach into."""
     n = 400
     t_s = np.arange(n, dtype=float)
     start_idx, shutin_idx = 50, 100
@@ -106,8 +106,8 @@ def test_absent_when_rise_guard_excludes_the_low_reading():
     rise_idx = shutin_idx + phase1_len
     rise_len = 70
     pressure[rise_idx:rise_idx + rise_len] = pressure[rise_idx - 1] + 100.0
-    # Phase 2: falls well below 100 psi -- must never count; the rise guard already stopped
-    # resampling at rise_idx, so nothing from here on feeds resampled/resampled_full.
+    # Phase 2: a genuine further decline, well below 100 psi and below phase 1's running min --
+    # stop_at_guard=False keeps admitting new lows here.
     phase2_start = rise_idx + rise_len
     phase2_len = n - phase2_start
     pressure[phase2_start:] = np.linspace(pressure[phase2_start - 1], 5.0, phase2_len)
@@ -118,10 +118,39 @@ def test_absent_when_rise_guard_excludes_the_low_reading():
     st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
+    return td, st, res
+
+
+def test_absent_when_rise_guard_excludes_the_low_reading():
+    """A late reading below 100 psi that the resampler's own rise guard (a sustained >30 psi
+    rise above the running minimum, held >= 60 s) excludes from resampled/diagnostics by default
+    (no trim, no override -- the effective cutoff is guard_dt) must not trigger the warning --
+    the ordinary, non-overridden case is unchanged by Finding 4 (this round)."""
+    td, st, res = _seeded_with_guard_then_crash_past_it()
 
     # Sanity: confirm the rise guard actually fired, so this test exercises what it claims to.
     assert res.resampled_full.guarded_at is not None
+    assert st.tail_guard_override is False
     assert not any(_WARNING_SNIPPET in w for w in res.warnings)
+
+
+def test_fires_when_override_admits_a_crash_past_the_guard():
+    """Finding 4 (this round): the scan window's guard_dt bound must be skipped when an active
+    override has actually extended the effective cutoff past it -- a sub-100-psi crash the
+    override admits into the diagnostics (the same genuine-further-decline shape as the test
+    above) must get its own warning instead of being silently hidden by a bound that no longer
+    reflects the real cutoff."""
+    td, st, res = _seeded_with_guard_then_crash_past_it()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+    past_guard = res.resampled_full.dt[res.resampled_full.dt > guard_dt]
+    assert len(past_guard) > 0  # sanity: real data really is admitted past the guard here
+
+    st.tail_trim_dt = float(past_guard[-1])  # override reaching into the sub-100-psi crash
+    st.tail_guard_override = True
+    res2 = compute_all(st, td)
+
+    assert any(_WARNING_SNIPPET in w for w in res2.warnings)
 
 
 def test_fires_with_a_coarse_resample_step_that_would_have_missed_it():

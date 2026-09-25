@@ -72,6 +72,10 @@ LOG_COLUMNS = [
     # "No slope change apparent" negative finding (stiffness step) -- tail-appended per the
     # append-only convention.
     "stiffness_no_upturn",
+    # Deliberate drag of the Overview tail-trim line past the rise guard's boundary (see
+    # PickState.tail_guard_override) -- tail-appended per the append-only convention rather than
+    # sitting next to tail_trim_reason above.
+    "tail_guard_override",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -452,4 +456,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         # model.py's pore-pressure block comment). Blank here matches every other stiffness
         # output going blank for a test whose stiffness curve never existed under PC-F.
         "stiffness_no_upturn": "" if model.stiffness_skipped(state) else state.stiffness_no_upturn,
+        "tail_guard_override": state.tail_guard_override,
     }

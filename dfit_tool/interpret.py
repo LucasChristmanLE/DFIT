@@ -433,9 +433,14 @@ def suggest_tail_trim_dt(
     post-shut-in record (dt >= 0), aligned sample for sample.
 
     Two independent candidates, earliest wins:
-      - ``(guard_dt, "rise_guard")`` -- the tail guard already stopped
-        ``resample.resample_pressure_increment`` there; that data never entered the resampled
-        record, so this candidate is informational only (see picks.seed_tail_trim).
+      - ``(guard_dt, "rise_guard")`` -- the tail guard fired there. This candidate is
+        informational only (see picks.seed_tail_trim): it sets no pick of its own, since the
+        guard boundary is already the effective cutoff by default (interpret.resolve_tail_cut_dt)
+        without one. Data past ``guard_dt`` is not guaranteed excluded from the resampled record
+        any more -- ``resample.resample_pressure_increment(stop_at_guard=False)`` still keeps any
+        genuine further decline past it -- but nothing past the guard is admitted into the
+        diagnostics unless the analyst drags an explicit override past it
+        (``PickState.tail_guard_override``).
       - ``(crash_dt, "low_pressure")`` -- the first ``dt_post`` whose finite surface pressure
         drops below ``floor_psi``. Skipped entirely when ``p_surface_post`` is None: a caller
         passes None when the mapped channel is already BHP, where a sub-100-psi test is
@@ -457,6 +462,24 @@ def suggest_tail_trim_dt(
         return None, ""
     candidates.sort(key=lambda c: c[0])  # stable: a tie keeps rise_guard's earlier list position
     return candidates[0]
+
+
+def resolve_tail_cut_dt(
+    tail_trim_dt: Optional[float], guard_dt: Optional[float], override: bool
+) -> Optional[float]:
+    """Effective tail-trim cutoff (shut-in-relative seconds), shared by model.compute_all's
+    masking and plots.render_overview's display cut. No trim set -> the guard's cutoff (or
+    None if there's no guard either). A trim at/before the guard (or no guard at all) -> the
+    trim, unchanged. A trim past the guard -> respected only when ``override`` is True (a
+    deliberate drag past the guard, tracked by PickState.tail_guard_override); otherwise it's
+    treated as stale (e.g. left behind by a shut-in move before a resync ran) and clamped back
+    to guard_dt.
+    """
+    if tail_trim_dt is None:
+        return guard_dt
+    if guard_dt is None or tail_trim_dt <= guard_dt or override:
+        return tail_trim_dt
+    return guard_dt
 
 
 def min_index_in_window(G: np.ndarray, dPdG: np.ndarray, lo: float, hi: float) -> Optional[int]:

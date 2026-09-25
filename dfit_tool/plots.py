@@ -63,6 +63,43 @@ def _hours(t_s: np.ndarray, t0: float = 0.0) -> np.ndarray:
     return (np.asarray(t_s, dtype=float) - t0) / 3600.0
 
 
+def _split_dropouts(p: np.ndarray, mask: Optional[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Split a pressure trace into ``(p_clean, p_masked)``: each holds NaN wherever the other one
+    has real data. Plotting ``p_clean`` breaks the main trace's line across a masked dropout
+    instead of drawing a spike through it; ``p_masked`` is what a caller scatters as markers
+    (see render_overview/render_isip). ``mask`` may be ``None`` (no dropout detection ran, e.g. a
+    hand-built ``DerivedResults`` in a test) -- both counterparts then degrade to ``(p, all-NaN)``.
+    """
+    p = np.asarray(p, dtype=float)
+    if mask is None or not np.any(mask):
+        return p, np.full_like(p, np.nan)
+    p_clean = p.copy()
+    p_clean[mask] = np.nan
+    p_masked = np.full_like(p, np.nan)
+    p_masked[mask] = p[mask]
+    return p_clean, p_masked
+
+
+def _plot_dropout_markers(ax, x: np.ndarray, y: np.ndarray) -> None:
+    """Scatter masked-dropout samples (``x``/``y`` already filtered to the finite/masked subset --
+    see render_overview/render_isip) as their own small markers, without letting their real (and
+    possibly extreme, e.g. a -9999 psi sentinel) value drag the Axes' autoscale down to them --
+    the warning already reports the event, so the marker is allowed to sit off-screen below the
+    view. ``scalex=False, scaley=False`` stops this ``plot`` call from requesting a fresh
+    autoscale of the VIEW, but ``Axes.add_line`` still unconditionally folds the marker into
+    ``ax.dataLim`` (the bounding box other code reads back, e.g. the ISIP step's default view or
+    the Overview y-slider's full range) -- so ``dataLim`` is snapshotted first and restored after,
+    leaving the marker plotted at its true position but invisible to both the view and dataLim.
+    A no-op when there's nothing to plot.
+    """
+    if not len(x):
+        return
+    saved_points = ax.dataLim.get_points().copy()
+    ax.plot(x, y, color="magenta", marker="o", ms=3, ls="none", label="masked dropout",
+            gid="dropout_masked", scalex=False, scaley=False)
+    ax.dataLim.set_points(saved_points)
+
+
 def _draw_tangent_construction(ax, anchor_x: float, anchor_y: float, slope: float, *,
                                ref_x: float, half: float, color: str, gids: dict,
                                tick_half_y: float, label: Optional[str] = None,
@@ -112,16 +149,23 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     ``render_step_figure`` can pass ``interactive=False`` and an exported PNG never carries a
     line the analyst can't actually drag.
 
-    The effective display cut, ``cut_dt``, is the EARLIER of ``state.tail_trim_dt`` and
-    ``res.resampled_full.guard_dt`` when both are set, else whichever one is. Both live in
-    shut-in-relative dt, so dragging the Injection shut-in line later (F1/``ui.py``'s
-    ``resync_auto_tail_trim``) shrinks ``guard_dt`` while an existing ``tail_trim_dt`` is
-    unchanged until resynced -- and because a guard-fired record parks its trim right at
-    ``guard_dt``, a trim within a resample step of the guard is the ordinary case, not an edge
-    case. Taking the plain max of the two (or just ``tail_trim_dt``) can leave a stale trim
-    that sits PAST the guard, which would render the guard-excluded region as kept -- the
-    opposite of this feature's purpose -- so min() is required, not optional. The raw pressure
-    trace is split and grayed out beyond ``cut_dt`` (gid
+    The effective display cut, ``cut_dt``, comes from ``interpret.resolve_tail_cut_dt(
+    state.tail_trim_dt, res.resampled_full.guard_dt, state.tail_guard_override)`` -- the same
+    helper ``model.compute_all`` uses to mask ``res.resampled``, so the line the analyst sees
+    always matches what was actually diagnosed. No trim set -> the guard's boundary (or None).
+    A trim at/before the guard (or no guard at all) -> the trim, unchanged. A trim past the
+    guard is respected only when ``state.tail_guard_override`` is True -- set by
+    ``picks.commit_tail_trim`` when a committed drag deliberately lands past ``guard_dt`` --
+    otherwise it's presumed stale (e.g. left behind by a shut-in move before ``ui.py``'s
+    ``resync_auto_tail_trim`` ran) and clamped back to ``guard_dt``. Both ``tail_trim_dt`` and
+    ``guard_dt`` live in shut-in-relative dt, so dragging the Injection shut-in line later
+    shrinks ``guard_dt`` while an existing ``tail_trim_dt`` is unchanged until resynced -- and
+    because a guard-fired record parks its trim right at ``guard_dt``, a trim within a resample
+    step of the guard is the ordinary case, not an edge case. Taking the plain max of the two
+    (or just ``tail_trim_dt``) can leave a stale trim that sits PAST the guard, which would
+    render the guard-excluded region as kept -- the opposite of this feature's purpose -- so the
+    clamp is required whenever the override isn't set. The raw pressure trace is split and
+    grayed out beyond ``cut_dt`` (gid
     "tail_excluded") whenever it's not None -- this is what makes a guard-excluded tail visible
     on Overview too, not just in the G-function plot's own ``guard_excluded`` preview. It is
     drawn as its own segment of the real raw trace (not an overlay of the coarser post-shut-in
@@ -138,25 +182,26 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
                         and len(res.resampled_full.dt))
     cut_dt = None
     if has_trim_context:
-        trim_dt = state.tail_trim_dt
-        guard_dt = res.resampled_full.guard_dt
-        if trim_dt is not None and guard_dt is not None:
-            cut_dt = min(trim_dt, guard_dt)  # see docstring: a stale trim past the guard must
-                                              # not un-gray guard-excluded data
-        else:
-            cut_dt = trim_dt if trim_dt is not None else guard_dt
+        cut_dt = interpret.resolve_tail_cut_dt(state.tail_trim_dt, res.resampled_full.guard_dt,
+                                                state.tail_guard_override)
 
     kept = np.ones_like(t_h, dtype=bool)
     if cut_dt is not None:
         t_trim_s = res.t_shutin_s + cut_dt
         kept = td.t_s <= t_trim_s
 
-    xt, xp = _decimate(t_h[kept], p[kept])
+    p_clean, p_masked = _split_dropouts(p, res.dropout_mask)
+    xt, xp = _decimate(t_h[kept], p_clean[kept])
     ax.plot(xt, xp, color=press_color, lw=0.8, label=press_label)
     excluded = ~kept
     if excluded.any():
-        xte, xpe = _decimate(t_h[excluded], p[excluded])
+        xte, xpe = _decimate(t_h[excluded], p_clean[excluded])
         ax.plot(xte, xpe, color="0.75", lw=0.8, gid="tail_excluded")
+    # Masked dropouts as their own markers, not decimated with the main trace -- a handful of
+    # masked samples inside a record with 10^5+ points would almost certainly fall between the
+    # main trace's decimation stride and never get drawn.
+    masked_idx = np.flatnonzero(np.isfinite(p_masked))
+    _plot_dropout_markers(ax, t_h[masked_idx], p_masked[masked_idx])
 
     ax.set_xlabel("time from file start (h)")
     ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
@@ -285,8 +330,11 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         return ViewDefaults()
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)
-    xt, xp = _decimate(t_min[m], res.bhp_all[m])
+    p_clean, p_masked = _split_dropouts(res.bhp_all, res.dropout_mask)
+    xt, xp = _decimate(t_min[m], p_clean[m])
     ax.plot(xt, xp, color="black", lw=0.9)
+    masked_idx = np.flatnonzero(m & np.isfinite(p_masked))
+    _plot_dropout_markers(ax, t_min[masked_idx], p_masked[masked_idx])
     ax.axvline(0.0, color="tab:red", lw=1.2, label="shut-in")
     ax.set_xlabel("time from shut-in (min)")
     ax.set_ylabel("BHP (psi)")
@@ -333,9 +381,12 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
-    # Fainter still, and drawn under everything else: the raw tail the rise guard itself threw
-    # away (never entered resampled_full at all). Left in autoscale on purpose -- the 2x-G cap
-    # applied in compute_all is what bounds a runaway tail, not a view-limit clamp here.
+    # Fainter still, and drawn under everything else: the raw tail past the guard boundary, not
+    # admitted into these diagnostics (they're masked to interpret.resolve_tail_cut_dt's cutoff,
+    # which stays at guard_dt unless the analyst drags an explicit override past it) -- it may or
+    # may not have entered resampled_full itself (it does whenever a genuine further decline
+    # resumes there), but either way it's excluded here. Left in autoscale on purpose -- the
+    # 2x-G cap applied in compute_all is what bounds a runaway tail, not a view-limit clamp here.
     if res.guard_excluded_G is not None and len(res.guard_excluded_G):
         ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
                 gid="guard_excluded", zorder=0.5)

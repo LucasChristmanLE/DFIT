@@ -230,6 +230,90 @@ def test_dbs_pressure_with_no_header_suffix_detected_via_heuristic(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------------
+# trailing padding truncation (preallocated-but-not-fully-written recording buffer)
+# --------------------------------------------------------------------------------------------------
+def test_trailing_zero_idx_padding_is_truncated(tmp_path):
+    path = tmp_path / "padded.dbs"
+    k = 6
+    real = [(i, float(i) * 10.0) for i in range(k)]
+    # Trailing padding: idx repeats 0 for every one of these, with arbitrary/garbage channel
+    # values (not zero) -- the fix must key off idx alone, never off the channel floats.
+    padding = [(0, 999.0), (0, -5.0), (0, 42.0)]
+    write_dbs(path, [("Pressure", "PRES")], real + padding, interval_min=1.0 / 60.0)
+
+    td = io_load.load_dbs(str(path))
+
+    assert td.n == k
+    np.testing.assert_allclose(td.t_s, np.arange(k, dtype=float))
+    assert td.t_s[-1] != 0.0
+    np.testing.assert_allclose(td.column("Pressure"), [float(i) * 10.0 for i in range(k)])
+    assert len(td.load_warnings) == 1
+    assert "3 of 9" in td.load_warnings[0]
+
+
+def test_legitimate_idx_gap_not_truncated(tmp_path):
+    path = tmp_path / "gap.dbs"
+    idxs = [0, 1, 2, 500, 503, 504]  # 500 -> 503 is a legitimate skip, still strictly increasing
+    records = [(i, float(i)) for i in idxs]
+    write_dbs(path, [("Pressure", "PRES")], records, interval_min=1.0)
+
+    td = io_load.load_dbs(str(path))
+
+    assert td.n == len(idxs)
+    np.testing.assert_allclose(td.t_s, np.array(idxs, dtype=float) * 60.0)
+    assert td.load_warnings == []
+
+
+def test_mid_file_idx_jitter_not_truncated(tmp_path):
+    # A repeat-then-skip pair in the MIDDLE of an otherwise-normal file: idx repeats 2, then
+    # skips straight to 4, then continues normally to a proper terminal value. This is the exact
+    # shape a forward (first-violation) scan misidentifies as trailing padding and truncates down
+    # to almost nothing -- the backward scan must recognize the counter recovers before EOF and
+    # leave the file untouched.
+    path = tmp_path / "jitter.dbs"
+    idxs = [0, 1, 2, 2, 4, 5, 6, 7]
+    records = [(i, float(i)) for i in idxs]
+    write_dbs(path, [("Pressure", "PRES")], records, interval_min=1.0)
+
+    td = io_load.load_dbs(str(path))
+
+    assert td.n == len(idxs)
+    np.testing.assert_allclose(td.t_s, np.array(idxs, dtype=float) * 60.0)
+    assert td.load_warnings == []
+
+
+def test_clean_file_truncation_is_a_no_op(tmp_path):
+    # Same shape as test_round_trip: idx strictly increasing start to end, no padding at all.
+    path = tmp_path / "clean.dbs"
+    idxs = [0, 1, 2, 5, 6]
+    records = [(i, float(i) * 10.0) for i in idxs]
+    write_dbs(path, [("Pressure", "PRES")], records, interval_min=1.0)
+
+    td = io_load.load_dbs(str(path))
+
+    assert td.n == len(idxs)
+    np.testing.assert_allclose(td.t_s, np.array(idxs, dtype=float) * 60.0)
+    np.testing.assert_allclose(td.column("Pressure"), [float(i) * 10.0 for i in idxs])
+    assert td.load_warnings == []
+
+
+def test_load_warnings_fold_into_compute_all_warnings():
+    """model.compute_all must surface td.load_warnings in the analyst-visible warnings panel --
+    the actual wiring this whole fix exists to reach, not just io_load's own return value."""
+    from dfit_tool.model import compute_all
+    from tests.helpers import injection_state, make_testdata
+
+    td = make_testdata()
+    td.load_warnings = ["3 of 9 declared sample(s) after sample number 6 look like "
+                        "unrecorded padding; dropped."]
+    st = injection_state(td)
+
+    res = compute_all(st, td)
+
+    assert any("unrecorded padding" in w for w in res.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
 # dispatcher
 # --------------------------------------------------------------------------------------------------
 def test_load_dispatches_on_extension(tmp_path):

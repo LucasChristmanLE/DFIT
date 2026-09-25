@@ -1101,16 +1101,27 @@ def commit_closure_point(state: PickState, x: float) -> None:
     state.closure_G = float(x)
 
 
-def commit_tail_trim(state: PickState, dt: Optional[float]) -> None:
+def commit_tail_trim(state: PickState, dt: Optional[float], guard_dt: Optional[float] = None) -> None:
     """DragLineController commit for the Overview step's always-visible tail-trim line: ``dt``
     is shut-in-relative seconds, or None to clear the trim (drag released at/past the last
     point). Resets state.tail_trim_reason to "" -- a manual drag or clear always overrides
     whatever auto-attribution put the trim where it was; only seed_tail_trim (immediately after
     calling this itself) sets a non-"" reason back.
     Orthogonal to the closure-scenario flows -- never touched by apply_closure_scenario, the
-    triangle-drag commit, or the Shift+drag window commit."""
+    triangle-drag commit, or the Shift+drag window commit.
+
+    ``guard_dt`` (the rise guard's boundary, shut-in-relative seconds, or None if it never fired)
+    sets state.tail_guard_override: True when this commit lands a real trim strictly past
+    guard_dt -- a deliberate drag past the guard, which interpret.resolve_tail_cut_dt then lets
+    stick instead of clamping back. Any other case (no trim, no guard, or a trim at/before it)
+    leaves it False. The default guard_dt=None means "no guard to compare against", so override
+    always resolves False unless a caller passes the real boundary -- seed_tail_trim's own call
+    site omits it on purpose (see its docstring), since it never seeds a trim past the guard."""
     state.tail_trim_dt = float(dt) if dt is not None else None
     state.tail_trim_reason = ""
+    state.tail_guard_override = (
+        state.tail_trim_dt is not None and guard_dt is not None and state.tail_trim_dt > guard_dt
+    )
 
 
 def commit_stiffness_point(state: PickState, x: float) -> None:
@@ -1332,13 +1343,24 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
     p_surface_post = None
     if not state.pressure_is_bhp:  # state, not res -- see model.compute_all's same gate
         p_surface_post = td.pressure_surface(state.channel_config())[post]
+        if res.dropout_mask is not None:
+            # A masked gauge glitch is not a real sub-floor reading -- suggest_tail_trim_dt
+            # already ignores non-finite samples (see model.compute_all's dropout block and
+            # ../CLAUDE.md's "Pressure dropouts" section), so this alone keeps a dropout from
+            # triggering the "low_pressure" auto-trim.
+            p_surface_post = p_surface_post.copy()
+            p_surface_post[res.dropout_mask[post]] = np.nan
     cut_dt, reason = interpret.suggest_tail_trim_dt(dt_post, p_surface_post,
                                                      res.resampled_full.guard_dt)
     if reason != "low_pressure":
         # "" (no candidate at all) sets nothing -- the line parks at the end of the data.
-        # "rise_guard" sets no pick either: the resampler already broke out at the guard, so
-        # that data never entered resampled_full/diagnostics -- only the rendered line position
-        # and gray-out need to reflect it (plots.render_overview), not a pick here.
+        # "rise_guard" sets no pick either: the guard boundary is already the effective cutoff
+        # by default (interpret.resolve_tail_cut_dt, with no trim in state) -- only the rendered
+        # line position and gray-out need to reflect it (plots.render_overview), not a pick
+        # here. Data past the guard may or may not have entered resampled_full (it does whenever
+        # a genuine further decline resumes; resample.resample_pressure_increment's
+        # stop_at_guard=False), but either way nothing past it is admitted into the diagnostics
+        # unless the analyst drags an explicit override (PickState.tail_guard_override).
         return
     # Snap to the last resampled sample STRICTLY BEFORE the cut (side="left", not "right"), and
     # not _nearest -- both of those can leave the crash sample itself in the record, which is the

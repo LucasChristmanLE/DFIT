@@ -11,11 +11,13 @@ from __future__ import annotations
 import types
 
 import numpy as np
+import pandas as pd
 import pytest
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from dfit_tool import picks, plots, resample
+from dfit_tool import interpret, picks, plots, resample
+from dfit_tool.io_load import TestData as IoTestData
 from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
@@ -179,6 +181,29 @@ def test_render_overview_stale_trim_past_guard_uses_guard_dt_not_trim_dt():
     assert _gid(ax, "tail_excluded") is not None
 
 
+def test_render_overview_override_past_guard_uses_trim_dt_not_guard_dt():
+    """Sibling of the stale-trim test above, same past-guard setup, but with
+    state.tail_guard_override = True -- a deliberate drag past the guard, tracked by the new
+    flag -- so interpret.resolve_tail_cut_dt now respects tail_trim_dt unclamped instead of
+    falling back to guard_dt."""
+    td, st, res = _seeded_with_crash()
+    guard_dt = 40.0
+    res.resampled_full = resample.Resampled(dt=np.array([0.0, 20.0, 40.0]),
+                                            p=np.array([5000.0, 4800.0, 4700.0]),
+                                            n_raw=res.resampled_full.n_raw,
+                                            guard_dt=guard_dt)
+    st.tail_trim_dt = guard_dt + 3600.0  # same "stale-looking" position as the test above
+    st.tail_guard_override = True        # ...but now flagged as a deliberate override
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_overview(ax, td, st, res, interactive=True)
+
+    vline = _gid(ax, "tail_trim")
+    expected_x = (st.tail_trim_dt + res.t_shutin_s) / 3600.0
+    assert vline.get_xdata()[0] == pytest.approx(expected_x)
+
+
 def test_render_overview_no_resampled_full_no_gids_no_crash():
     td = make_testdata()
     st = PickState(pressure_col="PRESSURE")  # no start/shutin picked -> no t_shutin_s/resampled_full
@@ -260,6 +285,213 @@ def test_overview_wiring_no_resampled_full_no_controllers():
     assert stub._controllers == []
 
 
+def _seeded_with_guard_fire_and_more_data_after():
+    """A record whose rise guard fires partway through the post-shut-in decline, with a further
+    decline AFTER the rise -- unlike test_rise_guard.py's own fixture, this leaves real data (and
+    real resampled points, once model.compute_all's stop_at_guard=False keeps consuming past the
+    guard) past guard_dt to drag onto, exercising the actual bug being fixed: dragging the
+    Overview trim line later than a fired guard must find real samples to snap to."""
+    start_idx, shutin_idx = 50, 100
+    decline1_len = 300
+    rise_len = 80
+    decline2_len = 300
+    n = shutin_idx + decline1_len + rise_len + decline2_len
+    t_s = np.arange(n, dtype=float)
+    rate = np.zeros(n)
+    rate[start_idx:shutin_idx] = 5.0
+
+    pressure = np.full(n, 2000.0)
+    pressure[start_idx:shutin_idx] = np.linspace(2000.0, 5000.0, shutin_idx - start_idx)
+    pressure[shutin_idx:shutin_idx + decline1_len] = np.linspace(5000.0, 3000.0, decline1_len)
+    rise_idx = shutin_idx + decline1_len
+    pressure[rise_idx:rise_idx + rise_len] = pressure[rise_idx - 1] + 100.0
+    decline2_start = rise_idx + rise_len
+    pressure[decline2_start:] = np.linspace(pressure[decline2_start - 1], 1000.0, decline2_len)
+
+    df = pd.DataFrame({"PRESSURE": pressure, "RATE": rate})
+    td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
+                    columns=list(df.columns))
+    st = PickState(pressure_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
+                   shutin_idx=shutin_idx)
+    res = compute_all(st, td)
+    return td, st, res
+
+
+def test_overview_wiring_drag_past_guard_sets_override_and_admits_data():
+    """End-to-end through the real _attach_controllers closure: dragging the tail-trim line past
+    a fired guard's boundary must (1) actually land the trim there -- not clamp/clear, the
+    original bug -- (2) flag it as a deliberate override, and (3) make that previously-excluded
+    data show up in a follow-up compute_all's res.resampled/res.diagnostics."""
+    td, st, res = _seeded_with_guard_fire_and_more_data_after()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None  # sanity: the guard actually fired
+
+    baseline = compute_all(st, td)  # no trim/override yet -- clamped at guard_dt
+    baseline_n = len(baseline.resampled.dt)
+    assert baseline.resampled.dt[-1] <= guard_dt
+
+    stub, commit = _trim_commit(td, st, res)
+    # Drag to a resampled sample comfortably past the guard, in the decline-after-rise segment --
+    # but not the very last sample, which the commit closure treats as "release at the end", i.e.
+    # clear the trim (see test_overview_trim_commit_release_at_last_sample_clears above).
+    past_guard = res.resampled_full.dt[res.resampled_full.dt > guard_dt]
+    assert len(past_guard) >= 2  # sanity: there's real data past the guard to pick a mid-point of
+    target_dt = float(past_guard[len(past_guard) // 2])
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+
+    assert st.tail_trim_dt is not None
+    assert st.tail_trim_dt == pytest.approx(target_dt)
+    assert st.tail_guard_override is True
+
+    after = compute_all(st, td)
+    assert after.resampled.dt[-1] > guard_dt
+    assert len(after.resampled.dt) > baseline_n
+
+
+def _seeded_with_guard_fire_rise_never_comes_back():
+    """The actual reported bug shape, pinned precisely this time: the rise fires the guard and
+    then never declines again for the rest of the record (a stuck sensor or an ongoing leak, not
+    a rebound). A prior round's fixture of the same intent (``..._rise_stays_elevated_then_
+    declines``) was found by review to actually decline again afterward, so it wasn't really
+    testing this shape at all. Here, resample_pressure_increment's resampled_full keeps ZERO
+    points past guard_dt -- correctly so, per the reverted resample.py: a rising excursion never
+    satisfies the ordinary keep rule, so there's no new low to find, and stop_at_guard=False and
+    stop_at_guard=True produce identical resampled_full past this point. The override this test
+    proves out therefore has to work purely off the raw record (ui.py's commit_trim raw-sample
+    snap), with nothing already-resampled past the guard to land on."""
+    start_idx, shutin_idx = 50, 100
+    decline_len = 300
+    rise_len = 300
+    n = shutin_idx + decline_len + rise_len
+    t_s = np.arange(n, dtype=float)
+    rate = np.zeros(n)
+    rate[start_idx:shutin_idx] = 5.0
+
+    pressure = np.full(n, 1000.0)
+    pressure[start_idx:shutin_idx] = np.linspace(2000.0, 5000.0, shutin_idx - start_idx)
+    pressure[shutin_idx:shutin_idx + decline_len] = np.linspace(5000.0, 3000.0, decline_len)
+    rise_idx = shutin_idx + decline_len
+    # Keeps climbing all the way to the record's end -- never dips back down.
+    pressure[rise_idx:] = pressure[rise_idx - 1] + np.linspace(50.0, 300.0, rise_len)
+
+    df = pd.DataFrame({"PRESSURE": pressure, "RATE": rate})
+    td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
+                    columns=list(df.columns))
+    st = PickState(pressure_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
+                   shutin_idx=shutin_idx)
+    res = compute_all(st, td)
+    return td, st, res
+
+
+def test_overview_wiring_drag_past_guard_works_when_rise_never_comes_back():
+    """The hardest, most realistic shape, and the one that actually pins the original reported
+    bug: a rise that fires the guard and never comes back down. resampled_full has genuinely
+    nothing new past guard_dt, so the override must work off the raw record alone -- proving the
+    revert's fix (ui.py's raw-sample snap in commit_trim) rather than relying on the resampler
+    having already found a point to land on."""
+    td, st, res = _seeded_with_guard_fire_rise_never_comes_back()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None  # sanity: the guard actually fired
+    # Confirms this really is the "never comes back" shape: resampled_full has nothing new
+    # past the guard at all.
+    assert not np.any(res.resampled_full.dt > guard_dt)
+    assert any("Tail guard stopped resampling" in w for w in res.warnings)
+
+    stub, commit = _trim_commit(td, st, res)
+    raw_dt_post = td.t_s[td.t_s >= res.t_shutin_s] - res.t_shutin_s
+    # Drag all the way to the raw record's last sample -- the extreme case, where the commit
+    # closure's non-override branch would clear the trim to None, but the override branch must
+    # not (clearing would fall back through resolve_tail_cut_dt to guard_dt again).
+    target_dt = float(raw_dt_post[-1])
+    assert target_dt > guard_dt  # sanity: actually past the guard
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+
+    assert st.tail_trim_dt is not None
+    assert st.tail_trim_dt == pytest.approx(target_dt)
+    assert st.tail_guard_override is True
+
+    after = compute_all(st, td)
+    # The guard-stopped warning is suppressed once the override moves the resolved cutoff past
+    # the guard -- here (the "never comes back" shape) that's because nothing new was actually
+    # admitted, so it's replaced by a distinct honest warning instead (Finding 1, see the
+    # dedicated tests right below); the resolved cutoff sits at the dragged raw time regardless.
+    assert not any("Tail guard stopped resampling" in w for w in after.warnings)
+    resolved_cutoff = interpret.resolve_tail_cut_dt(st.tail_trim_dt, after.resampled_full.guard_dt,
+                                                     st.tail_guard_override)
+    assert resolved_cutoff == pytest.approx(target_dt)
+
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_overview(ax, td, st, after, interactive=True)
+    vline = _gid(ax, "tail_trim")
+    expected_x = (target_dt + after.t_shutin_s) / 3600.0
+    assert vline.get_xdata()[0] == pytest.approx(expected_x)
+
+
+# --------------------------------------------------------------------------------------------------
+# Finding 1 (this round): the override's messaging must be honest about whether it actually
+# admitted any new data, not just about whether the cutoff moved -- see model.py's
+# admitted_new_data/override_extends_past_guard.
+# --------------------------------------------------------------------------------------------------
+def test_overview_wiring_drag_past_guard_rise_never_comes_back_admits_nothing_and_warns_honestly():
+    """The regression the review caught: the earlier round's test above only checked that the
+    original guard-stopped warning was absent, never whether the override actually changed
+    anything. It doesn't -- res.resampled/res.diagnostics stay numerically identical to the
+    no-override default -- and compute_all must say so via a distinct, honest warning rather
+    than just falling silent (which reads as "the override worked")."""
+    td, st, res = _seeded_with_guard_fire_rise_never_comes_back()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+    baseline = compute_all(st, td)  # no trim/override yet -- the guard-clamped default
+
+    stub, commit = _trim_commit(td, st, res)
+    raw_dt_post = td.t_s[td.t_s >= res.t_shutin_s] - res.t_shutin_s
+    target_dt = float(raw_dt_post[-1])  # drag all the way to the raw record's last sample
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+    assert st.tail_guard_override is True
+
+    after = compute_all(st, td)
+    # No data was actually admitted: point counts and values are unchanged from the default.
+    assert len(after.resampled.dt) == len(baseline.resampled.dt)
+    np.testing.assert_array_equal(after.resampled.dt, baseline.resampled.dt)
+    np.testing.assert_array_equal(after.resampled.p, baseline.resampled.p)
+    assert len(after.diagnostics.G) == len(baseline.diagnostics.G)
+
+    assert not any("Tail guard stopped resampling" in w for w in after.warnings)  # superseded
+    assert not any(w.startswith("Tail trimmed") for w in after.warnings)  # would confusingly pair
+    assert any("Tail-guard override requested to" in w for w in after.warnings)
+
+
+def test_overview_wiring_drag_past_guard_with_more_data_after_admits_real_data():
+    """Sibling of the test above, using the OTHER guard-fire fixture (a genuine further decline
+    resumes past the guard, so there's real data to admit): the override actually changes
+    res.resampled/res.diagnostics, the ordinary "Tail trimmed" warning is present reporting the
+    later real cutoff, and the "admits nothing" warning above must NOT appear -- this is the
+    case it exists to distinguish from."""
+    td, st, res = _seeded_with_guard_fire_and_more_data_after()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+    baseline = compute_all(st, td)  # no trim/override yet -- the guard-clamped default
+
+    stub, commit = _trim_commit(td, st, res)
+    past_guard = res.resampled_full.dt[res.resampled_full.dt > guard_dt]
+    assert len(past_guard) >= 2  # sanity: real data past the guard to pick a mid-point of
+    target_dt = float(past_guard[len(past_guard) // 2])
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+
+    after = compute_all(st, td)
+    assert len(after.resampled.dt) > len(baseline.resampled.dt)
+    assert after.resampled.dt[-1] > guard_dt
+
+    assert not any("Tail guard stopped resampling" in w for w in after.warnings)
+    assert not any("Tail-guard override requested to" in w for w in after.warnings)
+    assert any(w.startswith("Tail trimmed") for w in after.warnings)
+
+
 # --------------------------------------------------------------------------------------------------
 # commit closure (moved from the old gfunction wiring tests, adapted to x_hours coordinates:
 # x_hours = (dt + t_shutin_s) / 3600)
@@ -279,6 +511,39 @@ def test_overview_trim_commit_release_at_last_sample_clears():
     assert st.tail_trim_dt is None
 
 
+def test_overview_trim_commit_at_or_before_guard_uses_resampled_grid_snap_unchanged():
+    """A drag target at/before guard_dt takes the old resampled-grid path unchanged: it snaps
+    against res.resampled_full.dt, not the raw record, and never sets tail_guard_override."""
+    td, st, res = _seeded_with_guard_fire_and_more_data_after()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+    stub, commit = _trim_commit(td, st, res)
+    pre_guard = res.resampled_full.dt[res.resampled_full.dt < guard_dt]
+    assert len(pre_guard) >= 2  # sanity: real pre-guard resampled points to snap to
+    target_dt = float(pre_guard[len(pre_guard) // 2])
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+    assert st.tail_trim_dt == pytest.approx(target_dt)
+    assert st.tail_guard_override is False
+
+
+def test_overview_trim_commit_past_guard_always_uses_raw_snap_and_never_none():
+    """A drag target past guard_dt always uses the raw-sample snap (ui.py's override branch) and
+    always sets an explicit trim -- even at the raw record's very last sample, which the
+    non-override branch would otherwise clear to None."""
+    td, st, res = _seeded_with_guard_fire_rise_never_comes_back()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+    stub, commit = _trim_commit(td, st, res)
+    raw_dt_post = td.t_s[td.t_s >= res.t_shutin_s] - res.t_shutin_s
+    target_dt = float(raw_dt_post[-1])  # the raw record's last sample
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+    assert st.tail_trim_dt is not None
+    assert st.tail_trim_dt == pytest.approx(target_dt)
+    assert st.tail_guard_override is True
+
+
 def test_overview_trim_commit_release_mid_record_snaps_to_nearest_sample():
     td, st, res = _seeded_with_crash()
     stub, commit = _trim_commit(td, st, res)
@@ -294,6 +559,71 @@ def test_overview_trim_commit_release_before_shutin_clamps_to_index_2():
     x_hours = (res.t_shutin_s - 3600.0) / 3600.0  # 1h before shut-in -> negative dt_target
     commit(x_hours)
     assert st.tail_trim_dt == pytest.approx(float(res.resampled_full.dt[2]))
+
+
+def test_overview_trim_commit_else_branch_never_crosses_into_override_territory():
+    """Finding 2 (this round): the non-override branch (drag target at/before guard_dt, or no
+    guard at all) must restrict its snap candidates to samples at/before the guard -- dt_full
+    itself can carry points PAST guard_dt now (stop_at_guard=False), so an unmasked nearest
+    search can silently pick one of those whenever a sparse pre-guard decline sits next to a
+    denser post-guard one, setting tail_guard_override even though the analyst never dragged
+    past the guard. Here the drag target (450) sits well before guard_dt (500), but the global
+    nearest sample under the OLD (unmasked) code would have been one of the dense post-guard
+    points (500.1+, diff ~50) rather than the sparse pre-guard ones (200, diff 250)."""
+    td, st, res = _seeded_with_crash()
+    guard_dt = 500.0
+    dt_full = np.array([0.0, 100.0, 200.0,                      # sparse pre-guard
+                         500.1, 500.2, 500.3, 500.4, 500.5])     # dense, right past the guard
+    res.resampled_full = resample.Resampled(dt=dt_full, p=np.linspace(5000.0, 4000.0, len(dt_full)),
+                                            n_raw=res.resampled_full.n_raw, guard_dt=guard_dt)
+
+    stub, commit = _trim_commit(td, st, res)
+    target_dt = 450.0
+    assert target_dt <= guard_dt  # sanity: exercises the non-override ("else") branch
+    x_hours = (target_dt + res.t_shutin_s) / 3600.0
+    commit(x_hours)
+
+    # Fixed: never crosses into guard-override territory -- either clears, or lands at/before
+    # the guard, and tail_guard_override always stays False.
+    assert st.tail_guard_override is False
+    assert st.tail_trim_dt is None or st.tail_trim_dt <= guard_dt
+
+
+def _stub_capturing_hint(td, st, res, step):
+    """Same as ``_stub`` above, except ``hint_lbl.config`` calls are recorded (in order) into the
+    returned list, so a test can inspect the actual hint text set during wiring -- ``_stub``'s
+    own no-op lambda discards it."""
+    calls: list[str] = []
+    stub = _stub(td, st, res, step)
+    stub.hint_lbl = types.SimpleNamespace(config=lambda **kw: calls.append(kw.get("text")))
+    return stub, calls
+
+
+def test_overview_hint_mentions_guard_override_when_guard_fired():
+    """Finding 3 (docs/UI-text only, no behavior change): once a guard has fired for this
+    record, releasing at the right edge doesn't just "clear the trim" (the pre-existing wording)
+    -- it overrides the guard too, admitting everything past it. The hint must say so."""
+    td, st, res = _seeded_with_guard_fire_and_more_data_after()
+    assert res.resampled_full.guard_dt is not None  # sanity: the guard actually fired
+
+    stub, calls = _stub_capturing_hint(td, st, res, "overview")
+    DfitApp._attach_controllers(stub)
+
+    assert calls, "hint_lbl.config was never called"
+    assert "override" in calls[-1].lower() and "guard" in calls[-1].lower()
+
+
+def test_overview_hint_plain_when_no_guard_fired():
+    """No guard in this record -- the plain "clear the trim" wording is accurate on its own and
+    must not gain an override clause that doesn't apply."""
+    td, st, res = _seeded_with_crash()
+    assert res.resampled_full.guard_dt is None  # sanity: no guard fired
+
+    stub, calls = _stub_capturing_hint(td, st, res, "overview")
+    DfitApp._attach_controllers(stub)
+
+    assert calls, "hint_lbl.config was never called"
+    assert "override" not in calls[-1].lower()
 
 
 def test_overview_trim_commit_recovery_two_point_resample_never_indexerrors():

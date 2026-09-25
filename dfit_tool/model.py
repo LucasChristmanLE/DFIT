@@ -68,6 +68,14 @@ class PickState:
     # resample block in compute_all below). Old saves lack this key and take the default via
     # _decode's known-field filter -- no migration needed.
     tail_trim_reason: str = ""
+    # Set by picks.commit_tail_trim when a committed drag lands past guard_dt: True means the
+    # analyst deliberately dragged the trim line past the rise guard's boundary on purpose, so
+    # interpret.resolve_tail_cut_dt lets tail_trim_dt stick there instead of clamping back to
+    # guard_dt. False (the default, and what any other commit/clear leaves it at) means a trim
+    # sitting past guard_dt is presumed stale -- e.g. left behind by a shut-in move before
+    # picks.resync_auto_tail_trim ran -- and gets clamped. Old saves lack this key and take the
+    # default via _decode's known-field filter, no migration needed.
+    tail_guard_override: bool = False
 
     # --- step 2: injection window ---
     start_idx: Optional[int] = None
@@ -330,6 +338,15 @@ class DerivedResults:
     guard_excluded_G: Optional[np.ndarray] = field(default=None, repr=False)
     guard_excluded_p: Optional[np.ndarray] = field(default=None, repr=False)
 
+    # Momentary near-zero pressure dropouts masked on the raw mapped pressure channel (see
+    # resample.detect_dropouts and the "Pressure dropouts" section in ../CLAUDE.md).
+    # dropout_mask is full-length (aligned with td samples), False before shut-in and wherever
+    # no dropout was detected; dropouts is the list of resample.Dropout records found. Every
+    # consumer of raw post-shut-in pressure applies this mask by treating a masked sample as
+    # missing (NaN) -- res.bhp_all itself is never mutated.
+    dropout_mask: Optional[np.ndarray] = field(default=None, repr=False)
+    dropouts: list = field(default_factory=list, repr=False)
+
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
@@ -440,9 +457,16 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     It is idempotent -- rebuilt from the untouched raw df every call, so repeated calls never
     compound a conversion -- so this is safe to do unconditionally on every recompute rather than
     only on a mapping/override change.
+
+    Also folds in `td.load_warnings` -- a load-time anomaly unrelated to unit detection, e.g. a
+    `.DBS` file whose trailing padding records `load_dbs` had to truncate -- so it surfaces in
+    the same warnings panel. Unlike `unit_warnings`, `load_warnings` is set once at load and
+    never rebuilt here; it is just re-appended to the fresh `res.warnings` every recompute.
     """
     res = DerivedResults()
     cfg = state.channel_config()
+
+    res.warnings.extend(td.load_warnings)
 
     unit_warnings = io_load.refresh_unit_detection(
         td, state.pressure_col, state.rate_col, state.volume_col,
@@ -507,52 +531,160 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         tg = state.isip_tangent
         res.apparent_isip = interpret.apparent_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
 
-    # Resample + diagnostics (needs te). Resample the full post-shut-in record first, then mask
-    # to the tail trim (if any) before diagnostics -- everything downstream (effective ISIP,
-    # Shmin, log-log, pore pressure) reads only res.resampled/res.diagnostics, so the trim
-    # propagates everywhere with no other changes. resampled_full/G_full stay available
-    # (untrimmed) so the renderer can gray out the excluded tail and ui.py can convert a drag
-    # back to seconds.
+    # Pressure dropouts: detect momentary near-zero gauge glitches after shut-in, on the raw
+    # mapped pressure channel (before any hydrostatic offset -- "near zero" means near zero on
+    # the gauge, not on a converted BHP). Full-length and False before shut-in so every consumer
+    # below (the resample block, the guard-excluded preview, the low-surface-pressure scan, and
+    # picks.seed_tail_trim) applies the same mask by treating a masked sample as missing; res.
+    # bhp_all itself stays raw and unmodified. See ../CLAUDE.md's "Pressure dropouts" section.
+    res.dropout_mask = np.zeros(td.n, dtype=bool)
+    if res.t_shutin_s is not None:
+        dt_all_dropout = td.t_s - res.t_shutin_s
+        post_dropout = dt_all_dropout >= 0
+        if post_dropout.any():
+            raw_pressure = td.column(state.pressure_col)
+            dropout_mask_post, res.dropouts = resample.detect_dropouts(
+                dt_all_dropout[post_dropout], raw_pressure[post_dropout])
+            res.dropout_mask[post_dropout] = dropout_mask_post
+            # "at 0 min" reads as "no time elapsed at all" -- true for any dropout starting in
+            # the first ~30 s, not just one at the exact instant of shut-in. "at <1 min" is
+            # honest instead; gated on the formatted (rounded) string, since that's what's
+            # actually about to be printed.
+            def _min_label(dt_s: float) -> str:
+                s = f"{dt_s/60:.0f}"
+                return "<1" if s == "0" else s
+            if len(res.dropouts) == 1:
+                d = res.dropouts[0]
+                # "1 sample" not "1 samples" (the common case, a single-sample glitch). The
+                # duration clause is dropped when it ROUNDS to 0 s (gate on the formatted string,
+                # not the raw duration>0 -- a raw check would still print the useless "0 s" for
+                # a sub-0.5 s multi-sample dip that rounds down).
+                n_word = "sample" if d.n_samples == 1 else "samples"
+                detail = f"{d.n_samples} {n_word}"
+                duration_str = f"{d.dt_end - d.dt_start:.0f}"
+                if duration_str != "0":
+                    detail += f", {duration_str} s"
+                detail += f", to {d.p_min:.0f} psi"
+                res.warnings.insert(0,
+                    f"Pressure dropout masked at {_min_label(d.dt_start)} min after shut-in "
+                    f"({detail}) -- treated as a gauge glitch")
+            elif len(res.dropouts) > 1:
+                first = res.dropouts[0]
+                res.warnings.insert(0,
+                    f"{len(res.dropouts)} pressure dropouts masked (first at "
+                    f"{_min_label(first.dt_start)} min after shut-in) -- treated as gauge "
+                    "glitches")
+
+    # Resample + diagnostics (needs te). Resample the full post-shut-in record first
+    # (stop_at_guard=False, so resampled_full/G_full always span the whole record, guard or no
+    # guard), then mask to the effective cutoff (interpret.resolve_tail_cut_dt, which folds in
+    # the guard boundary and PickState.tail_guard_override) before diagnostics -- everything
+    # downstream (effective ISIP, Shmin, log-log, pore pressure) reads only
+    # res.resampled/res.diagnostics, so the trim propagates everywhere with no other changes.
+    # resampled_full/G_full stay available (unmasked) so the renderer can gray out the excluded
+    # tail and ui.py can convert a drag back to seconds.
+    #
+    # override_extends_past_guard / admitted_new_data: declared here (default False) so the
+    # low-surface-pressure scan further down -- a separate, independently-gated block -- can
+    # safely reference them even when this resample block never runs (e.g. no te_s yet). Set
+    # for real inside the block below.
+    override_extends_past_guard = False
+    admitted_new_data = False
     if res.te_s and res.t_shutin_s is not None and res.bhp_all is not None:
         dt_all = td.t_s - res.t_shutin_s
         post = dt_all >= 0
-        rs_full = resample.resample_pressure_increment(dt_all[post], res.bhp_all[post],
-                                                        step=state.resample_step)
+        # Masked dropouts (res.dropout_mask, computed above) are treated as missing here --
+        # res.bhp_all itself is never mutated. NaN is already handled by
+        # resample_pressure_increment (skipped, resets any rise run), so no resampler change
+        # is needed.
+        p_post = res.bhp_all[post].copy()
+        p_post[res.dropout_mask[post]] = np.nan
+        rs_full = resample.resample_pressure_increment(dt_all[post], p_post,
+                                                        step=state.resample_step,
+                                                        stop_at_guard=False)
         res.resampled_full = rs_full
         res.G_full = g_time(rs_full.dt, res.te_s, state.alpha)
+        # Resolved once and reused for both the guard-warning gate below and the actual masking
+        # a few lines down -- avoid calling resolve_tail_cut_dt twice with different arguments
+        # in the same function.
+        cutoff = interpret.resolve_tail_cut_dt(state.tail_trim_dt, rs_full.guard_dt,
+                                                state.tail_guard_override)
+        # override_extends_past_guard: the resolved cutoff sits past the guard at all -- which
+        # resolve_tail_cut_dt only ever does when state.tail_guard_override is set (see its
+        # docstring). admitted_new_data: whether the resampler actually found NEW points in
+        # (guard_dt, cutoff] -- False for a permanently-elevated/rising tail that never resumes
+        # a decline, where resampled_full keeps nothing new past guard_dt no matter how far past
+        # it cutoff reaches (a deliberate override still moves the display/masking cut, but there
+        # is nothing there for it to admit). Both feed the guard-warning gate right below and the
+        # low-surface-pressure scan further down.
+        override_extends_past_guard = (rs_full.guard_dt is not None and cutoff is not None
+                                        and cutoff > rs_full.guard_dt)
+        admitted_new_data = (override_extends_past_guard
+                             and bool(np.any((rs_full.dt > rs_full.guard_dt)
+                                              & (rs_full.dt <= cutoff))))
         if rs_full.guard_dt is not None:
             # A gray preview of what the guard threw away, in G-time -- built from the raw (not
-            # resampled) samples past guard_dt, since the resampler itself kept none of them.
+            # resampled) samples past guard_dt, since the resampler may keep zero of them there
+            # (stop_at_guard=False still only ever keeps a genuine new low; a tail that never
+            # declines again earns no further points at all) or many, if a genuine further
+            # decline resumes -- either way the raw samples are what the preview needs to show.
             # Non-finite pressures are left in on purpose: matplotlib skips NaN when drawing, so
             # filtering here would just be extra work for the same visual result. Capped at 2x
-            # the kept G-range so a runaway crash-to-zero tail can't blow out the plot's
+            # the G-range that was
+            # actually kept BEFORE the guard fired (the last resampled_full sample strictly
+            # before guard_dt), not the whole (possibly guard-spanning) record -- see
+            # ../CLAUDE.md -- so a runaway crash-to-zero tail can't blow out the plot's
             # autoscale, and decimated (ceiling stride, so the result is always <= 500 -- a
             # floor stride via `n // 500` can leave up to 999) so a very long raw tail can't
             # blow out the point count.
-            dt_raw, p_raw = dt_all[post], res.bhp_all[post]
+            dt_raw, p_raw = dt_all[post], p_post
             tail_dt = dt_raw[dt_raw > rs_full.guard_dt]
             tail_p = p_raw[dt_raw > rs_full.guard_dt]
+            pre_guard = rs_full.dt < rs_full.guard_dt
+            cap_G = float(res.G_full[pre_guard][-1]) if pre_guard.any() else 0.0
             if len(res.G_full):
                 tail_G = g_time(tail_dt, res.te_s, state.alpha)
-                within = tail_G <= 2.0 * res.G_full[-1]
+                within = tail_G <= 2.0 * cap_G
                 tail_G, tail_p = tail_G[within], tail_p[within]
                 n = len(tail_G)
                 if n:
                     stride = -(-n // 500)
                     res.guard_excluded_G = tail_G[::stride]
                     res.guard_excluded_p = tail_p[::stride]
+            # Only worth reporting in its original form while the guard is still actually
+            # binding -- i.e. the resolved cutoff hasn't been overridden past it at all
+            # (cutoff <= guard_dt). Once an override DOES extend the cutoff past the guard, one
+            # of two things is true: either it actually admitted the excluded data into the
+            # diagnostics for real (admitted_new_data), in which case this warning would
+            # contradict the separate "Tail trimmed" warning below (which reports that later,
+            # real cutoff) and must be suppressed entirely; or it found nothing new there at all
+            # (a permanently-elevated/rising tail), in which case silently dropping this warning
+            # would leave the analyst thinking the override worked when Shmin/effective ISIP/
+            # pore pressure are still exactly the guard-clamped values -- so it's replaced with an
+            # honest admission-failed warning instead (the elif below) rather than just vanishing.
             # Inserted at the front (not appended) so this stays the topmost line in warn_lbl's
             # stacked display, ahead of any earlier-queued warning (density/TVD, volume
-            # disagreement, ...) -- a firing guard must never be buried in the UI. The tail-trim
-            # escape warning below (its own insert(0), for a diagnostics-starving trim) runs after
-            # this in code order, so it still lands frontmost of the two when both fire.
-            res.warnings.insert(0,
-                f"Tail guard stopped resampling {rs_full.guard_dt/60:.0f} min after shut-in "
-                "(sustained pressure rise); later data excluded")
-        if state.tail_trim_dt is not None:
-            mask = rs_full.dt <= state.tail_trim_dt
+            # disagreement, ...) -- a firing, still-binding (or falsely-believed-overridden)
+            # guard must never be buried in the UI. The tail-trim escape warning below (its own
+            # insert(0), for a diagnostics-starving trim) runs after this in code order, so it
+            # still lands frontmost of the two when both fire.
+            if cutoff is not None and cutoff <= rs_full.guard_dt:
+                res.warnings.insert(0,
+                    f"Tail guard stopped resampling {rs_full.guard_dt/60:.0f} min after shut-in "
+                    "(sustained pressure rise); later data excluded")
+            elif override_extends_past_guard and not admitted_new_data:
+                res.warnings.insert(0,
+                    f"Tail-guard override requested to {cutoff/60:.0f} min, but the resampler "
+                    f"found no further usable data past the guard's original cutoff at "
+                    f"{rs_full.guard_dt/60:.0f} min (the tail never resumes a decline) -- "
+                    "Shmin/effective ISIP/pore pressure are unchanged.")
+        if cutoff is not None:
+            mask = rs_full.dt <= cutoff
             rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,
                                     guarded_at=rs_full.guarded_at, guard_dt=rs_full.guard_dt)
+        else:
+            rs = rs_full
+        if state.tail_trim_dt is not None:
             # A trim in effect is never silent -- it moves Shmin/pore pressure with no other
             # visible signal when it was auto-applied (picks.seed_tail_trim), and even a manual
             # drag deserves the raw-sample count. insert(0), same as the guard warning above, so
@@ -562,17 +694,30 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # seed_tail_trim snaps to the last resampled sample STRICTLY BEFORE the crash,
                 # side="left") -- so this must point at the crash beginning just past the cut,
                 # not claim the cut is where pressure first read low.
-                res.warnings.insert(0,
+                msg = (
                     f"Tail auto-trimmed {state.tail_trim_dt/60:.0f} min after shut-in: surface "
                     "pressure crashes below 100 psi shortly after this point. Drag the Overview "
                     "trim line to the right edge to undo.")
-            else:
+                # A guard existing at all in this record means it fired LATER than this
+                # low-pressure cut (suggest_tail_trim_dt's earliest-wins rule -- low_pressure is
+                # never chosen over an earlier rise_guard), so dragging to the right edge to undo
+                # this crosses the guard too -- flag that consequence. Left off entirely when
+                # there's no guard in this record (the common case), so the warning stays no
+                # noisier than it has to be.
+                if rs_full.guard_dt is not None:
+                    msg += (" Doing so also overrides the tail guard, which fires further into "
+                            "the tail, extending the cutoff to the end of the record.")
+                res.warnings.insert(0, msg)
+            elif not (override_extends_past_guard and not admitted_new_data):
+                # Suppressed when the override-admitted-nothing warning above already fired for
+                # this exact cut (see that warning's own comment) -- pairing it with "(0 raw
+                # samples excluded)" here would read as a confusing, near-contradictory two-line
+                # combo about the same cut, and the honest warning already says everything this
+                # one would.
                 n_excluded = int(np.sum(dt_all[post] > state.tail_trim_dt))
                 res.warnings.insert(0,
                     f"Tail trimmed {state.tail_trim_dt/60:.0f} min after shut-in "
                     f"({n_excluded} raw samples excluded)")
-        else:
-            rs = rs_full
         res.resampled = rs
         if len(rs.p) >= 3:
             res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)
@@ -602,7 +747,15 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         surf = td.pressure_surface(cfg)          # raw WHP column -- NOT res.bhp_all (converted)
         dt_ws = td.t_s - res.t_shutin_s
         m = dt_ws >= 0
-        if res.resampled_full is not None and res.resampled_full.guard_dt is not None:
+        m &= ~res.dropout_mask  # a masked gauge glitch is not a real low-pressure reading
+        # The guard-based restriction is skipped when an active override has actually extended
+        # the effective cutoff past the guard (reusing the same override_extends_past_guard
+        # computed above -- not re-deriving it here) -- a sub-100-psi crash the override admits
+        # into the diagnostics (a genuine further decline resumed there) must not be hidden from
+        # this scan just because it happens to sit past guard_dt. The tail_trim_dt bound right
+        # below still narrows the window by the explicit trim either way.
+        if (res.resampled_full is not None and res.resampled_full.guard_dt is not None
+                and not override_extends_past_guard):
             m &= dt_ws < res.resampled_full.guard_dt
         if state.tail_trim_dt is not None:
             m &= dt_ws <= state.tail_trim_dt

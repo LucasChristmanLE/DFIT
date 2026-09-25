@@ -11,7 +11,7 @@ import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
-from dfit_tool import picks, plots, resample
+from dfit_tool import picks, plots, resample, store
 from dfit_tool.interpret import MIN_SURFACE_PRESSURE_PSI, suggest_tail_trim_dt
 from dfit_tool.model import PickState, compute_all
 from dfit_tool.ui import DfitApp
@@ -346,6 +346,45 @@ def test_seed_tail_trim_sets_no_pick_for_guard_only_record():
     assert st.tail_trim_reason == ""
 
 
+def test_seed_tail_trim_extension_past_guard_can_flip_a_bail_into_a_trim():
+    """Pins (not "fixes") a minor edge-case behavior change: since model.compute_all always
+    resamples resampled_full with stop_at_guard=False, a genuine further decline after a guard
+    fire can append extra points to dt_full past guard_dt. The bail check
+    (``idx >= len(dt_full) - 1``) is sensitive to ``len(dt_full)``, so the SAME low-pressure cut
+    (earlier than the guard, landing right at the end of the pre-guard points) that used to bail
+    when dt_full stopped right at the guard now succeeds once dt_full is longer, because the
+    extension pushes the bail threshold out even though ``idx`` itself is unaffected (it's
+    computed from the pre-cut portion of dt_full, which the extension never touches). A reviewer
+    assessed this as likely an improvement (a trim that used to silently not-apply now applies),
+    not a regression."""
+    td, st, res = _seeded_with_crash(zero_crash_at=None)  # base record, no real crash
+    shutin_idx = st.shutin_idx
+    td.df.loc[shutin_idx + 16, "PRESSURE"] = 50.0  # a below-floor sample at dt=16 s
+    n_raw = res.resampled_full.n_raw
+    guard_dt = 20.0  # later than the dt=16 crash, so "low_pressure" naturally wins (earliest)
+
+    # Without the extension (dt_full stops right at the guard, the old stop_at_guard=True
+    # shape): the cut (dt=16) lands past the last pre-guard point, at the very end of the
+    # array -- bails.
+    dt_full_without = np.array([0.0, 5.0, 10.0, 15.0])
+    p_full_without = np.array([5000.0, 4900.0, 4800.0, 4700.0])
+    res.resampled_full = resample.Resampled(dt=dt_full_without, p=p_full_without, n_raw=n_raw,
+                                            guard_dt=guard_dt)
+    picks.seed_tail_trim(st, td, res)
+    assert st.tail_trim_dt is None
+    assert st.tail_trim_reason == ""
+
+    # With the extension (extra points past guard_dt from a further decline resumed after the
+    # guard fired): the same cut, same computed idx, no longer bails.
+    dt_full_with = np.array([0.0, 5.0, 10.0, 15.0, 25.0, 30.0])
+    p_full_with = np.array([5000.0, 4900.0, 4800.0, 4700.0, 4000.0, 3500.0])
+    res.resampled_full = resample.Resampled(dt=dt_full_with, p=p_full_with, n_raw=n_raw,
+                                            guard_dt=guard_dt)
+    picks.seed_tail_trim(st, td, res)
+    assert st.tail_trim_dt == pytest.approx(15.0)  # dt_full_with[3], the last pre-cut point
+    assert st.tail_trim_reason == "low_pressure"
+
+
 def test_seed_tail_trim_bails_when_too_few_points_precede_the_crash():
     """A crash landing before dt_full's index 2 must set NO trim, not clamp up to index 2.
 
@@ -381,6 +420,50 @@ def test_commit_tail_trim_clears_reason():
     st.tail_trim_reason = "low_pressure"
     picks.commit_tail_trim(st, None)
     assert st.tail_trim_reason == ""
+
+
+# --------------------------------------------------------------------------------------------------
+# picks.commit_tail_trim -- the new guard_dt param sets tail_guard_override
+# --------------------------------------------------------------------------------------------------
+def test_commit_tail_trim_past_guard_sets_override_true():
+    st = PickState()
+    picks.commit_tail_trim(st, 150.0, guard_dt=100.0)
+    assert st.tail_trim_dt == pytest.approx(150.0)
+    assert st.tail_guard_override is True
+
+
+def test_commit_tail_trim_at_guard_sets_override_false():
+    st = PickState()
+    picks.commit_tail_trim(st, 100.0, guard_dt=100.0)
+    assert st.tail_guard_override is False
+
+
+def test_commit_tail_trim_before_guard_sets_override_false():
+    st = PickState()
+    picks.commit_tail_trim(st, 50.0, guard_dt=100.0)
+    assert st.tail_guard_override is False
+
+
+def test_commit_tail_trim_no_guard_sets_override_false():
+    st = PickState()
+    picks.commit_tail_trim(st, 150.0, guard_dt=None)
+    assert st.tail_guard_override is False
+
+
+def test_commit_tail_trim_clear_sets_override_false():
+    st = PickState(tail_guard_override=True)
+    picks.commit_tail_trim(st, None, guard_dt=100.0)
+    assert st.tail_trim_dt is None
+    assert st.tail_guard_override is False
+
+
+def test_commit_tail_trim_past_guard_then_reset_clears_override():
+    """A prior override must not linger once a later commit no longer lands past the guard."""
+    st = PickState()
+    picks.commit_tail_trim(st, 150.0, guard_dt=100.0)
+    assert st.tail_guard_override is True
+    picks.commit_tail_trim(st, 50.0, guard_dt=100.0)
+    assert st.tail_guard_override is False
 
 
 # --------------------------------------------------------------------------------------------------
@@ -531,3 +614,29 @@ def test_compute_all_emits_explanatory_line_for_low_pressure_trim():
     res2 = compute_all(st, td)
 
     assert any(w.startswith("Tail auto-trimmed") for w in res2.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
+# store.LOG_COLUMNS / build_log_row: tail_guard_override, tail-appended (Finding 6)
+# --------------------------------------------------------------------------------------------------
+def test_log_columns_tail_is_tail_guard_override():
+    assert store.LOG_COLUMNS[-1] == "tail_guard_override"
+
+
+def test_build_log_row_populates_tail_guard_override(tmp_path):
+    """Not just column presence/ordering -- the row must actually carry state's real value,
+    both True and False."""
+    td, st, res = _seeded_with_crash()
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = str(tmp_path / "well1.csv")
+
+    st.tail_guard_override = True
+    res = compute_all(st, td)
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row["tail_guard_override"] is True
+    assert list(row.keys()) == store.LOG_COLUMNS
+
+    st.tail_guard_override = False
+    res = compute_all(st, td)
+    row2 = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row2["tail_guard_override"] is False

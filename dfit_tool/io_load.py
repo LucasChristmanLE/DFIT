@@ -378,6 +378,11 @@ class TestData:
     unit_factors: dict[str, float] = field(default_factory=dict, repr=False)
     unit_detections: dict[str, "UnitDetection"] = field(default_factory=dict, repr=False)
     unit_warnings: list[str] = field(default_factory=list, repr=False)
+    # Load-time anomalies unrelated to unit detection (e.g. a .DBS file with trailing padding
+    # records truncated by load_dbs -- see its docstring). Set once at load and never rebuilt,
+    # unlike unit_warnings; model.compute_all folds these into DerivedResults.warnings every
+    # recompute so they surface in the same panel.
+    load_warnings: list[str] = field(default_factory=list, repr=False)
 
     @property
     def n(self) -> int:
@@ -698,6 +703,44 @@ def load_dbs(path: str) -> TestData:
     See the module-level comment above for the binary layout. Returns the same ``TestData``
     shape as ``load_csv``: a synthetic ``"DateTime"`` column (the file carries no wall-clock
     time, only elapsed samples) plus one float64 column per channel.
+
+    Defensive truncation of trailing padding records: some Fracpro exports pre-allocate a
+    fixed-size record buffer sized for a planned recording duration and save the file before
+    that buffer is fully written. The header's ``n_samples`` still reports the full
+    pre-allocated count, but the never-written trailing records are zero-filled padding
+    (``idx == 0`` repeated for every one of them, though not necessarily every channel float in
+    those records -- garbage-looking non-zero values have been seen there too, so detection
+    relies only on ``idx``, never on the channel floats). This is not a malicious or vanishingly
+    rare case, just something this reverse-engineered parser has to tolerate: `expected_size ==
+    len(data)` can't catch it, since the file's on-disk size genuinely matches
+    ``data_offset + n_samples * record_size`` -- the padding is *within* the declared record
+    count. A real recorder's ``idx`` is a monotonic sample counter that can legitimately skip
+    values (a dropped/missed sample), but a genuine mid-file counter can also *jitter* -- repeat
+    or double-count a step and then self-correct with a compensating skip a sample or two later
+    (e.g. ``..., 28, 29, 30, 30, 32, 33, ...``) -- without the file being corrupted at all; the
+    counter still reaches a proper terminal value by the last record. So detection can't just
+    stop at the first non-forward step (that truncates real data out of otherwise-good files).
+    Instead this scans *backward* from the last record: padding is a run of non-forward-progress
+    that never recovers before EOF, while jitter always resumes forward progress before EOF. The
+    scan walks back while ``idx[i] <= idx[i-1]`` and stops at the first (from-the-end) genuine
+    forward step; everything after that position is the corrupted trailing suffix and is dropped
+    (from ``rec``, and therefore from ``t_s`` and every per-channel column) before the caller
+    ever sees it. Without this, ``t_s`` for those padding rows would collapse to time zero
+    (derived from ``idx``, not array position) and pollute every plot and computation that reads
+    ``td.t_s``/columns unfiltered. On a well-formed file (including one with ordinary mid-file
+    jitter) this is a complete no-op. When truncation happens, a one-line note is appended to the
+    returned ``TestData``'s ``load_warnings`` (folded into the analyst-visible warnings panel by
+    ``model.compute_all``); a clean file leaves ``load_warnings`` empty.
+
+    Two known, accepted edge cases (neither seen in the real corpus this was checked against,
+    every observed padding run is a constant ``idx == 0``): a file whose very last real record
+    happens to be an ordinary jitter repeat loses that one sample and reports it as padding --
+    ambiguous by construction, since a single trailing repeat can't be told apart from a
+    genuine one-record padding tail, but harmless (one sample, not a cascading truncation).
+    And padding held at some constant value ABOVE the last genuine ``idx`` (rather than 0 or
+    anything below it) would have its first padding record misread as one more genuine forward
+    step and kept as a single spurious sample -- the scan only catches a run that fails to make
+    forward progress, not one that jumps to an implausible value.
     """
     with open(path, "rb") as f:
         data = f.read()
@@ -761,6 +804,27 @@ def load_dbs(path: str) -> TestData:
     dtype = np.dtype([("idx", "<u4")] + [(f"c{i}", "<f4") for i in range(n_channels)])
     rec = np.frombuffer(data, dtype=dtype, count=n_samples, offset=data_offset)
 
+    # Detect and drop a trailing corrupted/padding suffix by scanning backward from the last
+    # record (see the docstring above): a repeat/drop that never recovers before EOF is padding,
+    # while one that resumes forward progress before EOF is just ordinary counter jitter and
+    # must be left alone. This is a no-op whenever the last record is part of a run that made
+    # genuine forward progress into it.
+    load_warnings: list[str] = []
+    idx_i64 = rec["idx"].astype(np.int64)
+    if idx_i64.size > 1:
+        i = idx_i64.size - 1
+        while i > 0 and idx_i64[i] <= idx_i64[i - 1]:
+            i -= 1
+        valid_n = i + 1
+        if valid_n < idx_i64.size:
+            dropped = idx_i64.size - valid_n
+            load_warnings.append(
+                f"{dropped} of {n_samples} declared sample(s) after sample number {valid_n} "
+                "did not show the sample index continuing to advance and look like unrecorded "
+                "padding (a preallocated recording buffer not fully written); dropped."
+            )
+            rec = rec[:valid_n]
+
     t_s = rec["idx"].astype(np.float64) * float(interval_min) * 60.0
 
     dt_col = "DateTime"
@@ -769,7 +833,8 @@ def load_dbs(path: str) -> TestData:
         cols[name] = rec[f"c{i}"].astype(np.float64)
     df = pd.DataFrame(cols)
 
-    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns))
+    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns),
+                     load_warnings=load_warnings)
 
 
 def load(path: str) -> TestData:

@@ -51,6 +51,7 @@ def resample_pressure_increment(
     rise_tol: float | None = None,
     sustain_s: float = RISE_GUARD_SUSTAIN_S,
     sustain_samples: int = RISE_GUARD_SUSTAIN_SAMPLES,
+    stop_at_guard: bool = True,
 ) -> Resampled:
     """Keep a point each time BHP has dropped >= ``step`` psi below the last kept point.
 
@@ -68,6 +69,25 @@ def resample_pressure_increment(
     ``guarded_at`` is the count of points already kept at that moment -- both stay ``None`` unless
     a run actually satisfies both conditions before the record ends. Samples inside a candidate
     run are neither kept nor allowed to lower ``running_min``.
+
+    ``stop_at_guard`` (default True) is what a fired guard does next: True stops resampling
+    outright (the historic behavior -- everything past ``guard_dt`` is simply never consumed).
+    False keeps going instead, exactly like an ordinary run that dips back below tolerance on
+    its own: the run resets and every later sample is evaluated by the same plain
+    running_min/step rule, still relative to the ORIGINAL (never reset, never frozen)
+    running_min. This needs no special re-anchoring, because a rising excursion never satisfies
+    the ordinary keep rule (``pi <= last_kept - step``) in the first place -- rejecting it as
+    part of a guard run and rejecting it via the ordinary rule are the same outcome. If the
+    excursion is later followed by a genuine further decline below the true historical minimum,
+    that decline is picked up completely normally, with no monotonicity issue, since only
+    genuinely new lows are ever kept. If the excursion never comes back down, no further points
+    are kept past ``guard_dt`` in either mode -- mathematically honest, since there is no new
+    information to resample there, not a gap to paper over with a fake point. In either mode,
+    ``guard_dt``/``guarded_at`` are recorded once, from the FIRST run that satisfies both sustain
+    conditions -- a later qualifying excursion (evaluated only when ``stop_at_guard=False``)
+    never overwrites them. Callers that want the guard-excluded region masked out of the
+    *result* (rather than never resampled at all) pass False here and mask afterward -- see
+    ``model.compute_all``'s ``resampled_full`` and ``interpret.resolve_tail_cut_dt``.
     """
     dt = np.asarray(dt, dtype=float)
     p = np.asarray(p, dtype=float)
@@ -102,19 +122,32 @@ def resample_pressure_increment(
             continue
         if pi > running_min + rise_tol:
             # Above tolerance: extend the current run, or start a new one. Either way this
-            # sample is excluded from keep_p/running_min -- it can't satisfy either condition.
+            # sample is excluded from keep_p/running_min -- it can't satisfy either condition,
+            # the same as the ordinary keep rule would reject it anyway.
             if run_start_dt is None:
                 run_start_dt = float(dt[i])
                 run_start_guarded_at = len(keep_p)
                 run_count = 1
             else:
                 run_count += 1
-                if dt[i] - run_start_dt >= sustain_s and run_count >= sustain_samples:
+                if (guard_dt is None and dt[i] - run_start_dt >= sustain_s
+                        and run_count >= sustain_samples):
+                    # First (and only) qualifying fire -- guard_dt is None is belt-and-suspenders
+                    # against a later run re-firing.
                     guard_dt = run_start_dt
                     guarded_at = run_start_guarded_at
-                    break
+                    if stop_at_guard:
+                        break
+                    # Reset the run and keep going exactly like an ordinary run that dips back
+                    # below tolerance on its own -- running_min/last_kept are left untouched
+                    # (never reset, never frozen), so a genuine further decline below the true
+                    # historical minimum is still picked up by the ordinary rule below, and a
+                    # rise that never comes back down correctly earns no further kept points.
+                    run_start_dt = None
+                    run_count = 0
             continue
-        # At or below tolerance: reset any in-progress run and fall through to normal processing.
+        # At or below tolerance: reset any in-progress run and fall through to normal
+        # processing.
         run_start_dt = None
         run_count = 0
         running_min = min(running_min, pi)
@@ -130,6 +163,325 @@ def resample_pressure_increment(
         guarded_at=guarded_at,
         guard_dt=guard_dt,
     )
+
+
+# Momentary near-zero pressure dropout detection (see ../CLAUDE.md's "Pressure dropouts"
+# section). A brief gauge dropout -- pressure reads ~0 for a few seconds, then returns --
+# otherwise pins resample_pressure_increment's running_min at the dip and fires the rise guard
+# on the recovery, starving every downstream diagnostic. DROPOUT_MAX_S/DROPOUT_LEADIN_MATCH_PSI
+# are guardrails found by the corpus stress test (see the plan's "Corpus evidence" section), not
+# first-principles constants.
+DROPOUT_FLOOR_FRAC = 0.10       # onset: sample falls to <= 10% of the pre-dip level
+DROPOUT_MIN_REF_PSI = 100.0     # onset only when the pre-dip level is above this -- without this
+                                # guard, noise on an already-dead channel re-triggers onset
+                                # endlessly (22 million pseudo-events in the corpus scan).
+DROPOUT_MAX_S = 600.0           # hard cap: a dip longer than this is never "momentary"
+DROPOUT_LEADIN_MATCH_PSI = 150.0  # lead-in accepted only when the level just before it is
+                                   # within this of the recovery level
+
+
+@dataclass
+class Dropout:
+    """One masked momentary near-zero pressure dropout. ``dt_start``/``dt_end``/``n_samples``/
+    ``p_min`` describe the dip run itself (the samples from onset through the last one before
+    recovery) -- not the lead-in extension, if one was also masked ahead of it (see
+    ``detect_dropouts``)."""
+    dt_start: float
+    dt_end: float
+    n_samples: int
+    p_min: float
+
+
+def detect_dropouts(
+    dt: np.ndarray,
+    p: np.ndarray,
+    floor_frac: float = DROPOUT_FLOOR_FRAC,
+    min_ref: float = DROPOUT_MIN_REF_PSI,
+    recover_tol: float = RISE_GUARD_PSI,
+    sustain_s: float = RISE_GUARD_SUSTAIN_S,
+    sustain_samples: int = RISE_GUARD_SUSTAIN_SAMPLES,
+    max_s: float = DROPOUT_MAX_S,
+    leadin_match: float = DROPOUT_LEADIN_MATCH_PSI,
+) -> tuple[np.ndarray, list[Dropout]]:
+    """Detect and mask momentary near-zero pressure dropouts in a post-shut-in record.
+
+    ``dt``/``p`` are the raw post-shut-in samples (dt >= 0, increasing), on whatever channel the
+    caller passes -- ``model.compute_all`` calls this on the raw mapped pressure channel, before
+    any hydrostatic offset, so "near zero" means near zero on the gauge. Returns a bool mask
+    aligned with ``p`` (True = masked) and the list of ``Dropout`` records found.
+
+    Algorithm (finite samples only -- a non-finite sample is skipped, never part of a decision):
+    1. ``ref`` is the most recent finite, unmasked sample value.
+    2. Onset at sample i when ``ref > min_ref`` and ``p[i] <= floor_frac * ref``.
+    3. The dip run is every sample from i onward that has not yet recovered, i.e.
+       ``p < ref - recover_tol`` -- a single threshold off the ORIGINAL pre-dip ref throughout,
+       not a separate "still near zero" band: on the motivating Encore record the recovery passes
+       through an intermediate ramp sample, and a band-based run would end there without ever
+       counting as recovered.
+    4. Recovery is the first sample with ``p >= ref - recover_tol``. No recovery before the
+       record ends -> not a dropout (a crash that never recovers is the low-pressure tail trim's
+       job, not this detector's) -- scanning stops there, since there's nothing left to look at.
+    5. Momentary = recovered AND NOT sustained AND duration < ``max_s``, where sustained =
+       ``duration >= sustain_s AND count >= sustain_samples`` (the rise guard's own definition,
+       counting the run's first sample) and duration = ``dt[last dip] - dt[onset]``. Only
+       momentary dips are masked.
+    6. Lead-in extension: ``R`` = median of the first 5 finite samples at/after recovery. Walk
+       backward from onset-1 while ``p < R - recover_tol``, at most ``sustain_s`` before onset.
+       The walked samples are masked only if the walk stopped on its own (didn't hit the time
+       cap) at a sample within ``leadin_match`` of ``R`` -- otherwise only the dip itself is
+       masked. This is what lets a slow pre-dip slide toward zero (not yet a dip on its own) get
+       swept in, while a real step change that happens to straddle a one-sample glitch (a long
+       plateau at a level nowhere near the recovery) does not.
+    7. Continue scanning after recovery; ``ref`` resets from that unmasked (recovered) sample.
+
+    Most records have no dropout at all, and even a record that does have one spends the vast
+    majority of its length outside any dip -- so the scan itself jumps straight between the
+    vectorized pre-check's candidate onset positions (``_dropout_candidates``) instead of
+    stepping sample by sample there; see ``_dropout_scan_candidates`` for why that's exact, not
+    approximate. Only the dip-interior recovery scan and lead-in walk still step sample by
+    sample, since both are bounded by the event itself (a handful to a few hundred samples), not
+    by the whole record.
+    """
+    dt = np.asarray(dt, dtype=float)
+    p = np.asarray(p, dtype=float)
+    n = len(p)
+    candidate_idx, candidate_ref = _dropout_candidates(p, floor_frac, min_ref)
+    if not len(candidate_idx):
+        return np.zeros(n, dtype=bool), []
+    return _dropout_scan_candidates(dt, p, candidate_idx, candidate_ref, recover_tol, sustain_s,
+                                    sustain_samples, max_s, leadin_match)
+
+
+def _dropout_candidates(
+    p: np.ndarray, floor_frac: float, min_ref: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Every position ``_dropout_scan_candidates`` needs to check for onset, computed in one
+    vectorized pass, plus the ``ref`` each one is checked against.
+
+    Onset is only ever checked outside an active dip run (a dip's own interior samples are
+    compared only against the frozen pre-dip ``ref``, never re-checked for a fresh onset), and
+    outside a dip, ``ref`` -- "the most recent finite, unmasked sample value" -- is always
+    exactly the immediately preceding FINITE sample: it is set from the previous iteration's
+    plain per-sample branch, or reset to the recovered sample right after a dip resolves, with
+    intervening non-finite samples skipped without updating it. So every position where onset
+    could possibly fire is one of the consecutive pairs in the finite-only subsequence of ``p``,
+    with ``ref`` = that pair's earlier element -- this is exact (not merely a necessary
+    condition), because a candidate's ``ref`` never needs to be re-derived from anything other
+    than ``p`` itself: even immediately after a dip resolves, the reset ``ref`` (the recovered
+    sample) IS that sample's immediately-preceding-finite-sample relationship to whatever comes
+    next, so it already appears correctly in this same global computation. A candidate landing
+    inside a dip that a still-earlier candidate already resolved is simply never reached by the
+    scan (it jumps straight past the whole resolved range) -- see ``_dropout_scan_candidates``.
+
+    Returns ``(candidate_idx, candidate_ref)`` in increasing order of index, both empty if there
+    is no possible onset anywhere in ``p``.
+    """
+    finite_idx = np.flatnonzero(np.isfinite(p))
+    if finite_idx.size < 2:
+        return np.empty(0, dtype=finite_idx.dtype), np.empty(0, dtype=float)
+    vals = p[finite_idx]
+    prev, cur = vals[:-1], vals[1:]
+    hit = (prev > min_ref) & (cur <= floor_frac * prev)
+    return finite_idx[1:][hit], prev[hit]
+
+
+def _dropout_onset_possible(p: np.ndarray, floor_frac: float, min_ref: float) -> bool:
+    """Whether ``_dropout_candidates`` finds any possible onset at all -- kept as its own
+    function since it reads more directly than checking ``len(...) > 0`` at call sites (and a
+    test pins it directly)."""
+    return len(_dropout_candidates(p, floor_frac, min_ref)[0]) > 0
+
+
+def _dropout_scan_candidates(
+    dt: np.ndarray,
+    p: np.ndarray,
+    candidate_idx: np.ndarray,
+    candidate_ref: np.ndarray,
+    recover_tol: float,
+    sustain_s: float,
+    sustain_samples: int,
+    max_s: float,
+    leadin_match: float,
+) -> tuple[np.ndarray, list[Dropout]]:
+    """The real scan: jump directly between ``candidate_idx`` positions instead of stepping
+    sample by sample outside a dip -- see ``detect_dropouts``/``_dropout_candidates`` for why
+    this is exact. The in-dip recovery scan and lead-in walk are untouched from the original
+    per-sample loop (``_dropout_scan_loop``, kept as a reference implementation for tests):
+    both are bounded by the event, not by the whole record, so there is nothing to jump between
+    there.
+
+    After a dip resolves at ``recovered_at``, every candidate with index ``<= recovered_at`` is
+    skipped outright (``np.searchsorted(..., side="right")``) -- some of those candidates may sit
+    inside the dip's own interior with a ``ref`` attributed by the global pass above that would
+    be wrong if it were ever used (a dip's true, frozen ``ref`` is the PRE-dip level, not each
+    interior sample's own predecessor) -- but it never is: the scan only ever reads a candidate's
+    ``ref`` once, at the moment it becomes the current onset, and any candidate inside an
+    already-resolved dip is never visited at all.
+    """
+    n = len(p)
+    mask = np.zeros(n, dtype=bool)
+    events: list[Dropout] = []
+
+    pos = 0
+    n_cand = len(candidate_idx)
+    while pos < n_cand:
+        onset = int(candidate_idx[pos])
+        ref = float(candidate_ref[pos])
+        last_dip = onset
+        p_min = float(p[onset])
+        count = 1
+        recovered_at: int | None = None
+        j = onset + 1
+        while j < n:
+            pj = p[j]
+            if not np.isfinite(pj):
+                j += 1
+                continue
+            if pj >= ref - recover_tol:
+                recovered_at = j
+                break
+            last_dip = j
+            p_min = min(p_min, pj)
+            count += 1
+            j += 1
+        if recovered_at is None:
+            # Never recovers before the record ends -- a crash, not a dropout. Nothing left to
+            # scan (matches _dropout_scan_loop: no later candidate can start a fresh dip once the
+            # record itself has run out).
+            break
+        duration = float(dt[last_dip] - dt[onset])
+        sustained = duration >= sustain_s and count >= sustain_samples
+        momentary = (not sustained) and duration < max_s
+        if momentary:
+            leadin_lo = onset
+            rec_vals: list[float] = []
+            k = recovered_at
+            while k < n and len(rec_vals) < 5:
+                if np.isfinite(p[k]):
+                    rec_vals.append(float(p[k]))
+                k += 1
+            R = float(np.median(rec_vals)) if rec_vals else ref
+            s = onset - 1
+            stop_idx: int | None = None
+            hit_cap = False
+            while s >= 0:
+                if dt[onset] - dt[s] > sustain_s:
+                    hit_cap = True
+                    break
+                ps = p[s]
+                if not np.isfinite(ps):
+                    s -= 1
+                    continue
+                if ps < R - recover_tol:
+                    s -= 1
+                    continue
+                stop_idx = s
+                break
+            if (not hit_cap and stop_idx is not None
+                    and abs(p[stop_idx] - R) <= leadin_match):
+                leadin_lo = stop_idx + 1
+            mask[leadin_lo:last_dip + 1] = True
+            events.append(Dropout(dt_start=float(dt[onset]), dt_end=float(dt[last_dip]),
+                                   n_samples=count, p_min=float(p_min)))
+        # Skip every remaining candidate at/before recovered_at -- ref resets from the unmasked
+        # (recovered) sample there either way, matching _dropout_scan_loop's ``i = recovered_at
+        # + 1``.
+        pos = int(np.searchsorted(candidate_idx, recovered_at, side="right"))
+    return mask, events
+
+
+def _dropout_scan_loop(
+    dt: np.ndarray,
+    p: np.ndarray,
+    floor_frac: float,
+    min_ref: float,
+    recover_tol: float,
+    sustain_s: float,
+    sustain_samples: int,
+    max_s: float,
+    leadin_match: float,
+) -> tuple[np.ndarray, list[Dropout]]:
+    """Reference implementation: the original, unoptimized per-sample scan -- see
+    ``detect_dropouts`` for the algorithm. No longer called by ``detect_dropouts`` itself
+    (``_dropout_scan_candidates`` is, for performance -- a record with a real dropout otherwise
+    still pays the full per-sample cost outside the dip, which is most of the record); kept only
+    so tests can fuzz it against the fast path for agreement."""
+    n = len(p)
+    mask = np.zeros(n, dtype=bool)
+    events: list[Dropout] = []
+
+    ref: float | None = None
+    i = 0
+    while i < n:
+        pi = p[i]
+        if not np.isfinite(pi):
+            i += 1
+            continue
+        if ref is not None and ref > min_ref and pi <= floor_frac * ref:
+            onset = i
+            last_dip = onset
+            p_min = pi
+            count = 1
+            recovered_at: int | None = None
+            j = onset + 1
+            while j < n:
+                pj = p[j]
+                if not np.isfinite(pj):
+                    j += 1
+                    continue
+                if pj >= ref - recover_tol:
+                    recovered_at = j
+                    break
+                last_dip = j
+                p_min = min(p_min, pj)
+                count += 1
+                j += 1
+            if recovered_at is None:
+                # Never recovers before the record ends -- a crash, not a dropout. Nothing left
+                # to scan.
+                break
+            duration = float(dt[last_dip] - dt[onset])
+            sustained = duration >= sustain_s and count >= sustain_samples
+            momentary = (not sustained) and duration < max_s
+            if momentary:
+                leadin_lo = onset
+                rec_vals: list[float] = []
+                k = recovered_at
+                while k < n and len(rec_vals) < 5:
+                    if np.isfinite(p[k]):
+                        rec_vals.append(float(p[k]))
+                    k += 1
+                R = float(np.median(rec_vals)) if rec_vals else ref
+                s = onset - 1
+                stop_idx: int | None = None
+                hit_cap = False
+                while s >= 0:
+                    if dt[onset] - dt[s] > sustain_s:
+                        hit_cap = True
+                        break
+                    ps = p[s]
+                    if not np.isfinite(ps):
+                        s -= 1
+                        continue
+                    if ps < R - recover_tol:
+                        s -= 1
+                        continue
+                    stop_idx = s
+                    break
+                if (not hit_cap and stop_idx is not None
+                        and abs(p[stop_idx] - R) <= leadin_match):
+                    leadin_lo = stop_idx + 1
+                mask[leadin_lo:last_dip + 1] = True
+                events.append(Dropout(dt_start=float(dt[onset]), dt_end=float(dt[last_dip]),
+                                       n_samples=count, p_min=float(p_min)))
+            # Continue scanning after recovery either way -- ref resets from the unmasked
+            # (recovered) sample, whether or not this run turned out to be momentary.
+            ref = float(p[recovered_at])
+            i = recovered_at + 1
+            continue
+        ref = pi
+        i += 1
+    return mask, events
 
 
 @dataclass

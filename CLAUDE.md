@@ -325,9 +325,10 @@ no reported identity.
 **Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
 ≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense
 early and sparse late, which stabilizes the numerical derivatives. It replaces time-domain
-smoothing. A tail guard stops resampling once the pressure sustains a rise above its running
-minimum (non-monotonic late data) for long enough, and in enough samples, to rule out noise --
-see Tail trim below for the exact thresholds.
+smoothing. A tail guard flags a default cutoff once the pressure sustains a rise above its
+running minimum (non-monotonic late data) for long enough, and in enough samples, to rule out
+noise -- see Tail trim below for the exact thresholds and how an explicit override can move
+the cutoff past it.
 
 **No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
 the detection threshold), `picks.seed_injection` seeds the start/shut-in vlines from the
@@ -355,8 +356,13 @@ the sample-count floor matters at coarse (>= 60 s) sample spacing, where duratio
 already be satisfied by the run's second sample), so a brief water-hammer rebound or noise
 spike no longer trips it. A non-finite sample mid-run resets the run rather than being skipped
 through it -- continuity can't be confirmed across a dropout, so two excursions separated by
-missing data can't bridge into a false fire. When the guard does fire, the excluded raw tail is
-drawn as a faint gray preview (capped at 2x the kept G-range) on the G-function plot alongside a
+missing data can't bridge into a false fire. `guard_dt`/`guarded_at` are pinned to the FIRST run
+that satisfies both sustain conditions -- a second, later qualifying excursion further out in the
+same record never overwrites them, regardless of `stop_at_guard` (below). When the guard does
+fire, the excluded raw tail is drawn as a faint gray preview capped at 2x the G-range that was
+actually kept BEFORE the guard fired (the last `resampled_full` sample strictly before `guard_dt`,
+not the whole record -- `stop_at_guard=False`, below, can extend real kept samples well past
+`guard_dt`, which would otherwise loosen this cap considerably) on the G-function plot alongside a
 warning inserted at the front of `DerivedResults.warnings` (not appended), so it stays the topmost
 line in the right panel's stacked warning display (under the Notes box, one warning per line,
 wrapped -- `ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A
@@ -371,8 +377,9 @@ earliest of the rise-guard boundary (`res.resampled_full.guard_dt`) or the first
 sample where surface pressure drops below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`; skipped
 when the mapped channel is already BHP, where a sub-100-psi test is meaningless), tie going to
 the rise guard. A rise-guard boundary sets **no pick at all** (`PickState.tail_trim_dt` stays
-`None`) -- the resampler already excluded that data (`resample.py`'s own `break`), so only the
-rendered line position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
+`None`) -- the guard boundary is already the effective cutoff by default
+(`interpret.resolve_tail_cut_dt`, below, with no trim in state), so only the rendered line
+position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
 does snap to the last full-resample sample **strictly before** the cut (`searchsorted` with
 `side="left"`, not `"right"`, and not `picks._nearest`) and sets `PickState.tail_trim_reason =
 "low_pressure"` (logged to `tail_trim_reason`, appended after `tail_trim_s` in `LOG_COLUMNS`).
@@ -394,20 +401,48 @@ line parked at the end of the data, nothing trimmed. The seeder is non-destructi
 trim, e.g. from a reloaded save, is left alone).
 
 Dragging the line (`DragLineController`, gid `"tail_trim"`, in time-domain hours, its own private
-gate since nothing else is draggable on that axes) snaps to the nearest full-resample sample
-(`picks._nearest` against `DerivedResults.resampled_full.dt`) and commits `PickState.tail_trim_dt`
+gate since nothing else is draggable on that axes) commits `PickState.tail_trim_dt`
 (shut-in-relative seconds, `None` = no trim) via `picks.commit_tail_trim`, which always resets
 `tail_trim_reason` to `""` -- a manual drag or clear overrides whatever auto-attribution put the
-trim where it was. `compute_all` resamples the full post-shut-in record, keeps it on
-`DerivedResults.resampled_full`/`G_full`, then masks to `dt <= tail_trim_dt` before computing
-diagnostics -- so the trim propagates to every downstream value (effective ISIP, Shmin, log-log,
-pore pressure) with no other plumbing. Whenever `tail_trim_dt` is set, `compute_all` also emits an
+trim where it was. `compute_all` resamples the full post-shut-in record via
+`resample.resample_pressure_increment(..., stop_at_guard=False)`, so `DerivedResults.resampled_full`/
+`G_full` always span the whole record regardless of whether the rise guard fired -- `stop_at_guard`
+(default `True`, preserving the historic hard-stop for `tests/test_rise_guard.py`'s direct-call
+tests and any other caller that still wants the old "guard ends the record" behavior) still
+detects `guard_dt`/`guarded_at` from the FIRST run that satisfies both sustain conditions, pinned
+there for good (see above) regardless of which mode is active. What `False` changes is what
+happens at the moment of firing: instead of breaking, the run simply resets (exactly like an
+ordinary run that dips back below tolerance on its own) and resampling continues, still relative
+to the ORIGINAL running minimum -- never reset, never frozen at a fresh anchor. This needs no
+special re-anchoring logic, because a rising excursion never satisfies the ordinary keep rule
+(`pi <= last_kept - step`) in the first place: rejecting it as part of a guard run and rejecting
+it via the ordinary rule are the same outcome. If a genuine further decline resumes later
+(relative to the TRUE historical minimum), it gets picked up completely normally, with no
+monotonicity issue -- every kept point, before and after the guard, is still by construction a
+genuine new low. If the rise never comes back down at all (a stuck sensor or an ongoing leak, the
+common real shape), `resampled_full` correctly keeps ZERO additional points past `guard_dt` --
+mathematically honest, since there is no new information to resample there, not a bug to paper
+over with a fake anchor point. (An earlier version of this feature tried exactly that -- appending
+the confirming sample as a fresh anchor and resetting `running_min`/`last_kept` to it -- but that
+both failed to fix the "never comes back" case in the one place that mattered, the anchor still
+sat at `dt_full[-1]` in the UI's drag-commit closure, and broke the resampler's monotonicity
+invariant for every OTHER caller by admitting a point that was, by definition, above the running
+minimum. It was reverted.) `compute_all` then masks to the cutoff returned by
+`interpret.resolve_tail_cut_dt(state.tail_trim_dt, guard_dt, state.tail_guard_override)` before
+computing diagnostics (see below) -- so the trim propagates to every downstream value (effective
+ISIP, Shmin, log-log, pore pressure) with no other plumbing. Whenever `tail_trim_dt` is set, `compute_all` also emits an
 explanatory warning (`insert(0)`, same front-of-stack treatment as the guard warning) so an
 auto-applied trim is never silent: for `"low_pressure"`, `"Tail auto-trimmed ... surface pressure
 crashes below 100 psi shortly after this point. Drag the Overview trim line to the right edge to
 undo."` -- worded to point at the crash beginning just past the cut, not at the cut itself, since
 by construction of the `side="left"` snap the trim dt is a sample where pressure is still ABOVE
-the floor; else `"Tail trimmed ... (N raw samples excluded)"` for a manual trim. This matters
+the floor -- with an appended clause, `" Doing so also overrides the tail guard, which fires
+further into the tail, extending the cutoff to the end of the record."`, whenever
+`resampled_full.guard_dt` is also set for this record (a guard existing at all here necessarily
+fires later than this low-pressure cut, per `suggest_tail_trim_dt`'s earliest-wins rule), so
+"drag to the right edge" doesn't read as a plain undo when it also overrides a fired guard; else
+`"Tail trimmed ... (N raw samples excluded)"` for a manual trim (see the override-related
+exception to that message in "Overriding the guard" below). This matters
 because the seeded trim usually *clears* the separate "Surface pressure fell below 100 psi"
 warning below (its mask is narrowed by `tail_trim_dt`) -- without this line an auto-applied trim
 would otherwise report nothing having changed.
@@ -425,16 +460,89 @@ a `""` reason means no trim or the analyst's own manual pick, neither of which r
 touches -- otherwise it clears the stale pick and re-runs `seed_tail_trim` against the new window,
 which correctly sets no trim at all if the new window turns out to have no crash.
 
+**Overriding the guard (`PickState.tail_guard_override`, `interpret.resolve_tail_cut_dt`).**
+`resampled_full` spans the whole record (`stop_at_guard=False`, above) whenever a genuine further
+decline resumes after the guard fires, but on the shape that actually matters most -- a tail that
+never comes back down at all -- it correctly keeps nothing new past `guard_dt`, so there may be no
+resampled sample there to snap to at all. The override therefore lives in `ui.py`'s Overview
+drag-commit closure (`_attach_controllers`), not in the resampler: when the drag target is at or
+before `guard_dt` (or there's no guard), it snaps to the nearest full-resample sample among only
+those at/before `guard_dt` (`picks._nearest` against `DerivedResults.resampled_full.dt` masked to
+`<= guard_dt` when a guard exists) -- restricted, not the bare unmasked array, because
+`resampled_full` can now carry points PAST `guard_dt` too (`stop_at_guard=False`), and an
+unmasked nearest search can pick one of those whenever it happens to sit numerically closer to
+the drag target than any pre-guard sample (a sparse pre-guard decline next to a denser post-guard
+one), silently setting `tail_guard_override` even though the analyst never dragged past the
+guard. Masking first reproduces exactly the kept-point set `stop_at_guard=True` would have
+produced, so this branch is provably equivalent to the tool's pre-override behavior. When the drag
+target is PAST `guard_dt`, it instead snaps against the RAW post-shut-in samples
+(`self.td.t_s` from shut-in onward) -- resolvable unconditionally regardless of whether the
+resampler found any new points past the guard, since a raw sample always exists to snap to even
+when `resampled_full` doesn't. That said, "resolvable" is not "meaningful": the override always
+changes the DISPLAY (the gray-out boundary, and which of the two guard-related warnings shows,
+below) but only changes the actual `res.resampled`/`res.diagnostics` numbers -- and therefore
+Shmin/effective ISIP/pore pressure -- when the resampler genuinely had something new to offer
+past the guard, i.e. the tail later resumes a decline below its pre-guard historical minimum. On
+a permanently-elevated or still-rising tail (the "never comes back" shape below), dragging past
+the guard moves the line and the gray-out but leaves every reported number exactly as the
+guard-clamped default, and `compute_all` says so explicitly (see the warning-suppression
+paragraph further down). Critically, the raw-snap branch never clears the trim to `None`, even when the drag lands
+on the raw record's very last sample -- it always sets an explicit `tail_trim_dt` there instead
+(functionally "include everything," since nothing exists past it to exclude), because clearing to
+`None` would fall back through `resolve_tail_cut_dt` to `guard_dt` again, defeating the whole
+point of the override. This is the actual bug fix: previously (an earlier, reverted version of
+this feature) a drag past a permanently-elevated guard had nothing to snap to, clamped to the last
+resampled index, hit the "released at/past the end -> clear the trim" branch, and the line snapped
+right back to `guard_dt` on the next render no matter where the analyst dropped it.
+
+A set `tail_trim_dt` sitting past `guard_dt` is still ambiguous on its own -- it's either that
+deliberate drag, or a stale auto-trim left behind by a shut-in move before
+`resync_auto_tail_trim` ran (above). `picks.commit_tail_trim` takes an optional `guard_dt` param
+(one existing call site omits it -- `seed_tail_trim`'s own commit, since a seeded trim is never
+past the guard by construction; `ui.py`'s Overview drag handler is the other call site, and it
+always passes `res.resampled_full.guard_dt`) and sets `state.tail_guard_override = tail_trim_dt
+is not None and guard_dt is not None and tail_trim_dt > guard_dt` every time it runs, so a later
+commit that no longer lands past the guard clears a stale `True` back to `False`.
+`interpret.resolve_tail_cut_dt(tail_trim_dt, guard_dt, override)` is the single place both
+`compute_all`'s masking and `render_overview`'s display cut resolve this: no trim set ->
+`guard_dt` (or `None`); a trim at/before the guard (or no guard at all) -> the trim, unchanged; a
+trim past the guard -> the trim, unchanged, only when `override` is `True`, else clamped back to
+`guard_dt`. `store.LOG_COLUMNS`/`build_log_row` log the flag too, as `tail_guard_override`,
+tail-appended at the very end of `LOG_COLUMNS` (not adjacent to `tail_trim_s`/`tail_trim_reason`,
+which sit earlier in the column order, per the append-only convention).
+`compute_all` resolves this cutoff once and reuses it for the masking above and for one more
+thing: the "Tail guard stopped resampling ... later data excluded" warning fires in its original
+form only while the guard is still actually binding, i.e. the resolved cutoff is `<= guard_dt`
+(the no-override default, and a stale trim that got clamped back). Once an override lets the
+trim stick past `guard_dt`, `compute_all` checks whether that override actually admitted new
+resampled points there (`np.any((rs_full.dt > guard_dt) & (rs_full.dt <= cutoff))`) before
+deciding what to say instead of this warning -- it is never just silently dropped:
+  - **Data genuinely admitted** (a real further decline resumes past the guard): the original
+    warning is suppressed outright. The separate "Tail trimmed ... " warning (from the
+    `tail_trim_dt is not None` block below) already reports the real, later cutoff, and showing
+    both at once would contradict each other.
+  - **Nothing admitted** (the "never comes back" shape -- `resampled_full` keeps zero points past
+    `guard_dt` no matter how far past it the override reaches): the original warning is replaced
+    with a distinct, honest one -- `"Tail-guard override requested past N min, but the resampler
+    found no further usable data there (the tail never resumes a decline) -- Shmin/effective
+    ISIP/pore pressure still reflect the guard's original cutoff at M min."` The ordinary "Tail
+    trimmed ... (0 raw samples excluded)" message is also suppressed in this specific case (it
+    would otherwise sit right next to the honest warning and read as a confusing, near-
+    contradictory pair claiming both "nothing changed" and "0 excluded" about the same cut) --
+    everything the plain message would have said is already covered by the honest one.
+
 `plots.render_overview`'s `show_trim` kwarg is now `interactive` (default `True`, meaning "this is
 the live canvas, not an export" rather than "the analyst toggled the tool on"); `render_step_figure`
 passes `interactive=False` for `"overview"` (mirroring the `step_key == "gfunction"` special
 cases), so an exported PNG never carries a line the analyst can't actually drag. The effective
-display cut is the EARLIER of `state.tail_trim_dt` and `res.resampled_full.guard_dt` when both are
-set, else whichever one is -- both live in shut-in-relative dt, so a stale trim left behind by a
-shut-in move (before a resync runs, or for any other caller that builds `res` without going
-through the Injection wiring) can sit PAST the guard; taking `tail_trim_dt` alone (the old "a set
-pick is always <= guard_dt, no `min()` needed" reasoning) would then render the guard-excluded
-region as kept, the opposite of this feature's purpose, so `min()` is required, not optional. The
+display cut is `interpret.resolve_tail_cut_dt(state.tail_trim_dt, res.resampled_full.guard_dt,
+state.tail_guard_override)` -- both `tail_trim_dt` and `guard_dt` live in shut-in-relative dt, so a
+stale trim left behind by a shut-in move (before a resync runs, or for any other caller that builds
+`res` without going through the Injection wiring) can sit PAST the guard; taking `tail_trim_dt`
+alone (the old "a set pick is always <= guard_dt, no clamp needed" reasoning) would then render the
+guard-excluded region as kept, the opposite of this feature's purpose, so the clamp-back-to-`guard_dt`
+is required whenever `tail_guard_override` isn't set -- and skipped, on purpose, when it is, so a
+deliberate drag past the guard actually sticks. The
 Overview renderer grays out the raw trace past that cut (`gid="tail_excluded"`) whenever it's not
 `None`, which is what makes a **guard-excluded** tail finally visible on Overview too --
 previously only the G-function plot's own `guard_excluded` preview showed it there; the
@@ -459,17 +567,102 @@ which can swing the Axes' own autoscale to extreme psi) -- otherwise `_make_rang
 slider touch, losing the 0 baseline.
 
 Warnings: WHP below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler
-actually consumed post-shut-in data -- up to where its own rise guard stopped it
-(`resample.Resampled.guard_dt`), further narrowed by a trim if one is set, deliberately *not*
+actually consumed post-shut-in data -- up to the rise guard's own cutoff
+(`resample.Resampled.guard_dt`), unless an override is actively extending past it (see
+"Overriding the guard" below, which this scan's window also respects), further narrowed by a
+trim if one is set, deliberately *not*
 bounded by the last resampled point kept (which can sit up to one `resample_step` above the true
 minimum and so miss a crash just past it) -- flags BHP as unreliable there (only when the mapped
-channel is surface pressure). A stale-pick warning (gated on a trim actually being set) covers two
+channel is surface pressure). The `guard_dt` bound is itself skipped when an active
+`tail_guard_override` has actually extended the effective cutoff past it (reusing the same
+`cutoff > guard_dt` check `compute_all` already made for the guard-warning logic above, not
+re-derived) -- otherwise a sub-100-psi crash the override genuinely admits into the diagnostics
+would never get its own warning just because it sits past `guard_dt`; the `tail_trim_dt` bound
+still narrows the scan by the explicit trim either way. A stale-pick warning (gated on a trim actually being set) covers two
 distinct failure modes: the G-function picks (contact, min-dP/dG, closure) left beyond the trim
 would otherwise silently interp-clamp to the trimmed edge, while a pore-pressure window affected
 by the trim gets the same warning by outcome -- a finite upper bound beyond the trimmed edge just
 shrinks its fit (still returns a value), and a window with fewer than 2 surviving samples empties
 it and blanks `pore_pressure` outright (an open-ended upper bound shrinks benignly with the trim
 and is exempt from the shrunk check) -- so neither failure mode goes silent.
+
+**Pressure dropouts.** A brief gauge dropout -- pressure reads near zero for a few seconds, then
+returns -- otherwise poisons everything downstream of it: it pins `resample_pressure_increment`'s
+`running_min` at the dip (nothing later is ever `RISE_GUARD_PSI` below that, so resampling stops
+dead there) and the recovery itself fires the rise guard. `resample.detect_dropouts(dt, p)` finds
+and masks these automatically, no per-test toggle, on the raw mapped pressure channel (before any
+hydrostatic offset, so "near zero" means near zero on the gauge, not on a converted BHP) --
+`model.compute_all` runs it once `res.t_shutin_s` is known, before the resample block, and stores
+the result on `DerivedResults.dropout_mask` (bool, full length over `td` samples, `False` before
+shut-in) and `DerivedResults.dropouts` (a `resample.Dropout(dt_start, dt_end, n_samples, p_min)`
+per event, describing the dip run itself, not any lead-in extension). Every consumer of raw
+post-shut-in pressure applies the mask by treating a masked sample as missing (NaN) --
+`res.bhp_all` itself is never mutated. Onset is a sample falling to <=
+`resample.DROPOUT_FLOOR_FRAC` (10%) of the most recent finite, unmasked level, gated on that level
+being above `resample.DROPOUT_MIN_REF_PSI` (100 psi) -- without that gate, noise on an
+already-dead channel re-triggers onset endlessly. The dip run is masked only if it recovers
+(returns to within `RISE_GUARD_PSI` of the pre-dip level) before the record ends and the recovery
+is "momentary": not sustained by the rise guard's own definition (`>= RISE_GUARD_SUSTAIN_S` AND
+`>= RISE_GUARD_SUSTAIN_SAMPLES`) and under `resample.DROPOUT_MAX_S` (10 min) total duration -- a
+crash that never recovers is the low-pressure tail trim's job, not this detector's, and a
+genuinely sustained dip (a dead channel, a real quiet period) is left alone. A lead-in extension
+(a slide toward zero just before onset, seen on the motivating Encore record) is walked backward
+from onset and masked too, but only when the walk stops on its own -- within `RISE_GUARD_SUSTAIN_S`
+of onset, at a level within `resample.DROPOUT_LEADIN_MATCH_PSI` (150 psi) of the recovery level --
+so a real step change that happens to straddle a one-sample glitch (a long plateau at a level
+nowhere near the recovery) masks only the glitch, not the plateau. `detect_dropouts` is inherently
+sequential state (not vectorizable outright), but it spends almost all of its length outside any
+dip even on a record that DOES have one, so `resample._dropout_candidates(p, floor_frac, min_ref)`
+computes every possible onset position -- and the `ref` each one is checked against -- in one
+vectorized pass over consecutive pairs in the finite-only subsequence of `p`, and
+`resample._dropout_scan_candidates` jumps directly between them instead of stepping sample by
+sample there. This is exact, not approximate: outside an active dip (the only place onset is ever
+checked -- a dip's own interior samples are compared only against the frozen pre-dip `ref`, never
+re-checked for a fresh onset), `ref` is always exactly the immediately preceding finite sample --
+including right after a dip resolves, where it resets to the recovered sample, which is already
+that relationship in the same global computation -- so every position the scan would ever need to
+examine is one of these candidates, with the correct `ref` already attached. A candidate that
+happens to sit inside a dip a still-earlier candidate already resolved is simply never reached: the
+scan skips straight past the whole resolved range (`np.searchsorted` against the sorted candidate
+list). Only the in-dip recovery scan and the lead-in walk still step sample by sample -- both are
+bounded by the event (a handful to a few hundred samples), not by the whole record. On Encore's
+1.2M post-shut-in samples this drops `detect_dropouts` from ~0.7 s (the original per-sample loop,
+which used to run in full even once a dropout was found) to roughly the vectorized pre-check's own
+cost. The original per-sample loop (`resample._dropout_scan_loop`) is kept as a reference
+implementation, called only by a test that fuzzes it against the candidate-jump path over
+thousands of randomized series. Consumers: the resample block
+masks `res.bhp_all` to NaN before calling `resample_pressure_increment` (already handles NaN --
+skipped, resets any rise run -- no resampler change needed) and reuses that same masked array for
+the guard-excluded preview; the low-surface-pressure scan excludes masked samples from its window
+(`m &= ~res.dropout_mask`) so a masked glitch never fires "Surface pressure fell below 100 psi";
+and `picks.seed_tail_trim` masks `p_surface_post` to NaN before calling
+`interpret.suggest_tail_trim_dt` (which already ignores non-finite samples) so a dropout never
+triggers the `"low_pressure"` auto-trim. A firing detector is never silent: `compute_all`
+`insert(0)`s one warning line -- on the motivating Encore record, `"Pressure dropout masked at 11
+min after shut-in (23 samples, 22 s, to 12 psi) -- treated as a gauge glitch"` -- or, for several
+events, `"3 pressure dropouts masked (first at 11 min after shut-in) -- treated as gauge
+glitches"` -- silent when there are none. Both the minute and (single-event) duration figures are
+gated on their FORMATTED (rounded) value, not the raw number, so what's checked always matches
+what's printed: `"at 0 min"` reads as "no time elapsed at all" and is misleading for anything in
+the first ~30 s, so it becomes `"at <1 min"` instead when `f"{dt_start/60:.0f}"` rounds to `"0"`;
+likewise the single-event duration clause is dropped entirely (not printed as the useless `"0
+s"`) when `f"{duration:.0f}"` rounds to `"0"` -- true for an exact-zero single-sample dip
+(`dt_end == dt_start`) and for a sub-0.5 s multi-sample one on a sub-1-Hz channel alike. The
+single-event line also grammar-checks the common case: `"1 sample"` not `"1 samples"` for a
+single-sample glitch -- e.g. `"Pressure dropout masked at <1 min after shut-in (1 sample, to 15
+psi) -- treated as a gauge glitch"`.
+`plots._split_dropouts(p, mask)` splits a trace into `(p_clean, p_masked)` (NaN in the
+other array); `render_overview`/`render_isip` plot `p_clean` as the main trace (so the line breaks
+across a masked gap instead of spiking to it) and `p_masked`'s finite samples as small magenta
+markers (`gid="dropout_masked"`, label "masked dropout") -- undecimated, since the handful of
+masked samples in a 10^5+-point record would almost certainly fall between the main trace's
+decimation stride and never get drawn. The markers are plotted with `scalex=False, scaley=False`
+and the Axes' `dataLim` is snapshotted before and restored after, so a masked sample's real value
+(a -9999 psi sentinel, or Encore's ~12 psi) never pulls the autoscaled view -- or anything else
+that reads `ax.get_ylim()`/`dataLim` afterward, e.g. the ISIP step's default view or the Overview
+y-slider's full range -- down to it; the marker is still a real plotted artist at its true (and
+possibly off-screen) position, just excluded from the bounding box. Exported PNGs
+(`render_step_figure`) get this automatically, since it isn't gated on `interactive`.
 
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 
@@ -742,3 +935,39 @@ ambiguity, not fixed.
   the stiffness Shmin genuinely doesn't exist for those saves yet, so `"in_progress"` is the
   accurate status, not a bug -- and `infer_step_status` can't backfill it, since that function
   only runs when the loaded `step_status` is empty, not when it's merely missing one key.
+- The G-function plot's `guard_excluded` gray preview (`model.compute_all`'s `res.guard_excluded_G`/
+  `guard_excluded_p`) is unaware of `tail_guard_override`: it still previews the full raw tail past
+  `guard_dt` even after an override has extended real, kept data into that same span. Cosmetic
+  overlap only -- the preview and the real (ungrayed) resampled curve can occupy the same G-range --
+  not a data-correctness issue, since `res.resampled`/`res.diagnostics` are correct either way.
+- A second, unrelated excursion occurring AFTER the first guard fire (while `stop_at_guard=False`
+  keeps resampling) is never separately detected or warned about -- only the first excursion gets
+  `guard_dt`/`guarded_at` and a warning; `resample_pressure_increment` never re-arms the fire check
+  once `guard_dt` is set. Accepted as a low-severity gap, not a correctness issue: the second
+  excursion's own samples still correctly never get kept, by the ordinary resampling rule (a
+  rising sample never satisfies `pi <= last_kept - step`), they just get no dedicated
+  metadata/warning of their own.
+- The apparent-ISIP tangent fit (`interpret.tangent_from_index`, ±5 samples) and the ISIP anchor
+  snapping still read raw `res.bhp_all` -- neither one consults `dropout_mask`. An anchor placed
+  within 5 samples of a masked dropout gets a corrupted fit.
+- `resample.detect_dropouts` only masks a dip that falls all the way to `DROPOUT_FLOOR_FRAC` (10%)
+  of the pre-dip level; a partial dip that doesn't reach the floor is never masked, by design (see
+  "Pressure dropouts" above) -- it isn't distinguishable from a real, if abrupt, decline.
+- Dropouts are only detected after shut-in (`model.compute_all` runs `detect_dropouts` on the
+  post-`t_shutin_s` record only); a dropout during injection is not masked anywhere.
+- A chronically flaky channel is masked one event at a time, each independently -- there is no
+  single warning that says "this channel is unreliable." The event count in the "N pressure
+  dropouts masked" warning is the only signal that the channel itself, not just one moment, is
+  the problem.
+- Detection runs on the mapped pressure channel only (`state.pressure_col`, whatever the analyst
+  or the auto-suggestion chose). The auto-suggested channel can itself be wrong -- e.g. a
+  secondary gauge that reads ~0 for most of the falloff -- and `detect_dropouts` has no way to
+  tell that apart from a real signal; that's a separate channel-suggestion issue, not handled
+  here.
+- `plots._plot_dropout_markers`'s autoscale protection (see "Pressure dropouts" above) snapshots
+  `ax.dataLim` before plotting the markers and restores it after -- it does not make the markers
+  permanently invisible to `dataLim`, only to that one `plot()` call's own autoscale request. Any
+  FUTURE call that recomputes `dataLim` from scratch (`ax.relim()`, or `ax.autoscale_view()` after
+  `relim()`) would walk every artist on the Axes, including the markers, and pull them back into
+  the bounding box. No current code path does this on these two renderers' Axes, but it's a latent
+  trap for a future change that adds one.
