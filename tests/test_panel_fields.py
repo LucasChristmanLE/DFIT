@@ -269,3 +269,25 @@ def test_update_panel_shmin_compliance_grad_asterisk_clears_on_second_refresh():
                               shmin_compliance_gradient=0.92, shmin_rapid_gradient=None)
     stub._update_panel()
     assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
+
+
+def test_format_warnings_text_empty():
+    assert ui.format_warnings_text([], expanded=False) == ""
+    assert ui.format_warnings_text([], expanded=True) == ""
+
+
+def test_format_warnings_text_collapsed_singular():
+    assert ui.format_warnings_text(["Tail auto-trimmed."], expanded=False) == (
+        "1 warning (click to expand)")
+
+
+def test_format_warnings_text_collapsed_plural():
+    warnings = ["Tail auto-trimmed.", "Pressure dropout masked."]
+    assert ui.format_warnings_text(warnings, expanded=False) == (
+        "2 warnings (click to expand)")
+
+
+def test_format_warnings_text_expanded_shows_full_list():
+    warnings = ["Tail auto-trimmed.", "Pressure dropout masked."]
+    assert ui.format_warnings_text(warnings, expanded=True) == (
+        "2 warnings (click to collapse)\nTail auto-trimmed.\nPressure dropout masked.")

@@ -211,6 +211,20 @@ def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
     return anchor_x_min * 60.0 + t_shutin_s, slope_per_min / 60.0
 
 
+def format_warnings_text(warnings: list[str], expanded: bool) -> str:
+    """Render the pick panel's warnings label text. Collapsed (the default after every
+    recompute -- see ``DfitApp._update_panel``) shows just a count, so a long warning list can
+    never crowd the closure/postclosure scenario controls above it out of view. Expanded shows
+    the full list, same text the label always carried before this feature existed."""
+    if not warnings:
+        return ""
+    n = len(warnings)
+    noun = "warning" if n == 1 else "warnings"
+    if not expanded:
+        return f"{n} {noun} (click to expand)"
+    return f"{n} {noun} (click to collapse)\n" + "\n".join(warnings)
+
+
 class DfitApp:
     def __init__(self, root: tk.Tk, path: str | None = None):
         self.root = root
