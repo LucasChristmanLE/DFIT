@@ -298,8 +298,8 @@ Per-test deliverables:
   one of the eight source values being non-None so a freshly-opened test with no picks yet
   stays quiet. It deliberately coexists with the separate "Surface pressure selected but
   density/TVD not set" warning (`compute_all`) rather than being suppressed by it — that one is
-  about BHP reliability, this one is about the gradients not being reported, and the panel
-  stacks warnings one per line.
+  about BHP reliability, this one is about the gradients not being reported, and both land in
+  the same collapsed warnings count (see the Tail trim section below for the display itself).
 
 **Net pressure** = shared reference ISIP − Shmin. All three methods (compliance, tangent,
 variable) subtract their own Shmin from one shared reference ISIP: the compliance effective
@@ -363,9 +363,12 @@ fire, the excluded raw tail is drawn as a faint gray preview capped at 2x the G-
 actually kept BEFORE the guard fired (the last `resampled_full` sample strictly before `guard_dt`,
 not the whole record -- `stop_at_guard=False`, below, can extend real kept samples well past
 `guard_dt`, which would otherwise loosen this cap considerably) on the G-function plot alongside a
-warning inserted at the front of `DerivedResults.warnings` (not appended), so it stays the topmost
-line in the right panel's stacked warning display (under the Notes box, one warning per line,
-wrapped -- `ui.py`'s `warn_lbl`) rather than getting buried below an earlier-queued warning. A
+warning inserted at the front of `DerivedResults.warnings` (not appended), so it's the first line
+if the analyst expands the list -- `ui.py`'s `warn_lbl` (under the Notes box) collapses the whole
+warnings list to a one-line count by default (`"N warnings (click to expand)"`,
+`ui.format_warnings_text`), expanding in place on click (`DfitApp._toggle_warnings`) and
+re-collapsing on the next recompute -- rather than getting buried below an earlier-queued warning
+once expanded. A
 monotone crash to ~0 psi (gauge pulled, well opened) still sails through the guard untouched and
 pollutes the derivatives -- the Overview step's tail-trim line is the defense against that.
 
