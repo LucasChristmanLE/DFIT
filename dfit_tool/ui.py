@@ -414,6 +414,8 @@ class DfitApp:
         self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
+        self._warnings_list: list[str] = []
+        self._warnings_expanded: bool = False
 
         # Panel is now a resizable pane (sash-draggable), so wraplength must track its actual
         # width instead of a value pinned to the old fixed width=320.
@@ -1811,7 +1813,10 @@ class DfitApp:
                            and r.net_pressure_isip_source == "tangent")
         self.name_lbls["NWB complexity"].config(
             text="NWB complexity*" if (use_tangent_ref and gf_visited) else "NWB complexity")
-        self.warn_lbl.config(text="\n".join(r.warnings) if r.warnings else "")
+        self._warnings_list = list(r.warnings)
+        self._warnings_expanded = False
+        self.warn_lbl.config(text=format_warnings_text(self._warnings_list, False),
+                             cursor="hand2" if self._warnings_list else "")
 
     def _update_unit_labels(self):
         """Gray "(detected unit)" hint beside each of the three unit dropdowns, from

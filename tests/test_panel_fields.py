@@ -170,6 +170,29 @@ def test_update_panel_shmin_liberty_blanks_when_gfunction_not_visited():
     assert stub.value_lbls["Shmin Liberty"].text == "-"
 
 
+def test_update_panel_collapses_warnings_by_default():
+    res = DerivedResults(warnings=["Tail auto-trimmed.", "Pressure dropout masked."])
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+
+    stub._update_panel()
+
+    assert stub.warn_lbl.text == "2 warnings (click to expand)"
+    assert stub._warnings_expanded is False
+    assert stub._warnings_list == ["Tail auto-trimmed.", "Pressure dropout masked."]
+
+
+def test_update_panel_blanks_warnings_label_when_clean():
+    res = DerivedResults(warnings=[])
+    state = PickState(step_status={"gfunction": "done"})
+    stub = _panel_stub(res, state)
+
+    stub._update_panel()
+
+    assert stub.warn_lbl.text == ""
+    assert stub._warnings_list == []
+
+
 # --------------------------------------------------------------------------------------------------
 # Gradient rows: "apparent ISIP grad", "Shmin compliance grad", "pore pressure grad" -- each
 # inline directly under its parent row.
