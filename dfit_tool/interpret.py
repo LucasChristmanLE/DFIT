@@ -26,6 +26,15 @@ MIN_SURFACE_PRESSURE_PSI = 100.0  # below this, the hydrostatic BHP conversion i
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
+CLOSURE_TANGENT_TOL_FRAC = 0.05  # suggest_closure_tangent: departure tolerance as a fraction of
+                                 # the tangent line's value at each sample.
+CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hump must stand at
+                                       # least this fraction of its own height above the higher
+                                       # of its two flanking bases to be eligible as the tangent
+                                       # anchor -- rejects a small noise-driven local max past the
+                                       # real hump, which would otherwise win on G*dP/dG alone.
+INJECTION_MIN_RUN_FRAC = 0.10  # suggest_injection_window: a rate-on run smaller than this
+                               # fraction of the largest run's size is dropped as a pulse/blip.
 
 
 # --------------------------------------------------------------------------------------------------
@@ -50,30 +59,45 @@ def suggest_injection_window(
 ) -> tuple[int, int]:
     """Best-guess (start, shutin) for the *main* injection when a file has many cycles.
 
-    A DFIT export often contains breakdown pulses, step-rate cycles, and the main injection. When a
-    cumulative-volume channel is available, the main injection is taken to be the contiguous
-    rate-on cycle with the largest volume gain; its start and end bound the window. Falls back to
-    the whole first->last rate-on span otherwise. This is only a default -- the interpreter picks
-    the true window interactively.
+    A DFIT export often contains breakdown pulses, step-rate cycles, and the main injection, and
+    the record can also carry a trailing post-shut-in rate blip (e.g. a gauge pull or bleed-off
+    that nudges the rate channel briefly above ``threshold``). The rate-on mask (a non-finite
+    sample counts as "not above threshold") is split into contiguous runs; each run is sized by
+    its volume gain (``volume`` at one-past-its-last-active-sample minus ``volume`` at its first
+    sample) when ``volume`` is given and every run's gain is finite and positive, else every run
+    is sized by the sum of ``rate`` over it (one basis for all runs, never mixed). Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
+    -- this is what rejects both an early breakdown pulse and a trailing blip, since either is
+    tiny next to the main injection. The window is the *last* surviving run: start is its first
+    sample, shut-in is one past its last sample (clamped to ``len(rate) - 1``). This is only a
+    default -- the interpreter drags the lines to the true window.
+
+    Raises ``ValueError`` when the rate never exceeds ``threshold`` at all.
     """
     rate = np.asarray(rate, dtype=float)
     active = rate > threshold
-    if not active.any():
+    active_idx = np.flatnonzero(active)
+    if active_idx.size == 0:
         raise ValueError("Rate never exceeds threshold; cannot auto-detect injection window")
-    edges = np.diff(active.astype(int))
-    starts = np.where(edges == 1)[0] + 1
-    ends = np.where(edges == -1)[0] + 1
-    if active[0]:
-        starts = np.r_[0, starts]
-    if active[-1]:
-        ends = np.r_[ends, len(active) - 1]
+    gaps = np.where(np.diff(active_idx) > 1)[0]
+    run_first = np.r_[0, gaps + 1]
+    run_last = np.r_[gaps, active_idx.size - 1]
+    runs = [(int(active_idx[a]), int(active_idx[b])) for a, b in zip(run_first, run_last)]
 
-    if volume is not None and len(starts):
+    # One sizing basis for every run: volume gain only when every run's gain is finite and
+    # positive (a NaN cell, a dead/flat channel, or a counter reset would otherwise put runs on
+    # different scales or tie them all at 0), else summed rate for all.
+    sizes = None
+    if volume is not None:
         v = np.asarray(volume, dtype=float)
-        gains = [v[e] - v[s] for s, e in zip(starts, ends)]
-        k = int(np.argmax(gains))
-        return int(starts[k]), int(ends[k])
-    return int(starts[0]), int(ends[-1])
+        gains = np.array([v[min(e + 1, len(rate) - 1)] - v[s] for s, e in runs])
+        if np.all(np.isfinite(gains)) and np.all(gains > 0):
+            sizes = gains
+    if sizes is None:
+        sizes = np.array([float(np.sum(rate[s:e + 1])) for s, e in runs])
+
+    keep = np.where(sizes >= INJECTION_MIN_RUN_FRAC * sizes.max())[0]
+    start, last = runs[int(keep[-1])]
+    return start, min(last + 1, len(rate) - 1)
 
 
 def suggest_injection_window_pressure(p: np.ndarray) -> tuple[int, int]:
@@ -513,30 +537,163 @@ def suggest_contact_inflection_index(
     return int(candidates[np.argmax(d2[candidates])])
 
 
-def suggest_closure_tangent(
-    G: np.ndarray, GdPdG: np.ndarray, tol_frac: float = 0.10
-) -> tuple[float, int]:
-    """Through-origin line fit to the early G*dP/dG data and the departure point.
+def _prominent_hump_index(
+    G: np.ndarray, dPdG: np.ndarray, min_prominence: float = CLOSURE_TANGENT_MIN_PROMINENCE
+) -> Optional[int]:
+    """Like ``suggest_hump_index``, but restricted to interior local maxima whose *relative
+    topographic prominence* is at least ``min_prominence`` -- a private helper for
+    ``suggest_closure_tangent`` only; ``suggest_hump_index`` itself (the contact seed) is
+    untouched.
 
-    Fits slope m (through the origin) to the near-linear early segment, then walks outward and flags
-    the first index where G*dP/dG departs the line by more than ``tol_frac`` of the line value. That
-    index is the suggested closure. Returns (slope, departure_index).
+    Past the real dP/dG hump, G*dP/dG keeps climbing even as dP/dG itself decays (as long as it
+    decays slower than 1/G), so a small, noise-driven local max well past the hump can still
+    have a larger G*dP/dG product than the genuine hump and win ``suggest_hump_index``'s ranking
+    outright. Prominence rejects those: for a candidate at index ``i``, the left base is the
+    lowest finite ``dPdG`` value between ``i`` and the nearest finite sample to its left that
+    exceeds ``dPdG[i]`` (or the array start); the right base mirrors that to the right. Relative
+    prominence is ``(dPdG[i] - max(left_base, right_base)) / dPdG[i]`` -- how far the candidate
+    stands above the higher of its two flanking valleys, as a fraction of its own height. A
+    shallow bump sitting on the shoulder of the real hump's decay has a low prominence and is
+    dropped; the genuine hump, rising off a much lower flanking minimum, is not. Non-finite
+    samples are skipped when walking to each base (a dropout doesn't count as a flank).
+
+    Ranks the surviving candidates by ``G * dPdG`` exactly as ``suggest_hump_index`` does.
+    Returns ``None`` when no interior local max exists at all, or none survives the prominence
+    filter.
+    """
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    n = len(y)
+    finite = np.isfinite(y)
+    interior = np.zeros(n, dtype=bool)
+    if n >= 3:
+        finite3 = finite[:-2] & finite[1:-1] & finite[2:]
+        local_max = (y[1:-1] > y[:-2]) & (y[1:-1] >= y[2:])
+        interior[1:-1] = finite3 & local_max
+    candidates = np.where(interior)[0]
+    if candidates.size == 0:
+        return None
+
+    survivors = []
+    for i in candidates:
+        left_base = np.inf
+        j = i - 1
+        while j >= 0:
+            yj = y[j]
+            if np.isfinite(yj):
+                if yj > y[i]:
+                    break
+                left_base = min(left_base, yj)
+            j -= 1
+        right_base = np.inf
+        j = i + 1
+        while j < n:
+            yj = y[j]
+            if np.isfinite(yj):
+                if yj > y[i]:
+                    break
+                right_base = min(right_base, yj)
+            j += 1
+        base = max(left_base, right_base)
+        prominence = (y[i] - base) / y[i] if np.isfinite(base) and y[i] > 0 else 0.0
+        if prominence >= min_prominence:
+            survivors.append(int(i))
+    if not survivors:
+        return None
+    survivors_arr = np.array(survivors)
+    return int(survivors_arr[np.argmax(G[survivors_arr] * y[survivors_arr])])
+
+
+def suggest_closure_tangent(
+    G: np.ndarray, GdPdG: np.ndarray, tol_frac: float = CLOSURE_TANGENT_TOL_FRAC, g_min: float = 1.0
+) -> tuple[float, int]:
+    """Through-origin tangent line to G*dP/dG, and the closure (departure) point.
+
+    A line through the origin is tangent to G*dP/dG where d(G*dP/dG / G)/dG = 0, i.e. at a local
+    extremum of dP/dG = G*dP/dG / G. This anchors the tangent at the dP/dG "hump" instead of
+    fitting the early samples directly, because the resampled grid is densest across the early
+    water-hammer spike (G -> 0) and a raw early-segment fit is dominated by it.
+
+    ``dPdG`` is computed from the inputs (``GdPdG / G`` for finite ``G > 0``, NaN elsewhere) and
+    masked to NaN below ``g_min`` -- the same water-hammer-rejection convention
+    ``suggest_min_dpdg_index``/``suggest_contact_inflection_index`` use -- so the spike can never
+    be mistaken for the hump. The tangent index is ``_prominent_hump_index``'s pick: the interior
+    local max of that masked ``dPdG`` with the largest ``G * dPdG``, among those with relative
+    prominence >= ``CLOSURE_TANGENT_MIN_PROMINENCE`` (rejecting a small noise-driven local max
+    past the real hump, which the raw ``G * dPdG`` ranking alone would prefer). Slope is ``dPdG``
+    at that index.
+
+    Falls back to the through-origin least-squares fit over the first third of the ``G >= g_min``
+    samples when no candidate survives (e.g. a classic monotonic dP/dG decline with no hump at
+    all). Falls back further to the unmasked first-third-of-all-samples segment when that masked
+    segment has fewer than 2 finite, positive-``G`` samples (e.g. a very short record, or one
+    entirely below ``g_min``).
+
+    Closure: walking forward from the tangent index (fallback: from the last index of the fit
+    segment), returns the last index with ``line > 0`` and ``|G*dP/dG - line| <= tol_frac *
+    line`` before the first departure -- a non-finite sample is skipped rather than counted as a
+    departure, but does not extend the in-tolerance run either. This is deliberately the *first*
+    contiguous in-tolerance run: a later re-crossing of the line (e.g. a rising tail) is never
+    picked up. If the walk's own start index is itself out of tolerance (or non-finite, with
+    nothing later ever in tolerance), the walk's start index is returned anyway -- it is never
+    treated as "in tolerance" internally, but it is the closest thing to a closure this data
+    offers. Returns ``n - 1`` if the curve never departs. Returns ``(nan, n - 1)`` if the slope
+    could not be determined at all.
     """
     G = np.asarray(G, dtype=float)
     y = np.asarray(GdPdG, dtype=float)
     n = len(G)
-    # Use the first ~30% of points (past the very first) to define the through-origin slope.
-    lo, hi = max(1, n // 20), max(2, n // 3)
-    seg_G, seg_y = G[lo:hi], y[lo:hi]
-    good = np.isfinite(seg_G) & np.isfinite(seg_y) & (seg_G > 0)
-    if good.sum() < 2:
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dPdG = np.where((G > 0) & np.isfinite(G), y / G, np.nan)
+    dPdG = np.where(np.isfinite(G) & (G >= g_min), dPdG, np.nan)
+
+    tangent_idx = _prominent_hump_index(G, dPdG)
+
+    if tangent_idx is not None:
+        slope = float(dPdG[tangent_idx])
+        walk_start = tangent_idx
+    else:
+        mask_gmin = np.isfinite(G) & (G >= g_min)
+        idxs = np.where(mask_gmin)[0]
+        seg_idx = None
+        if idxs.size:
+            m = idxs.size
+            lo, hi = max(1, m // 20), max(2, m // 3)
+            candidate_seg = idxs[lo:hi]
+            good = np.isfinite(G[candidate_seg]) & np.isfinite(y[candidate_seg]) & (G[candidate_seg] > 0)
+            if good.sum() >= 2:
+                seg_idx = candidate_seg
+        if seg_idx is None:
+            lo, hi = max(1, n // 20), max(2, n // 3)
+            hi = min(hi, n)
+            lo = min(lo, hi)
+            seg_idx = np.arange(lo, hi)
+        seg_G, seg_y = G[seg_idx], y[seg_idx]
+        good = np.isfinite(seg_G) & np.isfinite(seg_y) & (seg_G > 0)
+        if good.sum() < 2:
+            return float("nan"), n - 1
+        gg, yy = seg_G[good], seg_y[good]
+        slope = float(np.sum(gg * yy) / np.sum(gg ** 2))  # through-origin LS
+        walk_start = int(seg_idx[-1]) if seg_idx.size else n - 1
+
+    if not np.isfinite(slope):
         return float("nan"), n - 1
-    slope = float(np.sum(seg_G[good] * seg_y[good]) / np.sum(seg_G[good] ** 2))  # through-origin LS
+
     line = slope * G
-    for i in range(hi, n):
-        if line[i] > 0 and abs(y[i] - line[i]) > tol_frac * line[i]:
-            return slope, i
-    return slope, n - 1
+    last_good = None
+    for i in range(walk_start, n):
+        yi = y[i]
+        if not np.isfinite(yi):
+            continue  # a dropout is skipped, not treated as a departure
+        li = line[i]
+        if li > 0 and abs(yi - li) <= tol_frac * li:
+            last_good = i
+        else:
+            break
+    if last_good is None:
+        last_good = walk_start
+    return slope, last_good
 
 
 def loglog_slope(t: np.ndarray, dp: np.ndarray, i0: int, i1: int) -> float:

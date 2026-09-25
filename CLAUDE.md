@@ -210,7 +210,18 @@ Per-test deliverables:
   (FracPro-style construction; a manual pick on the isip step).
 - **Effective ISIP** — the P-vs-G straight line extrapolated to G = 0.
 - **Shmin, compliance** — contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`).
-- **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point.
+- **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point. The
+  through-origin line's seed (`interpret.suggest_closure_tangent`, `picks.seed_tangent`)
+  anchors at an interior local max of dP/dG (G >= `g_min=1.0`, relative prominence >=
+  `CLOSURE_TANGENT_MIN_PROMINENCE`) with the largest G·dP/dG, rejecting both the early
+  water-hammer spike (masked below `g_min`) and a small noise-driven local max further out on
+  the curve (low prominence). Falls back to a through-origin least-squares fit over the first
+  third of the `G >= g_min` samples when no candidate survives (unmasked when that segment has
+  fewer than 2 finite, positive-`G` samples). Closure = the last sample within 5%
+  (`CLOSURE_TANGENT_TOL_FRAC`) of the line before the first departure, walking forward from the
+  tangent point -- a later re-crossing (e.g. a rising tail) is never picked up. The pick is a
+  plain `DraggablePointController`: only its seeded starting position comes from this rule, so
+  it stays fully draggable and a reload's saved pick is never overwritten.
 - **Shmin, variable** — BHP at the G-time midpoint of the contact and closure picks. This
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
   other two (Shmin, closure time, and net pressure each have compliance, tangent, and
@@ -327,7 +338,14 @@ draggable lines always exist. `picks.seed_overview` delegates to the same seeder
 Overview step's first visit, so the reference lines exist there too. `compute_all` sets
 `t_shutin_s` from the picks alone and, when the effective te (Vinj/qmax) is unavailable,
 falls back to te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj
-and qmax stay blank without rate; the Injection title shows only the pieces that exist.
+and qmax stay blank without rate; the Injection title shows only the pieces that exist. When a
+rate channel does exist, the rate-based seed (`interpret.suggest_injection_window`) splits the
+rate-on samples into contiguous runs, sizes them all by volume gain (or all by summed rate
+when there is no volume channel or any run's gain is non-finite or non-positive), drops any run smaller than
+`INJECTION_MIN_RUN_FRAC` (10%) of the largest run's size, and returns the last surviving run
+(start = its first sample, shut-in = one past its last). This skips both an earlier breakdown
+pulse or step-rate cycle and a trailing post-shut-in rate blip, landing on the main, sustained
+injection.
 
 **Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it
 fires when a run of samples stays continuously more than a fixed 30 psi

@@ -13,3 +13,6 @@ Copy of ResFrac DFIT Interpretation Template - August 2024.xlsx
 Well Locations/
 well_locations.xlsx
 DFIT Summary*/
+
+# Folder-mode master log (per-root output, holds well results)
+dfit_log.csv
