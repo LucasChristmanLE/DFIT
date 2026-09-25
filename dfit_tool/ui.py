@@ -416,6 +416,7 @@ class DfitApp:
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
         self._warnings_list: list[str] = []
         self._warnings_expanded: bool = False
+        self.warn_lbl.bind("<Button-1>", self._toggle_warnings)
 
         # Panel is now a resizable pane (sash-draggable), so wraplength must track its actual
         # width instead of a value pinned to the old fixed width=320.
@@ -1817,6 +1818,15 @@ class DfitApp:
         self._warnings_expanded = False
         self.warn_lbl.config(text=format_warnings_text(self._warnings_list, False),
                              cursor="hand2" if self._warnings_list else "")
+
+    def _toggle_warnings(self, event=None):
+        """Click handler for warn_lbl: flips the collapsed/expanded summary in place, no
+        recompute. No-ops on a click when there's nothing to show."""
+        if not self._warnings_list:
+            return
+        self._warnings_expanded = not self._warnings_expanded
+        self.warn_lbl.config(text=format_warnings_text(self._warnings_list,
+                                                        self._warnings_expanded))
 
     def _update_unit_labels(self):
         """Gray "(detected unit)" hint beside each of the three unit dropdowns, from

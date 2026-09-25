@@ -314,3 +314,34 @@ def test_format_warnings_text_expanded_shows_full_list():
     warnings = ["Tail auto-trimmed.", "Pressure dropout masked."]
     assert ui.format_warnings_text(warnings, expanded=True) == (
         "2 warnings (click to collapse)\nTail auto-trimmed.\nPressure dropout masked.")
+
+
+def _toggle_stub(warnings_list, expanded):
+    stub = types.SimpleNamespace()
+    stub.warn_lbl = _FakeLabel()
+    stub._warnings_list = warnings_list
+    stub._warnings_expanded = expanded
+    stub._toggle_warnings = types.MethodType(ui.DfitApp._toggle_warnings, stub)
+    return stub
+
+
+def test_toggle_warnings_expands_then_collapses():
+    stub = _toggle_stub(["A", "B"], expanded=False)
+
+    stub._toggle_warnings()
+    assert stub._warnings_expanded is True
+    assert stub.warn_lbl.text == "2 warnings (click to collapse)\nA\nB"
+
+    stub._toggle_warnings()
+    assert stub._warnings_expanded is False
+    assert stub.warn_lbl.text == "2 warnings (click to expand)"
+
+
+def test_toggle_warnings_noop_when_no_warnings():
+    stub = _toggle_stub([], expanded=False)
+    stub.warn_lbl.text = ""
+
+    stub._toggle_warnings()
+
+    assert stub._warnings_expanded is False
+    assert stub.warn_lbl.text == ""
