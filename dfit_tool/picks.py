@@ -194,7 +194,10 @@ class ModifierSpanController:
     def _on_press(self, event):
         if event.button != 1 or not _axes_contains_pixel(self.ax, event):
             return
-        if self.modifier not in (event.key or "").split("+"):
+        # event.key only reflects a modifier when the canvas had keyboard focus at key-press time;
+        # event.modifiers comes from the mouse event's own state, so it works on the first click.
+        held = set((event.key or "").split("+")) | set(getattr(event, "modifiers", None) or ())
+        if self.modifier not in held:
             return
         if self.guard():
             return

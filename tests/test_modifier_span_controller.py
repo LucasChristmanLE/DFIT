@@ -48,6 +48,21 @@ def test_shift_press_drag_release_fires_on_span_sorted_and_removes_patch():
     assert hi == pytest.approx(7.0, abs=0.05)
 
 
+def test_shift_via_event_modifiers_captures_without_canvas_focus():
+    # An unfocused Tk canvas never sees the Shift key_press, so event.key stays None; the
+    # mouse event's own modifier state (event.modifiers) must still arm the span.
+    fig, ax, canvas = _built_axes()
+    got = []
+    ctrl = picks.ModifierSpanController(canvas, ax, lambda lo, hi: got.append((lo, hi)))
+
+    px, py = ax.transData.transform((7.0, 5.0))
+    ctrl._on_press(MouseEvent("button_press_event", canvas, px, py, button=1,
+                              modifiers={"shift"}))
+    assert ctrl._press_x is not None
+    ctrl._on_release(_event("button_release_event", canvas, ax, 3.0))
+    assert len(got) == 1
+
+
 def test_plain_press_never_captures():
     fig, ax, canvas = _built_axes()
     got = []
