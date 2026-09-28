@@ -19,7 +19,9 @@ aggregation beyond that one log (no charts, no rollup stats). Permeability is ou
 
 The eight steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
 porepressure → stiffness. Overview shows the entire dataset, unclamped, and hosts the always-on
-tail-trim line; Injection is the zoomed injection-window view with the draggable start/shut-in
+tail-trim line; its y-axis is labeled "pressure (psi)", and when BHP is converted from surface
+pressure it also overlays the raw surface trace (`DerivedResults.p_surface_all`, set by
+`compute_all`) as a thin red line on the same axis; Injection is the zoomed injection-window view with the draggable start/shut-in
 lines and the te/Vinj/qmax title; stiffness is a semilog-y relative-stiffness-vs-effective-
 pressure plot (URTeC-2019-123 A.8/A.9) that needs the pore-pressure estimate, so it comes last
 and is skipped end to end under PC-F exactly like porepressure (`model.stiffness_skipped`).

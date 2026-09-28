@@ -323,6 +323,9 @@ class DerivedResults:
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
     bhp_all: Optional[np.ndarray] = field(default=None, repr=False)
     pressure_is_bhp: bool = field(default=False, repr=False)  # bhp_all holds true BHP, not surface
+    # Raw surface pressure, set only when bhp_all was converted from it hydrostatically
+    # (Overview overlays it on the BHP trace); None when the mapped channel is already BHP.
+    p_surface_all: Optional[np.ndarray] = field(default=None, repr=False)
     rate_all: Optional[np.ndarray] = field(default=None, repr=False)
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
     # Untrimmed counterparts of resampled/diagnostics.G, kept so the renderer can draw the
@@ -495,6 +498,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.warnings.append(f"BHP computation failed: {e}")
         res.bhp_all = td.pressure_surface(cfg)
         res.pressure_is_bhp = False
+    if res.pressure_is_bhp and not state.pressure_is_bhp:
+        res.p_surface_all = td.pressure_surface(cfg)
     if cfg.rate_col:
         res.rate_all = td.column(cfg.rate_col)
 

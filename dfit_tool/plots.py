@@ -197,6 +197,15 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     if excluded.any():
         xte, xpe = _decimate(t_h[excluded], p_clean[excluded])
         ax.plot(xte, xpe, color="0.75", lw=0.8, gid="tail_excluded")
+    # Converted-BHP record: overlay the raw surface pressure it came from, thin red, same axis.
+    ps = res.p_surface_all if res.pressure_is_bhp else None
+    if ps is not None:
+        ps_clean, _ = _split_dropouts(ps, res.dropout_mask)
+        xst, xsp = _decimate(t_h[kept], ps_clean[kept])
+        ax.plot(xst, xsp, color="tab:red", lw=0.5, label="surface pressure", gid="surface_pressure")
+        if excluded.any():
+            xste, xspe = _decimate(t_h[excluded], ps_clean[excluded])
+            ax.plot(xste, xspe, color="0.75", lw=0.5, gid="surface_tail_excluded")
     # Masked dropouts as their own markers, not decimated with the main trace -- a handful of
     # masked samples inside a record with 10^5+ points would almost certainly fall between the
     # main trace's decimation stride and never get drawn.
@@ -204,8 +213,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     _plot_dropout_markers(ax, t_h[masked_idx], p_masked[masked_idx])
 
     ax.set_xlabel("time from file start (h)")
-    ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
-    ax.tick_params(axis="y", labelcolor=press_color)
+    ax.set_ylabel("pressure (psi)")
     ax.grid(True, alpha=0.3)
 
     if res.rate_all is not None:
