@@ -257,7 +257,7 @@ def extract(path: str) -> FileFeatures:
         feat.sig = signature(path)
 
         td = io_load.load(path)
-        guess = io_load.suggest_channels(td.columns)
+        guess = io_load.suggest_channels(td.columns, column=td.column)
         pressure_col = guess.get("pressure")
         if not pressure_col:
             feat.verdict = "no_pressure"

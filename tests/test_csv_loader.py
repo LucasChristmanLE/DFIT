@@ -67,6 +67,338 @@ def test_suggest_channels_time_column_with_unit_suffix_still_matches():
     assert guess["time"] == "Time (s)"
 
 
+# --------------------------------------------------------------------------------------------------
+# pressure-channel ranking (header scan of 2,476 corpus files, see io_load._pressure_tier)
+# --------------------------------------------------------------------------------------------------
+def test_pressure_ranking_surf_beats_pump():
+    cols = ["DateTime", "Pump Press", "Surf Press [Csg]"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surf Press [Csg]"
+
+
+def test_pressure_ranking_surf_beats_add():
+    cols = ["DateTime", "Add Pressure Chan1", "Surf Press [Csg]"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surf Press [Csg]"
+
+
+def test_pressure_ranking_surface_beats_treating():
+    cols = ["DateTime", "Treating Pressure", "Surface Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surface Pressure"
+
+
+def test_pressure_ranking_treating_beats_generic():
+    cols = ["DateTime", "Pressure", "Treating Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Treating Pressure"
+
+
+def test_pressure_ranking_ann_demoted_below_tbg():
+    # "Surf Press [Ann]" carries the "ann" demote token alongside "surf" -- demotion overrides,
+    # so the [Tbg] column (no demote token) wins even though both are otherwise tier 0.
+    cols = ["DateTime", "Surf Press [Ann]", "Surf Press [Tbg]"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surf Press [Tbg]"
+
+
+def test_pressure_ranking_generic_beats_two_demoted_add_columns():
+    cols = ["DateTime", "Add Pressure Chan1", "Add Pressure Channel 2", "Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Pressure"
+
+
+def test_pressure_ranking_bottomhole_temp_not_picked_as_pressure():
+    # BUG fix: the old find("bhp", "bottom") substring rule matched "Bottomhole Temp" and picked
+    # a temperature channel as pressure. It must never be a candidate at all now.
+    cols = ["DateTime", "Bottomhole Temp", "Treating Pressure", "Surf Press [Csg]"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surf Press [Csg]"
+    assert guess["pressure_is_bhp"] is False
+
+
+def test_pressure_ranking_bhp_named_column_wins_outright():
+    cols = ["DateTime", "Surf Press [Csg]", "Bottomhole Press"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Bottomhole Press"
+    assert guess["pressure_is_bhp"] is True
+
+
+def test_pressure_ranking_bare_treating_and_surface_columns():
+    # Bare columns named exactly "Treating"/"Surface" (no "press"/"psi" substring) are still
+    # pressure candidates.
+    cols = ["Time Stamp", "Total Rate", "Treating", "Surface"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surface"
+
+
+def test_pressure_ranking_all_demoted_falls_back_to_column_order():
+    cols = ["DateTime", "Max PSI", "Average Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Max PSI"
+
+
+def test_pressure_ranking_channel_token_does_not_substring_match_ann():
+    # "Channel" contains the substring "ann" but must not token-match the "ann" demote rule.
+    cols = ["DateTime", "Pressure Channel 1", "Surf Press"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Surf Press"
+
+    cols2 = ["DateTime", "Pressure Channel 1"]
+    guess2 = io_load.suggest_channels(cols2)
+    assert guess2["pressure"] == "Pressure Channel 1"
+
+
+def test_pressure_ranking_no_candidates_is_none():
+    cols = ["DateTime", "Rate", "Volume"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] is None
+    assert guess["pressure_is_bhp"] is False
+
+
+def test_pressure_ranking_bhp_wins_even_when_demoted_by_calc():
+    # BUG fix: "Calc BHP" is the sole candidate and is demoted (tier 3, "calc"), so it never
+    # reaches the bhp-outright branch -- but pressure_is_bhp must still read True, since the
+    # chosen column IS named BHP. It no longer tracks which branch picked it.
+    cols = ["DateTime", "Calc BHP"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Calc BHP"
+    assert guess["pressure_is_bhp"] is True
+
+
+def test_pressure_ranking_bhp_prefix_token_wins_outright():
+    # "bhp" matches as a token PREFIX now, not just an exact token, so "BHP1" counts too.
+    cols = ["DateTime", "Surf Press", "BHP1"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "BHP1"
+    assert guess["pressure_is_bhp"] is True
+
+
+def test_pressure_ranking_btmh_no_longer_bhp_named():
+    # The "btmh" rule is removed: a Fracpro "Meas'd Btmh Press" export reads as a computed name,
+    # not a direct BHP label, so it ranks as generic (tier 2) and loses to Treating (tier 1).
+    cols = ["DateTime", "Meas'd Btmh Press", "Treating Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Treating Pressure"
+    assert guess["pressure_is_bhp"] is False
+
+
+def test_pressure_ranking_down_hole_not_demoted():
+    # "down" was removed from the demote list ("Down Hole Pressure" should not be demoted, only
+    # pump-down via "pump" is) -- both columns are tier 2, so column order decides.
+    cols = ["DateTime", "Down Hole Pressure", "Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Down Hole Pressure"
+
+
+def test_pressure_ranking_maximum_is_demoted():
+    cols = ["DateTime", "Maximum Pressure", "Pressure"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "Pressure"
+
+
+def test_pressure_ranking_whp_and_well_head_are_tier0():
+    # A "whp" token PREFIX (not just an exact token) counts, so "WHP1" qualifies; and "well" +
+    # "head" as two adjacent tokens (from a space) is recognized as wellhead too.
+    cols = ["DateTime", "Treating Pressure", "WHP1"]
+    guess = io_load.suggest_channels(cols)
+    assert guess["pressure"] == "WHP1"
+
+    cols2 = ["DateTime", "Treating Pressure", "Well Head Pressure"]
+    guess2 = io_load.suggest_channels(cols2)
+    assert guess2["pressure"] == "Well Head Pressure"
+
+
+# --------------------------------------------------------------------------------------------------
+# pressure liveness filter (io_load._live_pressure_candidates)
+#
+# Corpus check of 109 Treating->Surface name-ranking switches: 97 actually picked a DEAD
+# "Surface Pressure" channel over a live "Treating Pressure" one.
+# --------------------------------------------------------------------------------------------------
+def _column_fn(data: dict):
+    """A dict-backed stand-in for TestData.column, for suggest_channels' `column` kwarg."""
+    def column(name):
+        return data[name]
+    return column
+
+
+def test_pressure_liveness_dead_surface_loses_to_live_treating():
+    cols = ["DateTime", "Surface Pressure", "Treating Pressure"]
+    data = {
+        "Surface Pressure": np.full(50, 240.0),
+        "Treating Pressure": np.concatenate(
+            [np.linspace(0.0, 8000.0, 20), np.linspace(8000.0, 3000.0, 30)]
+        ),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Treating Pressure"
+
+
+def test_pressure_liveness_all_zero_wellhead_loses_to_live_gauge():
+    cols = ["DateTime", "Wellhead Pressure", "Pressure Gauge 245"]
+    data = {
+        "Wellhead Pressure": np.zeros(50),
+        "Pressure Gauge 245": np.linspace(500.0, 5000.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Pressure Gauge 245"
+
+
+def test_pressure_liveness_constant_max_loses_to_live_average():
+    cols = ["DateTime", "Max PSI", "Average Pressure"]
+    data = {
+        "Max PSI": np.full(50, 9191.0),
+        "Average Pressure": np.concatenate(
+            [np.linspace(0.0, 6000.0, 25), np.linspace(6000.0, 2000.0, 25)]
+        ),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Average Pressure"
+
+
+def test_pressure_liveness_both_live_ranking_unchanged():
+    cols = ["DateTime", "Pump Press", "Surf Press [Csg]"]
+    data = {
+        "Pump Press": np.linspace(1000.0, 9000.0, 50),
+        "Surf Press [Csg]": np.linspace(500.0, 8500.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Surf Press [Csg]"
+
+
+def test_pressure_liveness_all_dead_falls_back_to_name_ranking():
+    cols = ["DateTime", "Pump Press", "Surf Press [Csg]"]
+    data = {
+        "Pump Press": np.full(50, 15.0),
+        "Surf Press [Csg]": np.full(50, 20.0),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Surf Press [Csg]"
+
+
+def test_pressure_liveness_raising_column_treated_dead():
+    cols = ["DateTime", "Surf Press [Csg]", "Treating Pressure"]
+
+    def column(name):
+        if name == "Surf Press [Csg]":
+            raise KeyError(name)
+        return np.linspace(0.0, 8000.0, 50)
+
+    guess = io_load.suggest_channels(cols, column=column)
+    assert guess["pressure"] == "Treating Pressure"
+
+
+# --------------------------------------------------------------------------------------------------
+# pressure liveness filter -- header-unit scaling, outlier resistance, subsampling
+# --------------------------------------------------------------------------------------------------
+def test_pressure_liveness_kpa_header_factor_prevents_false_disqualify():
+    # Same underlying signal, once in a psi-headed column and once in a kPa-headed one. Without
+    # applying each column's own header-suffix factor first, the kPa column's raw magnitude
+    # (~6.9x the psi column's) would dwarf the psi column's, failing the psi column's relative-
+    # range check and excluding it from "live" -- even though it's the exact same real signal.
+    psi_vals = np.linspace(4550.0, 9550.0, 50)
+    kpa_vals = psi_vals / units.KPA_TO_PSI
+    cols = ["DateTime", "Surf Press [Csg] (psi)", "Surf Press [Tbg] (kPa)"]
+    data = {
+        "Surf Press [Csg] (psi)": psi_vals,
+        "Surf Press [Tbg] (kPa)": kpa_vals,
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Surf Press [Csg] (psi)"
+
+
+def test_pressure_liveness_mpa_header_factor_fixes_absolute_floor():
+    # An all-MPa file: raw MPa magnitudes (~0-60) sit far below the 100-psi absolute floor, so
+    # without scaling, EVERY candidate (dead or live) fails it and the filter silently falls back
+    # to name-only ranking, which would pick the dead "Surface Pressure" (tier 0) over the live,
+    # demoted "Pump Pressure" (tier 3). With the header factor applied, the live channel's real
+    # ~8700 psi range clears the floor and wins.
+    cols = ["DateTime", "Surface Pressure (MPa)", "Pump Pressure (MPa)"]
+    data = {
+        "Surface Pressure (MPa)": np.full(50, 1.6),
+        "Pump Pressure (MPa)": np.linspace(0.0, 60.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Pump Pressure (MPa)"
+
+
+def test_pressure_liveness_relative_range_only_failure():
+    # B's p99 matches A's (passes the relative-p99 rule) but its range (200) is well under 25%
+    # of A's (8000) -- isolates the relative-RANGE rule as the sole reason B loses.
+    cols = ["DateTime", "Pressure A", "Pressure B"]
+    data = {
+        "Pressure A": np.linspace(0.0, 8000.0, 50),
+        "Pressure B": np.linspace(7800.0, 8000.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Pressure A"
+
+
+def test_pressure_liveness_relative_p99_only_failure():
+    # B's range (~3100) clears 25% of A's (~8800, passes the relative-range rule) because it
+    # spans mostly-negative values, but its p99 (~170) is well under 30% of A's (~8900) --
+    # isolates the relative-P99 rule as the sole reason B loses.
+    cols = ["DateTime", "Pressure A", "Pressure B"]
+    data = {
+        "Pressure A": np.linspace(0.0, 9000.0, 50),
+        "Pressure B": np.linspace(-3000.0, 200.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Pressure A"
+
+
+def test_pressure_liveness_mostly_nan_sentinel_does_not_disable_filter():
+    # "Sensor Pressure X" is 90% NaN with a handful of huge sentinel values -- it fails the
+    # absolute finite-fraction check, so per the fix it must NOT contribute to max_range/max_p99;
+    # if it did, its huge nominal range would fail Treating's relative checks and let dead
+    # Surface (or nothing) win instead.
+    cols = ["DateTime", "Surface Pressure", "Treating Pressure", "Sensor Pressure X"]
+    treating = np.concatenate([np.linspace(0.0, 8000.0, 20), np.linspace(8000.0, 3000.0, 30)])
+    sentinel = np.full(50, np.nan)
+    sentinel[:5] = 999999.0
+    data = {
+        "Surface Pressure": np.full(50, 240.0),
+        "Treating Pressure": treating,
+        "Sensor Pressure X": sentinel,
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Treating Pressure"
+
+
+def test_pressure_liveness_live_bhp_wins_outright_over_live_surf():
+    cols = ["DateTime", "Surf Press [Csg]", "Bottomhole Press"]
+    data = {
+        "Surf Press [Csg]": np.linspace(4000.0, 9000.0, 50),
+        "Bottomhole Press": np.linspace(4200.0, 9200.0, 50),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Bottomhole Press"
+    assert guess["pressure_is_bhp"] is True
+
+
+def test_pressure_liveness_dead_bhp_loses_to_live_surf():
+    cols = ["DateTime", "Surf Press [Csg]", "Bottomhole Press"]
+    data = {
+        "Surf Press [Csg]": np.linspace(4000.0, 9000.0, 50),
+        "Bottomhole Press": np.full(50, 15.0),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Surf Press [Csg]"
+    assert guess["pressure_is_bhp"] is False
+
+
+def test_pressure_liveness_subsample_path_large_array():
+    # Exercises the >LIVENESS_SUBSAMPLE_CAP stride path (250,000 samples -> stride 2).
+    n = 250_000
+    cols = ["DateTime", "Surface Pressure", "Treating Pressure"]
+    data = {
+        "Surface Pressure": np.full(n, 240.0),
+        "Treating Pressure": np.linspace(0.0, 8000.0, n),
+    }
+    guess = io_load.suggest_channels(cols, column=_column_fn(data))
+    assert guess["pressure"] == "Treating Pressure"
+
+
 def test_dayfirst_hint_true_on_day_over_12():
     s = pd.Series(["9/8/2022", "13/8/2022"], dtype="string")
     assert io_load._dayfirst_hint(s) is True

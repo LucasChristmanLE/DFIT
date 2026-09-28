@@ -57,7 +57,7 @@ def render_file_png(feat: FileFeatures, out_path: str, figsize=(6.0, 3.2), dpi: 
 
     try:
         td = io_load.load(feat.path)
-        guess = io_load.suggest_channels(td.columns)
+        guess = io_load.suggest_channels(td.columns, column=td.column)
         pressure_col = feat.pressure_col or guess.get("pressure")
         rate_col = feat.rate_col if feat.rate_col is not None else guess.get("rate")
         if not pressure_col:

@@ -70,7 +70,12 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   truth: it produces every reported value and every array the plots need.
 - **IO.** `io_load.py` loads CSV and the reverse-engineered Fracpro `.DBS` binary format
   (`load()` dispatches on extension), parses datetimes including leaked Excel serials,
-  suggests channel roles, converts surface pressure to BHP hydrostatically
+  suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
+  treating-named beats generic beats demoted aux/pump/annulus/max/avg-type channels, though a
+  BHP-named channel still wins outright; when given a loaded `TestData.column` callable, it also
+  filters to "live" candidates first, since a dead/backside gauge or a locked-constant channel
+  can otherwise outrank a real signal by name alone), converts surface pressure to BHP
+  hydrostatically
   (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in where flow → 0), and detects/converts
   per-channel units via `units.py` (see Unit detection and conversion below). `questionnaire.py`
   parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD, also using

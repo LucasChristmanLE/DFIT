@@ -180,7 +180,201 @@ def _bare_name(colname: str) -> str:
     return _UNIT_RE.sub("", colname).strip().lower()
 
 
-def suggest_channels(columns: list[str]) -> dict[str, Optional[str]]:
+# --------------------------------------------------------------------------------------------------
+# pressure-channel ranking
+#
+# A header scan of 2,476 corpus files showed the old "first substring match in column order"
+# pressure pick losing to an auxiliary/aggregate channel in ~200 files -- "Pump Press" or "Add
+# Pressure Chan1" picked over "Surf Press [Csg]", "Treating Pressure" over "Surface Pressure",
+# "PS Triplex Pressure" over "Mainline Pressure" -- and, separately, the old BHP-guess substring
+# "bottom" matching "Bottomhole Temp" and picking a temperature channel as pressure (15 files).
+# The ranking below fixes both: token-based tier matching (so e.g. "ann" doesn't substring-match
+# "channel") ranks a surface/wellhead-named channel above a generic one above a demoted
+# aux/pump/annulus/max/avg/calc one, and a BHP-named channel (excluding one that is itself
+# demoted) still wins outright, minus the temperature bug.
+# --------------------------------------------------------------------------------------------------
+_TOKEN_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _tokens(colname: str) -> list[str]:
+    """Lowercased alnum tokens, split on any run of non-alnum characters."""
+    return [t for t in _TOKEN_RE.split(colname.lower()) if t]
+
+
+# A bare (no "press"/"bhp"/"whp"/"psi" substring) column name is still a pressure candidate when
+# every token is one of these -- the corpus's bare "Treating"/"Surface" columns.
+_BARE_PRESSURE_WORDS = {"treating", "surface", "surf", "wellhead"}
+
+# Tier 3: demoted aux/aggregate/derived pressure channels -- checked first, overrides tiers 0/1.
+# "down" is deliberately absent: pump-down is already demoted via "pump", and a genuine
+# "Down Hole Pressure" channel (a bare BHP-like reading, distinct from surface/wellhead) should
+# not be.
+_PRESSURE_DEMOTE_EXACT = {
+    "add", "backside", "pump", "discharge", "max", "min", "avg", "average",
+    "maximum", "minimum", "averaged", "boost", "triplex", "jet", "iron",
+}
+_PRESSURE_DEMOTE_PREFIXES = ("addtl", "addl", "addit", "aux", "ann", "hydr", "calc")
+
+
+def _is_pressure_candidate(colname: str) -> bool:
+    """A column is a pressure candidate if its name contains "press"/"bhp"/"whp"/"psi"
+    (substring, the original rule) or its bare name is made up entirely of surface/treating/
+    wellhead tokens (the bare-"Treating"/"Surface" corpus case). A temperature channel (a token
+    starting with "temp", e.g. "Bottomhole Temp") is never a candidate, regardless of either
+    rule.
+    """
+    tokens = _tokens(colname)
+    if any(t.startswith("temp") for t in tokens):
+        return False
+    name = colname.lower()
+    if any(n in name for n in ("press", "bhp", "whp", "psi")):
+        return True
+    bare_tokens = _tokens(_bare_name(colname))
+    return bool(bare_tokens) and all(t in _BARE_PRESSURE_WORDS for t in bare_tokens)
+
+
+def _is_bhp_named(colname: str) -> bool:
+    """True for a column whose tokens name it explicitly as bottomhole pressure: a token starting
+    with "bhp" (so "BHP", "BHP1" both count) or "bottom" ("Bottomhole Press"). No "btmh" rule --
+    a Fracpro export's "Meas'd Btmh Press" reads as a computed/derived name, not a direct BHP
+    label, so it is left to rank as a generic (tier 2) pressure channel instead.
+    """
+    return any(t.startswith("bhp") or t.startswith("bottom") for t in _tokens(colname))
+
+
+def _is_wellhead_named(tokens: list[str]) -> bool:
+    """True for a surface/WHP/wellhead token: "surf"/"surface" (prefix), "whp"/"whp1" (prefix),
+    a bare "wellhead" token, or the two tokens "well" and "head" split adjacent by the
+    tokenizer's own separator handling (e.g. "Well Head Pressure" -> ["well", "head",
+    "pressure"])."""
+    if any(t.startswith("surf") or t.startswith("whp") or t == "wellhead" for t in tokens):
+        return True
+    return any(tokens[i] == "well" and tokens[i + 1] == "head" for i in range(len(tokens) - 1))
+
+
+def _pressure_tier(colname: str) -> int:
+    """Rank a pressure candidate: 3 = demoted aux/pump/annulus/max/avg/calc (checked first,
+    overrides 0/1), 0 = surface/WHP/wellhead, 1 = treating, 2 = everything else (generic
+    "Pressure", "Line Pressure", "CASING Pressure (KPAg)", ...). Lower wins.
+    """
+    tokens = _tokens(colname)
+    if any(t in _PRESSURE_DEMOTE_EXACT or t.startswith(_PRESSURE_DEMOTE_PREFIXES)
+           for t in tokens):
+        return 3
+    if _is_wellhead_named(tokens):
+        return 0
+    if any(t.startswith("treat") for t in tokens):
+        return 1
+    return 2
+
+
+# Liveness filter: name ranking alone still lets a dead/backside gauge or a locked-aggregate
+# channel outrank a real signal just because it's named "Surface"/"Wellhead"/"Max". Corpus check
+# of 109 Treating->Surface name-ranking switches found 97 of them actually picked a DEAD "Surface
+# Pressure" channel over a live "Treating Pressure" one -- measured cases: Treating p99 8821 psi
+# vs. Surface median 237 psi/p99 265 psi; a "Wellhead Pressure" reading all zero; a "Surface
+# Pressure" sitting at roughly -20 psi (a disconnected/backside gauge). A constant channel like
+# "Max PSI" = 9191 psi (locked at one aggregate value) is the same failure by shape rather than
+# name. None of this is visible from the header alone, hence this optional value-based filter.
+LIVENESS_MIN_FINITE_FRAC = 0.5
+LIVENESS_MIN_RANGE_PSI = 100.0
+LIVENESS_MIN_RANGE_FRAC_OF_MAX = 0.25
+LIVENESS_MIN_P99_FRAC_OF_MAX = 0.3
+
+# `column()` is called at load time, before `refresh_unit_detection` has ever run (unit_factors
+# is empty), so stats here have to apply their own header-suffix pressure factor -- otherwise a
+# kPa channel (raw values ~6.9x psi) either wins the relative-range/p99 bars it shouldn't, or an
+# all-MPa file (raw values ~0.0069x psi) fails the absolute 100-psi floor outright and silently
+# falls back to name-only ranking. Only the header suffix is consulted, never the magnitude
+# heuristic (`classify_pressure_magnitude`) -- that needs its own full-column percentile call and
+# would fight this filter's own ranking logic on an unlabeled file.
+LIVENESS_SUBSAMPLE_CAP = 100_000
+
+
+def _pressure_header_factor(colname: str) -> float:
+    """The header-suffix pressure conversion factor for one column (e.g. a "(kPa)" suffix ->
+    ``units.KPA_TO_PSI``), or ``1.0`` when there's no parenthesized suffix or it isn't a
+    recognized pressure unit."""
+    unit = _unit_of(colname)
+    if unit is None:
+        return 1.0
+    hit = units.lookup_pressure(unit)
+    return hit[1] if hit is not None else 1.0
+
+
+def _pressure_candidate_stats(colnames: list[str], column) -> dict[str, Optional[tuple]]:
+    """(p1, p99, finite_frac) per candidate, in psi, from ``column(name) -> np.ndarray`` scaled
+    by that column's own header-suffix pressure factor (see ``_pressure_header_factor`` -- NOT
+    the magnitude heuristic, and NOT `TestData.unit_factors`, which is empty this early). ``None``
+    for a column where calling ``column`` raises (missing/unparseable) -- treated as dead, never
+    live.
+
+    A record can be ~10^6 raw rows and this runs on the UI thread at file-open time, so the
+    array is strided down to at most ``LIVENESS_SUBSAMPLE_CAP`` points first (both the finite
+    fraction and the percentiles are measured on that subsample, not the full column), and p1/p99
+    come from one combined ``np.percentile(..., [1, 99])`` call rather than two.
+    """
+    stats: dict[str, Optional[tuple]] = {}
+    for c in colnames:
+        try:
+            raw = np.asarray(column(c), dtype=float)
+        except Exception:
+            stats[c] = None
+            continue
+        factor = _pressure_header_factor(c)
+        values = raw * factor if factor != 1.0 else raw
+        stride = max(1, values.size // LIVENESS_SUBSAMPLE_CAP)
+        if stride > 1:
+            values = values[::stride]
+        finite = values[np.isfinite(values)]
+        finite_frac = finite.size / values.size if values.size else 0.0
+        if finite.size == 0:
+            stats[c] = (0.0, 0.0, finite_frac)
+        else:
+            p1, p99 = np.percentile(finite, [1, 99])
+            stats[c] = (float(p1), float(p99), finite_frac)
+    return stats
+
+
+def _live_pressure_candidates(colnames: list[str], column) -> list[str]:
+    """Restrict `colnames` to the ones that look like a real, live pressure signal, using
+    ``column(name) -> np.ndarray`` (see ``_pressure_candidate_stats`` for the header-unit scaling
+    and subsampling applied first). A candidate is "live" iff: its finite fraction is
+    >= ``LIVENESS_MIN_FINITE_FRAC``; its (p99 - p1) range is >= ``LIVENESS_MIN_RANGE_PSI`` AND
+    >= ``LIVENESS_MIN_RANGE_FRAC_OF_MAX`` of the largest range among candidates; and its p99 is
+    >= ``LIVENESS_MIN_P99_FRAC_OF_MAX`` of the largest p99 among candidates (the last two are
+    relative, not absolute, so this holds across a wide range of true pressures).
+
+    The "largest range"/"largest p99" comparisons are taken only over candidates that already
+    pass the two ABSOLUTE checks (finite fraction, 100-psi floor) -- a mostly-NaN or
+    sentinel-heavy channel with a huge nominal range must not get to set the relative bar that
+    disables the filter for everyone else.
+
+    Falls back to returning `colnames` unchanged whenever nothing qualifies (a genuinely dead
+    file, or every candidate raised) -- callers then get today's name-only ranking rather than an
+    empty candidate list.
+    """
+    stats = _pressure_candidate_stats(colnames, column)
+    baseline: dict[str, tuple] = {}
+    for c in colnames:
+        s = stats[c]
+        if s is None:
+            continue
+        p1, p99, finite_frac = s
+        rng = p99 - p1
+        if finite_frac >= LIVENESS_MIN_FINITE_FRAC and rng >= LIVENESS_MIN_RANGE_PSI:
+            baseline[c] = (p99, rng)
+    if not baseline:
+        return colnames
+    max_range = max(rng for _, rng in baseline.values())
+    max_p99 = max(p99 for p99, _ in baseline.values())
+    live = [c for c, (p99, rng) in baseline.items()
+            if rng >= LIVENESS_MIN_RANGE_FRAC_OF_MAX * max_range
+            and p99 >= LIVENESS_MIN_P99_FRAC_OF_MAX * max_p99]
+    return live if live else colnames
+
+
+def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]]:
     """Best-guess mapping of column names to roles.
 
     Returns keys: ``pressure``, ``rate``, ``volume``, ``pressure_is_bhp`` (bool guess),
@@ -193,6 +387,21 @@ def suggest_channels(columns: list[str]) -> dict[str, Optional[str]]:
     only ever set when ``datetime`` is date-like-but-not-time-like (its name contains "date" and
     not "time" -- so "Date/Time", "DateTime", and "Timestamp (MST)" never trigger it) and there
     is a separate column whose bare name is exactly "time".
+
+    ``pressure`` is chosen from ranked candidates rather than the first substring match in
+    column order: a column explicitly named as BHP (a token starting with "bhp" or "bottom")
+    wins outright and sets ``pressure_is_bhp`` -- unless that same column is also demoted (see
+    below) -- else the highest-ranked candidate wins, ties broken by column order. The rank
+    order is surface/WHP/wellhead-named, then treating-named, then generic, then demoted
+    aux/pump/annulus/max/avg/calc-type channels last. See ``_pressure_tier`` and
+    ``_is_pressure_candidate``. ``pressure_is_bhp`` always matches whether the *chosen* column is
+    BHP-named, independent of which branch chose it.
+
+    `column`, when given (a callable `name -> np.ndarray`, e.g. a loaded ``TestData.column``),
+    narrows the pressure candidates to the "live" ones first -- see ``_live_pressure_candidates``
+    -- since a dead/backside gauge or a locked-constant aggregate channel can otherwise outrank a
+    real signal on name alone. Left ``None``, selection is name-only (unchanged from before this
+    filter existed).
     """
     lc = {c: c.lower() for c in columns}
 
@@ -215,10 +424,20 @@ def suggest_channels(columns: list[str]) -> dict[str, Optional[str]]:
                 time_col = c
                 break
 
-    pressure = find("press", "bhp", "whp", "psi") or None
-    bhp_guess = find("bhp", "bottom")
-    if bhp_guess:
-        pressure = bhp_guess
+    pressure_candidates = [c for c in columns if _is_pressure_candidate(c)]
+    if column is not None and pressure_candidates:
+        pressure_candidates = _live_pressure_candidates(pressure_candidates, column)
+    bhp_candidates = [c for c in pressure_candidates
+                      if _is_bhp_named(c) and _pressure_tier(c) != 3]
+    if bhp_candidates:
+        pressure = bhp_candidates[0]
+    elif pressure_candidates:
+        order = {c: i for i, c in enumerate(columns)}
+        pressure = min(pressure_candidates, key=lambda c: (_pressure_tier(c), order[c]))
+    else:
+        pressure = None
+    pressure_is_bhp = _is_bhp_named(pressure) if pressure else False
+
     rate = find("rate", "bpm", "flow", "slurry")
     volume = find("vol", "bbl", avoid=("rate",))
 
@@ -228,7 +447,7 @@ def suggest_channels(columns: list[str]) -> dict[str, Optional[str]]:
         "pressure": pressure,
         "rate": rate,
         "volume": volume,
-        "pressure_is_bhp": bool(bhp_guess),
+        "pressure_is_bhp": pressure_is_bhp,
     }
 
 

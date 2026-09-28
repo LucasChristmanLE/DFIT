@@ -576,7 +576,7 @@ class DfitApp:
         cols = self.td.columns
         for cmb in (self.cmb_pressure, self.cmb_rate, self.cmb_volume):
             cmb["values"] = [""] + cols
-        g = io_load.suggest_channels(cols)
+        g = io_load.suggest_channels(cols, column=self.td.column)
         self.var_pressure.set(g["pressure"] or "")
         self.var_rate.set(g["rate"] or "")
         self.var_volume.set(g["volume"] or "")
