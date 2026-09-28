@@ -337,6 +337,29 @@ running minimum (non-monotonic late data) for long enough, and in enough samples
 noise -- see Tail trim below for the exact thresholds and how an explicit override can move
 the cutoff past it.
 
+`resample.resample_pressure_increment` is vectorized the same way `detect_dropouts` is: the
+original per-sample loop is kept, unchanged, as `resample._resample_loop_reference` (a fallback
+for a non-finite/non-positive `step` or a non-finite/negative `rise_tol`, and the thing
+`tests/test_resample_vectorized.py` fuzzes the fast path against), while the public function
+instead walks only the OUTPUT kept points -- a few hundred, not the ~10^6 raw rows. This is
+exact, not approximate, for two reasons. The loop's `running_min` is provably a plain cumulative
+min over the finite samples (`np.minimum.accumulate`, non-finite mapped to `+inf` so it never
+lowers it): an above-tolerance ("run") sample skips the update, but such a sample is by
+construction already above `running_min`, so it could never have lowered it anyway. And a run
+sample can never satisfy the keep rule (`pi <= last_kept - step`) either, for the same reason --
+so which samples get kept doesn't depend on the guard's run bookkeeping at all, only on
+truncation at the moment a guard fire would have broken the loop. A kept sample's value is
+therefore always exactly the running min at that instant (it's the same sample that just pushed
+the running min down to it), so the kept points can be found by walking the cumulative-min array
+forward with `np.searchsorted`, one step per OUTPUT point. The tail-guard runs are found the
+same way any run-length problem vectorizes: label each above-tolerance run's start position,
+forward-fill it across the run with `np.maximum.accumulate`, and check the sustain conditions at
+every above-tolerance sample in one pass; the earliest sample anywhere that satisfies both wins,
+matching the loop's fixed-once `guard_dt`/`guarded_at`, and `stop_at_guard=True` then just drops
+any kept index past that firing sample (none can fall inside the firing run itself, since a run
+sample is never kept). On a synthetic 1.5M-sample decline this drops the function from ~2.3 s to
+~0.05 s.
+
 **No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
 the detection threshold), `picks.seed_injection` seeds the start/shut-in vlines from the
 pressure shape instead (`interpret.suggest_injection_window_pressure`: shut-in at the

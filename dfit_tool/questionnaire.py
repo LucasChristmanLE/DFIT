@@ -38,8 +38,6 @@ import os
 import re
 from dataclasses import dataclass, field
 
-import openpyxl
-
 from . import units
 
 # --------------------------------------------------------------------------------------------------
@@ -623,6 +621,9 @@ def parse_questionnaire(xlsx_path: str, well_hint: str | None = None) -> Questio
     None. Only an unreadable workbook (e.g. a truncated/corrupt zip) raises; the caller is expected
     to swallow that too, since a bad questionnaire must never block CSV loading.
     """
+    import openpyxl  # lazy: openpyxl costs ~0.4s to import, and store -> questionnaire is on the
+    # app-startup path even when no questionnaire is ever opened.
+
     result = QuestionnaireResult(path=str(xlsx_path))
     wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
     try:

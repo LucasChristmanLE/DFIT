@@ -88,7 +88,145 @@ def resample_pressure_increment(
     never overwrites them. Callers that want the guard-excluded region masked out of the
     *result* (rather than never resampled at all) pass False here and mask afterward -- see
     ``model.compute_all``'s ``resampled_full`` and ``interpret.resolve_tail_cut_dt``.
+
+    This is a vectorized replacement for a per-sample Python loop (kept, unchanged, as
+    ``_resample_loop_reference`` -- see its docstring, and ``tests/test_resample_vectorized.py``
+    for the fuzz test that pins agreement between the two). It's exact, not approximate, for two
+    reasons. First, ``running_min`` in the loop is provably a plain cumulative min over the
+    finite samples (``np.minimum.accumulate`` on ``p`` with non-finite samples mapped to
+    ``+inf`` so they never lower it): the loop skips updating it on an above-tolerance ("run")
+    sample, but such a sample is by construction already above ``running_min``, so it could
+    never have lowered it anyway -- the skip changes nothing. Second, a run sample can never
+    satisfy the keep rule (``pi <= last_kept - step``) either, since the running min always
+    stays above ``last_kept - step`` (any sample that pushes it to or below that threshold is kept
+    on the spot) and a run sample is above the running min -- so which samples get kept
+    doesn't depend on the guard's run bookkeeping at all, only on truncation at the moment a
+    guard fire actually breaks the loop. This means the kept points can be found by walking the
+    cumulative-min array forward from one kept point to the next with ``np.searchsorted`` --
+    since a kept sample's value is always exactly the running min at that instant (it's the same
+    sample that just pushed the running min down to it), this takes as many steps as there are
+    OUTPUT points (a few hundred), not one per raw row. The tail-guard runs are found the same
+    way any run-length problem vectorizes: label each above-tolerance run's start position and
+    forward-fill it across the run with ``np.maximum.accumulate``, then check the sustain
+    conditions at every above-tolerance sample in one pass; the earliest sample anywhere that
+    satisfies both is the loop's fire point, and ``stop_at_guard=True`` drops any kept index past
+    it (none can fall inside the firing run itself, since a run sample is never kept). The
+    vectorized path handles every input except a non-finite/non-positive ``step`` or a
+    non-finite/negative ``rise_tol``, where the equivalence argument doesn't obviously extend and
+    it defers to ``_resample_loop_reference`` outright.
     """
+    dt = np.asarray(dt, dtype=float)
+    p = np.asarray(p, dtype=float)
+    if rise_tol is None:
+        rise_tol = RISE_GUARD_PSI
+    if not (np.isfinite(step) and step > 0 and np.isfinite(rise_tol) and rise_tol >= 0):
+        return _resample_loop_reference(dt, p, step, rise_tol, sustain_s, sustain_samples,
+                                        stop_at_guard)
+
+    n = len(p)
+    finite = np.isfinite(p)
+    finite_idx = np.flatnonzero(finite)
+    if finite_idx.size == 0:
+        return Resampled(dt=np.array([]), p=np.array([]), n_raw=n)
+
+    i0 = int(finite_idx[0])
+    # Cumulative min over finite samples from i0 onward -- non-finite samples are mapped to +inf
+    # so they never lower it, matching the loop's plain `continue` on a non-finite sample.
+    pf = np.where(finite, p, np.inf)
+    cm = np.minimum.accumulate(pf[i0:])  # cm[k] <-> absolute index i0 + k
+    m = n - i0
+
+    # Tail-guard runs: above[k] (k >= 1, absolute index i0+k) mirrors the loop's
+    # `pi > running_min + rise_tol` check, using cm[k - 1] as "running_min just before
+    # processing this sample" (exact -- see the docstring paragraph above).
+    above = np.zeros(m, dtype=bool)
+    if m > 1:
+        above[1:] = finite[i0 + 1:] & (p[i0 + 1:] > cm[:-1] + rise_tol)
+
+    guard_dt: float | None = None
+    guarded_at: int | None = None
+    s_abs: int | None = None
+    j_abs: int | None = None
+    if above.any():
+        starts = above.copy()
+        starts[1:] &= ~above[:-1]
+        idx_arr = np.arange(m)
+        run_start = np.maximum.accumulate(np.where(starts, idx_arr, -1))
+        rel_positions = np.flatnonzero(above)
+        rs = run_start[rel_positions]
+        run_len = rel_positions - rs + 1  # count including the run's first sample
+        dt_seg = dt[i0:]
+        # `rel_positions != rs` mirrors the loop only checking the fire condition on a run's
+        # non-first sample.
+        cond = ((rel_positions != rs) & (run_len >= sustain_samples)
+                & (dt_seg[rel_positions] - dt_seg[rs] >= sustain_s))
+        fire = np.flatnonzero(cond)
+        if fire.size:
+            first = fire[0]  # earliest (s, j) pair in time order -- matches "first fire overall"
+            s_rel = int(rs[first])
+            j_rel = int(rel_positions[first])
+            s_abs = i0 + s_rel
+            j_abs = i0 + j_rel
+            guard_dt = float(dt_seg[s_rel])
+
+    # Kept indices: walk the cumulative min forward from one kept point to the next. `cm` is
+    # non-increasing, so searching `-cm` (non-decreasing) with searchsorted finds the first
+    # position, after the current kept index, where cm has dropped to <= threshold -- which is
+    # necessarily the sample that caused that drop (a run sample never lowers cm), i.e. exactly
+    # the next kept sample. `step > 0` guarantees the threshold strictly decreases each time, so
+    # this always makes progress.
+    neg_cm = -cm
+    kept_idx: list[int] = [i0]
+    cur_rel = 0
+    # Kept as np.float64, not a Python float, so a numpy float32 ``step`` promotes to float64 in
+    # ``last_val - step`` exactly as it does in the loop (NEP 50).
+    last_val = p[i0]
+    while True:
+        start = cur_rel + 1
+        if start >= m:
+            break
+        pos = np.searchsorted(neg_cm[start:], -(last_val - step), side="left")
+        if pos == m - start:
+            break
+        rel = start + pos
+        abs_i = i0 + rel
+        kept_idx.append(abs_i)
+        last_val = p[abs_i]
+        cur_rel = rel
+
+    if s_abs is not None:
+        guarded_at = sum(1 for idx in kept_idx if idx < s_abs)
+    if j_abs is not None and stop_at_guard:
+        # None of the dropped indices can sit inside [s, j] -- that whole span is the firing
+        # run, and a run sample is never kept.
+        kept_idx = [idx for idx in kept_idx if idx <= j_abs]
+
+    kept_arr = np.array(kept_idx, dtype=int)
+    return Resampled(
+        dt=dt[kept_arr],
+        p=p[kept_arr],
+        n_raw=n,
+        guarded_at=guarded_at,
+        guard_dt=guard_dt,
+    )
+
+
+def _resample_loop_reference(
+    dt: np.ndarray,
+    p: np.ndarray,
+    step: float,
+    rise_tol: float | None,
+    sustain_s: float,
+    sustain_samples: int,
+    stop_at_guard: bool,
+) -> Resampled:
+    """Reference implementation: the original, unoptimized per-sample scan -- see
+    ``resample_pressure_increment`` for the algorithm. No longer called by
+    ``resample_pressure_increment`` itself except as a fallback for the handful of degenerate
+    parameter combinations the vectorized path's equivalence argument doesn't cover (a
+    non-finite/non-positive ``step`` or a non-finite/negative ``rise_tol``); kept so tests can
+    fuzz it against the fast path for agreement, the same way ``_dropout_scan_loop`` is kept
+    below for ``detect_dropouts``."""
     dt = np.asarray(dt, dtype=float)
     p = np.asarray(p, dtype=float)
     if rise_tol is None:

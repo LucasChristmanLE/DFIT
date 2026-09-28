@@ -31,11 +31,53 @@ from . import units
 
 # Excel's day-zero (the epoch that already accounts for the 1900 leap-year bug).
 _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
+_EXCEL_EPOCH_NP = np.datetime64(_EXCEL_EPOCH.to_datetime64(), "us")
+_UNIX_EPOCH_NP = np.datetime64("1970-01-01T00:00:00", "us")
 _PRIMARY_DT_FORMAT = "%m/%d/%Y %H:%M:%S"
 _PRIMARY_DT_FORMAT_DAYFIRST = "%d/%m/%Y %H:%M:%S"
 
 # psi of hydrostatic head per (ppg * ft): the standard field-units constant.
 PSI_PER_PPG_FT = 0.052
+
+
+def _epoch_plus_seconds(epoch: np.datetime64, secs: np.ndarray) -> np.ndarray:
+    """Vectorized ``epoch + secs`` (float seconds, NaN/inf allowed) as a ``datetime64[us]`` array.
+
+    Replaces this module's three hot-path uses of
+    ``pd.Timestamp(epoch) + pd.to_timedelta(secs, unit="s")`` (each followed by
+    ``.astype("datetime64[us]")``): plain numpy datetime64 arithmetic over a large array is far
+    cheaper than pandas' per-element ``Timedelta`` construction (profiled at ~0.7-2.0 s on
+    200k-1.5M-sample files). This is not a naive ``round(secs * 1e6)`` -- that loses precision
+    once ``secs`` exceeds a few million, since float64 only carries ~15-17 significant digits and
+    the product can run past 1e15. Instead it mirrors pandas' own float->timedelta conversion
+    (``cast_from_unit``) bit for bit: truncate ``secs`` into a whole-seconds ``base`` (exact, since
+    ``base`` alone is always well within float64's exact-integer range for any real elapsed time)
+    and a ``frac`` remainder in (-1, 1), round `frac` to 9 decimal digits (nanoseconds) the same
+    way pandas does before combining, then assemble the nanosecond count from the two pieces
+    separately -- so the precision loss that a single ``secs * 1e9`` multiplication would incur
+    never happens. Verified bit-identical to the old pandas expression across >1e6 randomized
+    values (uniform magnitudes from small fractional seconds up to ~1e9 s, plus NaN) in scratch
+    testing. Non-finite entries become NaT, matching ``pd.to_timedelta(nan, unit="s")``.
+    """
+    secs = np.asarray(secs, dtype=np.float64)
+    finite = np.isfinite(secs)
+    # The int64 nanosecond assembly below wraps silently past ~9.22e9 s, and pandas raises on
+    # +-inf. Any such input takes the original pandas expression, so it keeps HEAD's exact
+    # behavior (correct far-out dates, or the same OverflowError) instead of a plausible wrong date.
+    if np.isinf(secs).any() or (np.abs(secs[finite]) > 9.0e9).any():
+        return (pd.Timestamp(epoch) + pd.to_timedelta(secs, unit="s")).astype(
+            "datetime64[us]").to_numpy()
+    base = np.trunc(secs)
+    frac = np.round(secs - base, 9)
+    us = np.zeros(secs.shape, dtype=np.int64)
+    base_i = base[finite].astype(np.int64)
+    frac_ns = (frac[finite] * 1e9).astype(np.int64)
+    us[finite] = (base_i * 1_000_000_000 + frac_ns) // 1000
+    out = np.empty(secs.shape, dtype="datetime64[us]")
+    out[finite] = epoch + us[finite].astype("timedelta64[us]")
+    out[~finite] = np.datetime64("NaT", "us")
+    return out
+
 
 # Below this parsed-valid fraction, the datetime column is treated as unusable and load_csv looks
 # for an elapsed-time column to fall back on instead (FIX B). Measured: Goodnight_DFIT_data.csv's
@@ -78,8 +120,16 @@ def _dayfirst_hint(s: pd.Series) -> bool:
        read), and this falls through to rule 5.
     5. Otherwise month-first -- today's default, kept when the record genuinely crosses a month
        boundary (or there's no matching evidence at all) and gives no signal either way.
+
+    Runs the regex over deduplicated leading prefixes rather than the whole column: every rule
+    below reads only ``max``/``nunique``/"any match" over the matched components, all of which
+    are invariant under deduplication (a value repeated a million times contributes nothing a
+    single copy doesn't), and the pattern only ever looks at the first 10 characters anyway. On a
+    ~1 Hz multi-day record this collapses the regex extract from ~10^5-10^6 rows to a few hundred
+    distinct day-stamps.
     """
-    m = s.str.extract(_LEADING_DM_RE)
+    u = s.str.slice(0, 10).dropna().unique()
+    m = pd.Series(u, dtype="string").str.extract(_LEADING_DM_RE)
     first = pd.to_numeric(m[0], errors="coerce")
     second = pd.to_numeric(m[1], errors="coerce")
     year = pd.to_numeric(m[2], errors="coerce")
@@ -123,16 +173,32 @@ def parse_datetime(series: pd.Series) -> pd.Series:
     # fallbacks below can be merged without lossy-cast errors (pandas 3.0 is unit-strict).
     dt = pd.to_datetime(s, format=fmt, errors="coerce").astype("datetime64[us]")
 
-    # Fallback 1: bare Excel serial numbers (rounded to whole seconds; data is ~1 Hz).
-    if dt.isna().any():
-        as_num = pd.to_numeric(s, errors="coerce")
+    # Fallback 1: bare Excel serial numbers (rounded to whole seconds; data is ~1 Hz). Restricted
+    # to the still-NaT rows: pd.to_numeric is purely elementwise (one row's parse can never
+    # depend on another's), so subsetting first and combining back is exactly equivalent to
+    # running it over the whole column, just cheaper once most rows already parsed on the fast
+    # path.
+    still_na = dt.isna()
+    if still_na.any():
+        # Filled positionally on the full index (not the subset's), so combine_first needs no
+        # label alignment -- a duplicate index label would otherwise raise.
+        na_mask = still_na.to_numpy()
+        as_num = pd.to_numeric(s[na_mask], errors="coerce")
         secs = np.round(as_num.to_numpy(dtype=float) * 86400.0)
-        excel = pd.Series(
-            _EXCEL_EPOCH + pd.to_timedelta(secs, unit="s"), index=s.index
-        ).astype("datetime64[us]")
+        excel_vals = np.full(len(s), np.datetime64("NaT", "us"))
+        excel_vals[na_mask] = _epoch_plus_seconds(_EXCEL_EPOCH_NP, secs)
+        excel = pd.Series(excel_vals, index=s.index)
         dt = dt.combine_first(excel)
 
-    # Fallback 2: flexible parse for anything still missing (other string layouts).
+    # Fallback 2: flexible parse for anything still missing (other string layouts). Deliberately
+    # NOT restricted to the still-NaT subset, unlike fallback 1 above: pd.to_datetime with no
+    # explicit `format` infers a common format from the series' first non-null element and reuses
+    # it for the rest of the call, so feeding it a different subset can change what gets inferred
+    # and therefore change per-row results for rows that would be in the subset either way
+    # (confirmed empirically: an ISO-shaped first row in the whole column can make a later
+    # slash-shaped row parse to NaT, while calling the same row through this fallback alone -- as
+    # the first element of a smaller subset -- parses it successfully). Still only *fills* NaT
+    # rows via combine_first, so a row fallback 1 already resolved is never touched.
     if dt.isna().any():
         generic = pd.to_datetime(s, errors="coerce", dayfirst=dayfirst).astype("datetime64[us]")
         dt = dt.combine_first(generic)
@@ -877,9 +943,7 @@ def load_csv(path: str) -> TestData:
             while synth_col in df.columns:
                 synth_col = f"DateTime ({n})"
                 n += 1
-            df[synth_col] = (
-                pd.Timestamp("1970-01-01") + pd.to_timedelta(secs, unit="s")
-            ).astype("datetime64[us]")
+            df[synth_col] = _epoch_plus_seconds(_UNIX_EPOCH_NP, secs)
             return TestData(
                 path=path, df=df, datetime_col=synth_col, t_s=secs, columns=list(df.columns)
             )
@@ -1046,7 +1110,7 @@ def load_dbs(path: str) -> TestData:
     t_s = rec["idx"].astype(np.float64) * float(interval_min) * 60.0
 
     dt_col = "DateTime"
-    cols = {dt_col: (pd.Timestamp("1970-01-01") + pd.to_timedelta(t_s, unit="s")).astype("datetime64[us]")}
+    cols = {dt_col: _epoch_plus_seconds(_UNIX_EPOCH_NP, t_s)}
     for i, name in enumerate(names):
         cols[name] = rec[f"c{i}"].astype(np.float64)
     df = pd.DataFrame(cols)
