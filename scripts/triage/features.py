@@ -83,7 +83,15 @@ _SIG_TAIL_MIN_SIZE = 524288
 # by which a human learns samples were dropped, and it can only reach the screen by invalidating
 # every cached PNG so the next scan re-renders them all. Keep bumping this whenever
 # render_file_png's output or the features feeding its annotation change.
-PNG_RENDER_VERSION = 4
+#
+# Bumped to 5: io_load.load_csv's datetime-column choice changed (a multi-candidate evaluation
+# now picks whichever datetime-name-matching column actually parses the most valid timestamps,
+# instead of the first name match by column order) and parse_datetime's Excel-serial fallback is
+# now range-guarded to plausible dates (1990-2100) instead of accepting any bare number -- both
+# can change which column loads as the time base and therefore the plotted duration/shape for any
+# file that has more than one datetime-name-matching column or a bare-number datetime column, so
+# every previously cached PNG is stale.
+PNG_RENDER_VERSION = 5
 
 
 # --------------------------------------------------------------------------------------------------

@@ -69,13 +69,58 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   `DerivedResults`, and `compute_all(state, td)`. `compute_all` is the single source of
   truth: it produces every reported value and every array the plots need.
 - **IO.** `io_load.py` loads CSV and the reverse-engineered Fracpro `.DBS` binary format
-  (`load()` dispatches on extension), parses datetimes including leaked Excel serials,
-  suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
+  (`load()` dispatches on extension). `parse_datetime` tries two exact, vectorized fast paths
+  (24-hour, then 12-hour AM/PM) before falling back to a bare Excel-serial parse -- accepted only
+  within a plausible 1990-2100 range (`_EXCEL_SERIAL_MIN/MAX`; a small bare number like an
+  elapsed-minutes value is otherwise misread as an implausible 1900-ish date) -- and then a
+  generic dateutil parse restricted to whatever's still unparsed, which is guarded three ways
+  before it's trusted: never a bare number `pd.to_numeric` accepts (that has exactly one
+  sanctioned route to a date -- the Excel-serial fallback -- so one that fallback already
+  rejected can't sneak through dateutil's own date-from-a-bare-number guesses instead); never a
+  result outside the same plausible 1990-2100 window (`_PLAUSIBLE_DT_MIN/MAX` -- a genuinely
+  corrupted cell, e.g. a truncated date or a typo'd year, that dateutil still "successfully"
+  guesses a year-1 or year-227 timestamp for rather than failing outright); and never a bare
+  time-of-day/clock string with no date part at all -- not just `"9:22:20 AM"`, but also an
+  Excel-mangled elapsed `MM:SS.f` reading like `"09:07.0"` (`_TIME_OF_DAY_RE`, its trailing
+  fractional-seconds group written to also match with no seconds-colon present) -- since dateutil
+  silently defaults the missing date to TODAY, producing a "valid" timestamp that is really just
+  an artifact of when the code happened to run. A tz-aware result (an explicit UTC/offset marker,
+  e.g. `"2019-08-29 14:13:35Z"` or `"...-07:00"`) has its offset dropped via `tz_localize(None)`
+  rather than converted -- DFIT elapsed-time math only ever needs local wall-clock time, and
+  pandas 3.0's unit-strict cast to `datetime64[us]` raises outright on a tz-aware source instead
+  of silently converting it. The bare-clock guard is skippable
+  (`parse_datetime(..., reject_bare_clock=False)`) for exactly one caller: FIX A's companion-Time
+  join below, where a blank Date field beside a real Time value intentionally joins to a
+  date-less string and is meant to parse as a same-day guess (DEFECT 1a) rather than fail. When
+  more than one column name looks datetime-ish, `load_csv` picks by whichever scores highest on a
+  bounded, evenly-spaced sample (capped at 5,000 non-null rows, so scoring several candidates in a
+  multi-million-row file stays cheap -- `_best_datetime_column`/`_score_datetime_candidate`): the
+  default is always scored too, even when it isn't itself a candidate, and a column that is
+  *entirely* bare time-of-day values never wins outright even before the per-value guard above
+  runs (`_looks_like_time_of_day_only`, scored 0.0). When NO column parses as a datetime at all,
+  `load_csv` falls back to treating a plain numeric, non-decreasing column as elapsed time:
+  `_find_elapsed_column` for a `delta`/`elapsed`-named column with a recognized parenthesized
+  unit suffix, or the broader `_find_numeric_time_column` for any other datetime-name-matching
+  column (e.g. a bare Fracpro ASCII `Time`) -- unit resolved in order: the column's own header
+  suffix -> a units-declaration data row (e.g. a literal `"(min)"` cell right after the header,
+  misread as an ordinary data row) -> a unit token in the column's name (`Time_sec`, `Minutes`)
+  -> else, for a bare `Time` header with no other hint at all, an assumed-MINUTES guess (the
+  plain Fracpro ASCII convention) recorded as a `TestData.load_warnings` entry, since it's a
+  guess, not a read. If the datetime column still parsed too little to trust (`_MIN_VALID_DT_FRACTION`)
+  and neither elapsed fallback found anything either, `load_csv` raises rather than silently
+  proceeding with an untrustworthy column, UNLESS it still has >=2 genuinely valid timestamps
+  (enough to define a real, if sparse, elapsed timeframe) -- measured case: Crescent Point's
+  Dressler `"...1secdata.csv"`, an unnamed numeric-named column (an INSITE treatment log under an
+  undetected preamble) of `"MM:SS.f"` clock strings that, before the bare-clock guard above,
+  spuriously validated as today-dated rows and, anchored against one genuine date elsewhere in
+  the same column (a job-header line misread as data), reported a ~12-YEAR "duration" for what is
+  actually a same-day pump job; with the guard, exactly one genuine date survives, which this
+  final check now correctly treats as not enough to load. `suggest_channels` suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
   treating-named beats generic beats demoted aux/pump/annulus/max/avg-type channels, though a
   BHP-named channel still wins outright; when given a loaded `TestData.column` callable, it also
   filters to "live" candidates first, since a dead/backside gauge or a locked-constant channel
-  can otherwise outrank a real signal by name alone), converts surface pressure to BHP
-  hydrostatically
+  can otherwise outrank a real signal by name alone). `io_load.py` also converts surface pressure
+  to BHP hydrostatically
   (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in where flow → 0), and detects/converts
   per-channel units via `units.py` (see Unit detection and conversion below). `questionnaire.py`
   parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD, also using

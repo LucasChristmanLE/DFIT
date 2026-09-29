@@ -35,6 +35,13 @@ _EXCEL_EPOCH_NP = np.datetime64(_EXCEL_EPOCH.to_datetime64(), "us")
 _UNIX_EPOCH_NP = np.datetime64("1970-01-01T00:00:00", "us")
 _PRIMARY_DT_FORMAT = "%m/%d/%Y %H:%M:%S"
 _PRIMARY_DT_FORMAT_DAYFIRST = "%d/%m/%Y %H:%M:%S"
+# A second exact, vectorized fast path for the 12-hour AM/PM layout (e.g. Badger 25N-3HZ's
+# "12/21/2017 9:22:20 AM"). Without this, a whole-file AM/PM column falls through both primary
+# fast paths to Fallback 2's per-element dateutil inference below -- correct, but 10-100x slower
+# on a multi-million-row column, and this is exactly the shape a multi-datetime-candidate file
+# (see _best_datetime_column) can end up parsing twice.
+_PRIMARY_DT_FORMAT_AMPM = "%m/%d/%Y %I:%M:%S %p"
+_PRIMARY_DT_FORMAT_AMPM_DAYFIRST = "%d/%m/%Y %I:%M:%S %p"
 
 # psi of hydrostatic head per (ppg * ft): the standard field-units constant.
 PSI_PER_PPG_FT = 0.052
@@ -85,6 +92,27 @@ def _epoch_plus_seconds(epoch: np.datetime64, secs: np.ndarray) -> np.ndarray:
 # misreads "MM:SS.0" as a time-of-day on today's date), while a genuinely good column measures
 # 1.00. 0.5 sits between the two with margin on both sides.
 _MIN_VALID_DT_FRACTION = 0.5
+
+# Plausible-range bounds for parse_datetime's Fallback 1 (bare Excel serial numbers), in whole
+# days since the Excel epoch. A DFIT is never logged before 1990 or after 2100, but a small bare
+# number is frequently something else entirely -- elapsed minutes/hours, a sample index -- and
+# without a range guard Fallback 1 happily maps it to a bogus date in 1900 (measured case: the
+# Badger 25N-3HZ file's elapsed-minutes "Time" column, e.g. 85.00000 -> 1900-03-25). Values outside
+# this range are left as NaT for Fallback 1 (Fallback 2's generic string parse still gets a chance
+# at them, and correctly leaves a bare number like that as NaT too -- it has no date-like shape).
+_EXCEL_SERIAL_MIN = 32874  # Excel serial for 1990-01-01
+_EXCEL_SERIAL_MAX = 73051  # Excel serial for 2100-01-01
+
+# The same plausible-date window, as Timestamps -- also applied to Fallback 2's dateutil result
+# below (not just Fallback 1's serial parse). Measured case: Hodges 2CH DFIT.csv's ~1.05M-row
+# "Date Time" column has two genuinely corrupted cells ("23 23:43:18", "4/19/227" -- a truncated
+# date and a typo'd year), and dateutil's generic parser, asked to make its best guess, happily
+# returns year-1 and year-227 timestamps for them rather than failing outright. Left unguarded,
+# either one poisons any min/max computed over the column with a bogus multi-century span. A
+# value dateutil returns outside this window is exactly as implausible for a DFIT as an
+# out-of-window Excel serial, so it is rejected the same way -- left NaT, not a wrong date.
+_PLAUSIBLE_DT_MIN = pd.Timestamp("1990-01-01")
+_PLAUSIBLE_DT_MAX = pd.Timestamp("2100-01-01")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -160,10 +188,18 @@ def _dayfirst_hint(s: pd.Series) -> bool:
     return False
 
 
-def parse_datetime(series: pd.Series) -> pd.Series:
+def parse_datetime(series: pd.Series, reject_bare_clock: bool = True) -> pd.Series:
     """Parse a datetime column that may mix formatted strings and Excel serial numbers.
 
     Returns a tz-naive datetime64 Series. Any value that cannot be parsed becomes NaT.
+
+    ``reject_bare_clock`` (default True) forces a bare time-of-day/clock string (see
+    _TIME_OF_DAY_RE below) to NaT rather than trusting dateutil's silent default-to-today. The
+    one caller that passes False is FIX A's companion-Time join in ``load_csv``: there, a
+    date-less joined string comes from a genuinely blank Date field next to a real Time value
+    (DEFECT 1a), and treating it as a valid same-day timestamp is the documented, intentional
+    behavior for that specific join -- unlike a bare clock STANDING ALONE as its own datetime
+    column (the Dressler-shaped case below), which this guard exists to catch.
     """
     s = series.astype("string").str.strip()
     dayfirst = _dayfirst_hint(s)
@@ -172,6 +208,15 @@ def parse_datetime(series: pd.Series) -> pd.Series:
     # Fast path: the primary formatted-string layout. Normalize to microsecond resolution so the
     # fallbacks below can be merged without lossy-cast errors (pandas 3.0 is unit-strict).
     dt = pd.to_datetime(s, format=fmt, errors="coerce").astype("datetime64[us]")
+
+    # Fast path 2: the 12-hour AM/PM layout (see _PRIMARY_DT_FORMAT_AMPM above) -- still an exact,
+    # vectorized strptime match, so a whole-file AM/PM column never has to fall through to the
+    # much slower per-element dateutil inference in Fallback 2 below.
+    still_na = dt.isna()
+    if still_na.any():
+        ampm_fmt = _PRIMARY_DT_FORMAT_AMPM_DAYFIRST if dayfirst else _PRIMARY_DT_FORMAT_AMPM
+        ampm = pd.to_datetime(s, format=ampm_fmt, errors="coerce").astype("datetime64[us]")
+        dt = dt.combine_first(ampm)
 
     # Fallback 1: bare Excel serial numbers (rounded to whole seconds; data is ~1 Hz). Restricted
     # to the still-NaT rows: pd.to_numeric is purely elementwise (one row's parse can never
@@ -184,23 +229,73 @@ def parse_datetime(series: pd.Series) -> pd.Series:
         # label alignment -- a duplicate index label would otherwise raise.
         na_mask = still_na.to_numpy()
         as_num = pd.to_numeric(s[na_mask], errors="coerce")
+        # Reject anything outside the plausible Excel-serial range (see _EXCEL_SERIAL_MIN/MAX
+        # above) before it ever becomes a date -- an out-of-range value is left NaN here so
+        # Fallback 2 gets a chance at it instead of a bogus 1900-ish (or far-future) timestamp.
+        as_num = as_num.where(as_num.between(_EXCEL_SERIAL_MIN, _EXCEL_SERIAL_MAX))
         secs = np.round(as_num.to_numpy(dtype=float) * 86400.0)
         excel_vals = np.full(len(s), np.datetime64("NaT", "us"))
         excel_vals[na_mask] = _epoch_plus_seconds(_EXCEL_EPOCH_NP, secs)
         excel = pd.Series(excel_vals, index=s.index)
         dt = dt.combine_first(excel)
 
-    # Fallback 2: flexible parse for anything still missing (other string layouts). Deliberately
-    # NOT restricted to the still-NaT subset, unlike fallback 1 above: pd.to_datetime with no
-    # explicit `format` infers a common format from the series' first non-null element and reuses
-    # it for the rest of the call, so feeding it a different subset can change what gets inferred
-    # and therefore change per-row results for rows that would be in the subset either way
-    # (confirmed empirically: an ISO-shaped first row in the whole column can make a later
-    # slash-shaped row parse to NaT, while calling the same row through this fallback alone -- as
-    # the first element of a smaller subset -- parses it successfully). Still only *fills* NaT
-    # rows via combine_first, so a row fallback 1 already resolved is never touched.
-    if dt.isna().any():
-        generic = pd.to_datetime(s, errors="coerce", dayfirst=dayfirst).astype("datetime64[us]")
+    # Fallback 2: flexible parse for anything still missing (other string layouts). Restricted to
+    # the still-NaT subset -- unlike an earlier version of this fallback, which ran unrestricted
+    # over the whole column on the theory that pd.to_datetime's format inference (it has no
+    # explicit `format` here) could read differently over a different subset than over the whole
+    # column. That was true, but its cost is severe now that two exact, vectorized fast paths
+    # (above) resolve the overwhelming majority of real files: without restricting, a SINGLE
+    # leftover garbage cell (e.g. a units-declaration row misread as data, see FIX B) forces this
+    # slow per-element dateutil pass over the ENTIRE column all over again, even though the fast
+    # paths already resolved everything else (measured: Horsetail 07E-0636's 631k-row Job Time
+    # column dropped from needing a full dateutil re-parse for one bad row -- ~2 minutes -- to
+    # none at all). Subsetting first also arguably improves the format-inference case it used to
+    # worry about: dateutil now infers from the remaining, already-more-homogeneous NaT subset's
+    # own first element, not contaminated by whatever format an already-resolved row happened to
+    # have. Positionally filled, same pattern as Fallback 1 above, so a row Fallback 1 already
+    # resolved is never touched.
+    #
+    # A bare number must NEVER reach a date through this fallback: dateutil's generic inference
+    # happily reads "2024" as 2024-01-01, "1500.5" as 1500-05-01, or "20171221" as 2017-12-21 --
+    # exactly the class of bug Fallback 1's plausible-serial-range guard exists to prevent, just
+    # reached by a different path. A purely numeric string gets exactly one sanctioned route to a
+    # date -- Fallback 1's Excel-serial parse above -- and anything that fallback already rejected
+    # (out of the plausible 1990-2100 range) must stay NaT here too, not get a second, unguarded
+    # attempt through dateutil.
+    still_na = dt.isna()
+    if still_na.any():
+        na_mask = still_na.to_numpy()
+        sub = s[na_mask]
+        generic_sub = pd.to_datetime(sub, errors="coerce", dayfirst=dayfirst)
+        # A value carrying an explicit UTC/offset marker (e.g. "2019-08-29 14:13:35Z") infers as
+        # tz-AWARE, which `.astype("datetime64[us]")` refuses outright (pandas 3.0 raises rather
+        # than silently dropping the offset). Every other value here (and everywhere else in this
+        # module) is tz-naive by construction, and DFIT elapsed-time math only ever needs local
+        # wall-clock time, not absolute UTC alignment, so drop the offset rather than convert --
+        # same as the exception's own suggested `tz_localize(None)`. This also has to survive a
+        # candidate that ultimately LOSES the multi-candidate comparison in _best_datetime_column:
+        # every candidate gets scored, including ones this call rejects, so a tz-aware sibling
+        # column must not crash the whole load just for being evaluated.
+        if getattr(generic_sub.dtype, "tz", None) is not None:
+            generic_sub = generic_sub.dt.tz_localize(None)
+        generic_sub = generic_sub.astype("datetime64[us]")
+        is_numeric_sub = pd.to_numeric(sub, errors="coerce").notna()
+        generic_sub = generic_sub.where(~is_numeric_sub.to_numpy(), np.datetime64("NaT", "us"))
+        # Reject a bare time-of-day/clock string the same way -- see _TIME_OF_DAY_RE above. It has
+        # no date component at all, so whatever date dateutil defaulted it to (today, always) is
+        # not a reading of the file, just an artifact of when this code happened to run. Skippable
+        # (see the docstring's ``reject_bare_clock`` note) for FIX A's join, which relies on this
+        # exact defaulting for a blank Date value beside a real Time one.
+        if reject_bare_clock:
+            is_clock_sub = sub.str.match(_TIME_OF_DAY_RE).fillna(False).to_numpy(dtype=bool)
+            generic_sub = generic_sub.where(~is_clock_sub, np.datetime64("NaT", "us"))
+        # Reject anything dateutil returned outside the plausible 1990-2100 window too -- see
+        # _PLAUSIBLE_DT_MIN/MAX above.
+        in_range_sub = (generic_sub >= _PLAUSIBLE_DT_MIN) & (generic_sub <= _PLAUSIBLE_DT_MAX)
+        generic_sub = generic_sub.where(in_range_sub.to_numpy(), np.datetime64("NaT", "us"))
+        generic_vals = np.full(len(s), np.datetime64("NaT", "us"))
+        generic_vals[na_mask] = generic_sub.to_numpy()
+        generic = pd.Series(generic_vals, index=s.index)
         dt = dt.combine_first(generic)
 
     return dt
@@ -478,9 +573,11 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
                 return c
         return None
 
-    datetime_col = find("datetime", "date/time", "timestamp", "time", "date")
+    datetime_col = find(*_DATETIME_NAME_NEEDLES)
     # A rate/volume column can also contain "time"; don't misassign those as the datetime col.
-    if datetime_col and any(x in lc[datetime_col] for x in ("rate", "vol", "press")):
+    # (_DATETIME_NAME_NEEDLES/_DATETIME_NAME_AVOID are shared with load_csv's own
+    # _datetime_column_candidates, defined further down this module -- see there.)
+    if datetime_col and any(x in lc[datetime_col] for x in _DATETIME_NAME_AVOID):
         datetime_col = None
 
     time_col = None
@@ -806,6 +903,110 @@ def _find_elapsed_column(df: pd.DataFrame) -> Optional[tuple[str, np.ndarray]]:
     return None
 
 
+# Bare name-token unit hints (no parenthesized suffix), e.g. "Time_sec" -> tokens
+# ["time", "sec"], "Minutes" -> ["minutes"]. Used only by the broader numeric-time-column
+# fallback below (_find_numeric_time_column), not by _find_elapsed_column's stricter
+# parenthesized-suffix-only rule above.
+_ELAPSED_NAME_TOKEN_SECONDS = {
+    "s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+    "min": 60.0, "mins": 60.0, "minute": 60.0, "minutes": 60.0,
+    "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0, "hours": 3600.0,
+}
+
+
+def _row_unit_hint(cell: object) -> Optional[str]:
+    """A recognized elapsed-unit token from one row's cell text, or None.
+
+    Measured case: Badger 25N-3HZ's CSV carries a literal ``"(min) ,(date time), , ..."`` row
+    right after the header -- a units-DECLARATION row that ``pd.read_csv`` reads as an ordinary
+    (garbage, NaN-after-numeric-coercion) first DATA row, not a header, since it carries no
+    special marker of its own. Matches either a parenthesized token (``"(min)"`` -> ``"min"``,
+    reusing ``_unit_of``) or a bare unit word with no parens at all (``"min"``).
+    """
+    if not isinstance(cell, str):
+        return None
+    text = cell.strip().lower()
+    paren = _unit_of(text)
+    if paren in _ELAPSED_UNIT_SECONDS:
+        return paren
+    if text in _ELAPSED_UNIT_SECONDS:
+        return text
+    return None
+
+
+def _resolve_elapsed_seconds_factor(col: str, df: pd.DataFrame) -> Optional[float]:
+    """Resolve `col`'s elapsed-time unit to a seconds multiplier, in priority order: the
+    column's own header parenthesized suffix (``"Time (sec)"``) -> a units-declaration row (see
+    ``_row_unit_hint``, checked only at ``df`` row 0) -> a unit token anywhere in the column's
+    name (``_tokens``, e.g. ``"Time_sec"`` -> ``"sec"``, ``"Minutes"`` -> ``"minutes"``). None
+    when none of the three resolves a unit -- the caller (``_find_numeric_time_column``) decides
+    whether a bare "Time" header is then worth guessing at.
+    """
+    header_unit = _unit_of(col)
+    if header_unit in _ELAPSED_UNIT_SECONDS:
+        return _ELAPSED_UNIT_SECONDS[header_unit]
+    if len(df) > 0:
+        row_unit = _row_unit_hint(df[col].iloc[0])
+        if row_unit is not None:
+            return _ELAPSED_UNIT_SECONDS[row_unit]
+    for t in _tokens(col):
+        if t in _ELAPSED_NAME_TOKEN_SECONDS:
+            return _ELAPSED_NAME_TOKEN_SECONDS[t]
+    return None
+
+
+def _find_numeric_time_column(
+    df: pd.DataFrame, dt_col: str
+) -> Optional[tuple[str, np.ndarray, list[str]]]:
+    """A broader FIX B fallback for when NO column parses as a datetime at all: a plain numeric,
+    (mostly) non-decreasing elapsed-time column, even one named just ``"Time"`` with no
+    "delta"/"elapsed" in its name at all (unlike ``_find_elapsed_column`` above, which this does
+    not replace -- ``load_csv`` tries that first and only reaches this one when it finds
+    nothing).
+
+    Measured case: a Fracpro ASCII export whose only time-ish column is bare elapsed minutes
+    (e.g. Encore 1C/26N/40N/41N, English Farms 15N-8HZ Pump Data) -- before the plausible-
+    Excel-serial-range guard on ``parse_datetime``'s Fallback 1 (see there), a bare number like
+    this was silently misread as a bogus ~1900 date; guarded, it correctly reads as no date at
+    all, so this fallback exists to still load the file, correctly, as elapsed time, instead of
+    raising.
+
+    Candidates are `dt_col` itself (the column ``load_csv`` already tried and failed to parse as
+    a datetime -- the common case for these single-time-column exports), followed by any other
+    datetime-name-matching column (see ``_datetime_column_candidates``). The unit is resolved by
+    ``_resolve_elapsed_seconds_factor``; failing that, a column whose bare name is exactly "time"
+    (no other hint anywhere) is assumed to be MINUTES -- the plain Fracpro ASCII convention --
+    with a returned warning, since this is a guess, not a read. Returns the column name, its
+    values converted to seconds, and any such warning (folded into ``TestData.load_warnings``),
+    or None.
+    """
+    candidates = [dt_col] + [
+        c for c in _datetime_column_candidates(list(df.columns)) if c != dt_col
+    ]
+    for col in candidates:
+        vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+        finite = vals[np.isfinite(vals)]
+        if finite.size < 2:
+            continue
+        if not np.all(np.diff(finite) >= 0):
+            continue
+        if not (finite[-1] - finite[0] > 0):
+            continue
+
+        mult = _resolve_elapsed_seconds_factor(col, df)
+        if mult is not None:
+            return col, vals * mult, []
+        if _bare_name(col) == "time":
+            warn = (
+                f"Column {col!r} has no recognized time unit (no header suffix, units row, or "
+                f"unit token in its name) -- assuming MINUTES, the plain Fracpro ASCII "
+                f"elapsed-time convention."
+            )
+            return col, vals * 60.0, [warn]
+
+    return None
+
+
 # --------------------------------------------------------------------------------------------------
 # preamble skipping (FIX C)
 # --------------------------------------------------------------------------------------------------
@@ -870,6 +1071,147 @@ def _detect_header_skiprows(path: str) -> int:
     return 0
 
 
+# Datetime-name needles/avoid-words for _datetime_column_candidates below -- the same needles
+# suggest_channels' own find("datetime", "date/time", "timestamp", "time", "date") uses to pick
+# ITS single datetime_col, and the same rate/vol/press exclusion it applies afterward to that one
+# column (see suggest_channels). Kept as shared constants so the two stay in lockstep by
+# construction rather than by two independently-edited literal tuples.
+_DATETIME_NAME_NEEDLES = ("datetime", "date/time", "timestamp", "time", "date")
+_DATETIME_NAME_AVOID = ("rate", "vol", "press")
+
+
+def _datetime_column_candidates(columns: list[str]) -> list[str]:
+    """Every column that looks datetime-ish by name, not just the first (unlike
+    ``suggest_channels``' own ``find()``, which stops at the first match and only then checks the
+    avoid-words -- so a false-positive first match containing an avoid word blanks its result
+    entirely instead of falling through to a later, real datetime column). Used by ``load_csv``
+    to decide whether a multi-candidate evaluation (DEFECT: ``Time`` elapsed-minutes vs. ``Job
+    Time`` wall-clock, see below) is even needed.
+
+    Excludes any column that is another candidate's FIX A companion time-of-day column (see
+    ``_companion_time_col``) -- a bare ``Time`` column reserved to be JOINED with a date-like-
+    not-time-like sibling (e.g. plain ``Date``) must not also compete as an independent
+    candidate: parsed alone, with no date at all, dateutil defaults it to today's date, which can
+    make it look more "valid" than the fragmentary date column it actually belongs with (measured
+    case: ``test_load_csv_keeps_joined_when_it_parses_more_than_date_only``'s mostly-blank
+    ``Date`` + bare-time-of-day ``Time`` -- without this exclusion, comparing them head to head
+    picks the companion and discards the real date entirely).
+    """
+    raw = [c for c in columns
+           if any(n in c.lower() for n in _DATETIME_NAME_NEEDLES)
+           and not any(a in c.lower() for a in _DATETIME_NAME_AVOID)]
+    reserved = {comp for d in raw if (comp := _companion_time_col(d, columns)) in raw}
+    return [c for c in raw if c not in reserved]
+
+
+# _best_datetime_column scores each candidate on a bounded sample rather than the full column --
+# parsing a multi-million-row column once per candidate (Horsetail 07E-0636, Fox Creek 504 gauge)
+# measured a 5-10x slowdown on files with >1 datetime-name-matching column. 5,000 evenly-spaced
+# non-null values is far more than enough to tell "mostly valid" from "mostly garbage" apart.
+_DATETIME_SCORE_SAMPLE_CAP = 5000
+
+# A bare time-of-day/clock value, e.g. "9:22:20 AM", "13:05:01", or an Excel-mangled elapsed
+# "MM:SS.f" reading like "09:07.0" (no hours, no date at all) -- anchored on both ends so a full
+# datetime string ("12/21/2017 9:22:20 AM") never matches. The trailing ``(\.\d+)?`` sits OUTSIDE
+# the optional ``:\d{2}`` seconds group (not nested inside it) so it also matches a bare "MM:SS.f"
+# shape with no seconds-colon at all -- measured case: Crescent Point's Dressler
+# "...1secdata.csv" has an unnamed, header-detection-missed first column whose real values are
+# ``09:07.0``, ``09:08.0``, ... (elapsed minutes:seconds, no date, from an ``INSITE`` treatment
+# log under an undetected preamble). Read alone, dateutil parses "09:07.0" as 09:07:00 defaulted
+# to TODAY's date -- a wrong-in-a-different-way-every-run "valid" timestamp -- while a value with
+# minutes >= 24 (an invalid hour) correctly fails as NaT, so the column ends up a mix of NaT and
+# spuriously-dated rows that (before the guard below) computed a multi-YEAR span once one
+# genuinely dated row elsewhere in the column (this file's "11-Aug-14" job-header line, misread
+# as a data row for the same undetected-preamble reason) anchored the elapsed-time math against a
+# pile of today-dated rows years apart.
+_TIME_OF_DAY_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?\s*(AM|PM)?$", re.IGNORECASE)
+
+
+def _sample_series(raw: pd.Series, cap: int = _DATETIME_SCORE_SAMPLE_CAP) -> pd.Series:
+    """An evenly-spaced sample of up to `cap` non-null values from `raw`, preserving order.
+
+    Drops nulls on the RAW (still-numeric/object) column first, before any string cast or
+    parsing -- a single vectorized pass, not the expensive part -- so only the bounded sample
+    itself ever gets cast to string and parsed (see ``_score_datetime_candidate``).
+    """
+    non_null = raw.dropna()
+    n = len(non_null)
+    if n <= cap:
+        return non_null
+    idx = np.unique(np.linspace(0, n - 1, cap).round().astype(int))
+    return non_null.iloc[idx]
+
+
+def _looks_like_time_of_day_only(sample: pd.Series) -> bool:
+    """True when every value in `sample` (already non-null, string-cast) is a bare time-of-day,
+    with no date part at all.
+
+    Measured case: a column of pure ``"9:22:20 AM"``-shaped values -- dateutil silently defaults
+    the missing date to today when parsed alone, so it can score a deceptively high valid-parse
+    fraction and beat a real datetime column that merely has a few blank rows. Excluded from
+    winning entirely (scored 0.0) rather than trusted at face value.
+    """
+    if len(sample) == 0:
+        return False
+    return bool(sample.str.match(_TIME_OF_DAY_RE).all())
+
+
+def _score_datetime_candidate(df: pd.DataFrame, col: str) -> float:
+    """The fraction of a bounded sample of `col` that parses as a valid timestamp -- see
+    ``_sample_series`` and ``_looks_like_time_of_day_only``. 0.0 for an empty or bare-time-of-day
+    column."""
+    sample = _sample_series(df[col])
+    if len(sample) == 0:
+        return 0.0
+    sample = sample.astype("string")
+    if _looks_like_time_of_day_only(sample):
+        return 0.0
+    return float(parse_datetime(sample).notna().mean())
+
+
+def _best_datetime_column(candidates: list[str], df: pd.DataFrame, default: str) -> str:
+    """Among >1 datetime-name-matching columns, pick the one that actually parses into the most
+    valid timestamps, scored on a bounded sample (see ``_score_datetime_candidate``).
+
+    Measured case: Badger 25N-3HZ's CSV has both ``Time`` (elapsed minutes, e.g. ``85.00000``)
+    and ``Job Time`` (wall-clock ``12/21/2017 9:22:20 AM`` strings) -- both match the needles
+    above, and column order alone (``suggest_channels``' tiebreak) picks ``Time``, the wrong one,
+    misparsing it as ~480 h of Excel-serial dates instead of ~20 min of real elapsed time.
+    Scoring valid-parse fraction picks ``Job Time`` correctly instead. `default` is always scored
+    too, even when it isn't itself among `candidates` (e.g. no needle matched it at all, so
+    ``load_csv`` fell back to the first column) -- otherwise an unscored default reads as 0.0 and
+    loses to literally any candidate, however bad. A tie -- including every candidate scoring
+    0.0 -- keeps `default`, ``suggest_channels``' own single-column choice, unchanged.
+    """
+    best = default
+    best_score = _score_datetime_candidate(df, default)
+    for c in candidates:
+        if c == default:
+            continue
+        score = _score_datetime_candidate(df, c)
+        if score > best_score:
+            best = c
+            best_score = score
+    return best
+
+
+def _companion_time_col(datetime_col: str, columns: list[str]) -> Optional[str]:
+    """The FIX A companion time-of-day column for ``datetime_col``, replicating
+    ``suggest_channels``' own rule: only when ``datetime_col`` is date-like-but-not-time-like
+    (its name contains "date" and not "time"), and there is a separate column whose bare name is
+    exactly "time". Re-derived here (rather than trusted from ``suggest_channels``' ``guess``)
+    because ``load_csv`` can swap in a different winning ``datetime_col`` -- see
+    ``_best_datetime_column`` -- for which the original guess's companion, if any, no longer
+    applies.
+    """
+    name = datetime_col.lower()
+    if "date" in name and "time" not in name:
+        for c in columns:
+            if c != datetime_col and _bare_name(c) == "time":
+                return c
+    return None
+
+
 def load_csv(path: str) -> TestData:
     """Load a DFIT CSV and attach an elapsed-seconds time base."""
     try:
@@ -886,6 +1228,17 @@ def load_csv(path: str) -> TestData:
     dt_col = guess["datetime"] or df.columns[0]
     time_col = guess["time"]
 
+    # DEFECT: more than one column name looks datetime-ish (e.g. an elapsed-minutes "Time"
+    # column alongside a real wall-clock "Job Time" column) -- suggest_channels' own find() just
+    # takes the first by column order, which can be the wrong one. Only pay for the extra parses
+    # when there's actually more than one candidate to weigh.
+    dt_candidates = _datetime_column_candidates(list(df.columns))
+    if len(dt_candidates) > 1:
+        winner = _best_datetime_column(dt_candidates, df, dt_col)
+        if winner != dt_col:
+            dt_col = winner
+            time_col = _companion_time_col(dt_col, list(df.columns))
+
     def _parse_dt() -> pd.Series:
         # FIX A: a separate companion Time-of-day column has to be joined to the date column
         # before parsing, or the date alone collapses many-samples-per-day down to one. Adding
@@ -897,7 +1250,11 @@ def load_csv(path: str) -> TestData:
             # _normalize_ms_colon); a shape this doesn't recognize (garbage, or anything else)
             # passes through unchanged and is handled by the DEFECT 1a fallback just below.
             time_s = _normalize_ms_colon(df[time_col].astype("string").str.strip())
-            joined = parse_datetime(date_s + " " + time_s)
+            # reject_bare_clock=False: a blank Date field beside a real Time value joins to a
+            # date-less string by construction (DEFECT 1a, see parse_datetime's docstring) --
+            # that is the intended, tested behavior for this specific join, not the Dressler-
+            # shaped bug the guard exists to catch.
+            joined = parse_datetime(date_s + " " + time_s, reject_bare_clock=False)
             date_only = parse_datetime(date_s)
             # DEFECT 1a: never let joining regress a file that was openable on the date column
             # alone. A companion Time column that parse_datetime can't make sense of (garbage, or
@@ -928,6 +1285,15 @@ def load_csv(path: str) -> TestData:
     valid_frac = dt.notna().mean() if len(dt) else 0.0
     if valid_frac < _MIN_VALID_DT_FRACTION:
         elapsed = _find_elapsed_column(df)
+        elapsed_warnings: list[str] = []
+        if elapsed is None:
+            # Stricter delta/elapsed-named path found nothing -- try the broader numeric-time-
+            # column fallback (a bare Fracpro ASCII "Time" export, see _find_numeric_time_column)
+            # before giving up.
+            found = _find_numeric_time_column(df, dt_col)
+            if found is not None:
+                found_col, found_secs, elapsed_warnings = found
+                elapsed = (found_col, found_secs)
         if elapsed is not None:
             _, secs = elapsed
             # DEFECT 4: TestData.t_s is documented as "elapsed seconds from first sample", which
@@ -945,7 +1311,23 @@ def load_csv(path: str) -> TestData:
                 n += 1
             df[synth_col] = _epoch_plus_seconds(_UNIX_EPOCH_NP, secs)
             return TestData(
-                path=path, df=df, datetime_col=synth_col, t_s=secs, columns=list(df.columns)
+                path=path, df=df, datetime_col=synth_col, t_s=secs, columns=list(df.columns),
+                load_warnings=elapsed_warnings,
+            )
+        # No elapsed-time alternative either: a datetime column below the trust threshold with
+        # nothing to fall back to is exactly as untrustworthy as one that parsed nothing at all --
+        # UNLESS it still has >=2 genuinely valid timestamps, enough to define a real, if sparse,
+        # elapsed timeframe. Below that, proceeding would silently report a plausible-looking but
+        # meaningless near-empty record. Measured case: Crescent Point's Dressler
+        # "...1secdata.csv" -- once its "MM:SS.f" clock-string column can no longer inflate
+        # valid_frac with spuriously today-dated rows (see _TIME_OF_DAY_RE), exactly one genuine
+        # date survives (a job-header line misread as data under this file's undetected
+        # preamble) and there is no elapsed column to fall back to; without this check the load
+        # would "succeed" with a single-sample, zero-duration record instead of failing outright.
+        if dt.notna().sum() < 2:
+            raise ValueError(
+                f"Could not parse a usable datetime column from {dt_col!r} "
+                f"({dt.notna().sum()} valid of {len(dt)} rows, no elapsed-time fallback found)"
             )
 
     if dt.notna().sum() == 0:

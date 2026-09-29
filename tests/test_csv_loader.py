@@ -7,6 +7,8 @@ of a real corpus file (named in the fix's docstring/comment) so a regression in 
 up here rather than only in a real load.
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -65,6 +67,375 @@ def test_suggest_channels_time_column_with_unit_suffix_still_matches():
     cols = ["Date", "Time (s)", "Pressure (psi)"]
     guess = io_load.suggest_channels(cols)
     assert guess["time"] == "Time (s)"
+
+
+# --------------------------------------------------------------------------------------------------
+# multi-candidate datetime column choice (load_csv, io_load._best_datetime_column)
+#
+# Measured case: Badger 25N-3HZ DFIT.csv has both "Time" (elapsed minutes, e.g. 85.00000) and
+# "Job Time" (wall-clock "12/21/2017 9:22:20 AM" strings). suggest_channels' own find() picks
+# "Time" by column order (the wrong one) -- load_csv must instead evaluate every datetime-name
+# candidate and keep whichever parses the most valid timestamps.
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_picks_job_time_over_elapsed_time_column(tmp_path):
+    rows = [
+        "85.00000,12/21/2017 9:22:20 AM,-14.91,246.86",
+        "85.01667,12/21/2017 9:22:21 AM,-13.96,246.34",
+        "85.03334,12/21/2017 9:22:22 AM,-13.48,247.00",
+        "85.05001,12/21/2017 9:22:23 AM,-13.10,247.40",
+    ]
+    p = tmp_path / "badger_shape.csv"
+    p.write_text(
+        "Time,Job Time,Treating Pressure,Surface Pressure\n"
+        + "\n".join(rows) + "\n"
+    )
+
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Job Time"
+    # ~3 s of real wall-clock span, not ~0.05 min misread as an Excel serial number.
+    span_s = td.t_s[-1] - td.t_s[0]
+    assert span_s == pytest.approx(3.0, abs=0.01)
+
+
+def test_load_csv_single_datetime_candidate_unchanged(tmp_path):
+    # Only one column matches the datetime needles at all -- the multi-candidate evaluation must
+    # not run (and must not change the outcome if it did).
+    p = tmp_path / "single_candidate.csv"
+    p.write_text(
+        "Date/Time,Pressure (psi)\n"
+        "8/9/2022 08:23:17,5000.0\n"
+        "8/9/2022 08:23:29,4995.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Date/Time"
+
+
+def test_load_csv_multi_candidate_tie_keeps_suggest_channels_choice(tmp_path):
+    # "Time" and "Job Time" both hold the same valid wall-clock strings -- an exact tie in valid-
+    # parse count -- so the winner must stay suggest_channels' own column-order choice ("Time")
+    # rather than switch to "Job Time".
+    p = tmp_path / "tie_shape.csv"
+    p.write_text(
+        "Time,Job Time,Pressure (psi)\n"
+        "8/9/2022 08:23:17,8/9/2022 08:23:17,5000.0\n"
+        "8/9/2022 08:23:29,8/9/2022 08:23:29,4995.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Time"
+
+
+def test_load_csv_multi_candidate_recomputes_companion_time_col(tmp_path):
+    # The winning datetime column can differ from suggest_channels' own guess, so its companion
+    # "Time" column (FIX A) must be re-derived against the WINNER, not carried over from the
+    # original guess. "Elapsed Date" (bad numbers) loses to "Real Date" (real dates); "Real Date"
+    # is date-like-not-time-like, so its own companion "Time" column must be picked up and joined.
+    rows = [
+        "9999.0,8/9/2022,8:23:17,100.0",
+        "9998.0,8/9/2022,8:23:29,101.0",
+    ]
+    p = tmp_path / "companion_shape.csv"
+    p.write_text(
+        "Elapsed Date,Real Date,Time,Pressure (psi)\n"
+        + "\n".join(rows) + "\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Real Date"
+    dt = td.df["Real Date"]
+    assert dt.iloc[0] == pd.Timestamp("2022-08-09 08:23:17")
+    assert dt.iloc[-1] == pd.Timestamp("2022-08-09 08:23:29")
+
+
+# --------------------------------------------------------------------------------------------------
+# parse_datetime -- Excel serial fallback plausible-range guard
+#
+# Fallback 1 (bare Excel serial numbers) must not treat every bare number as a date: only serials
+# within the plausible 1990-2100 range (io_load._EXCEL_SERIAL_MIN/MAX) are accepted.
+# --------------------------------------------------------------------------------------------------
+def test_parse_datetime_accepts_real_excel_serial():
+    # Fallback 1 rounds to whole seconds (~1 Hz data): 43508.34097 days is 08:10:59.808, which
+    # rounds up to 08:11:00.
+    s = pd.Series(["43508.34097"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2019-02-12 08:11:00")
+
+
+def test_parse_datetime_rejects_small_bare_number_as_serial():
+    # 85.0 sits nowhere near the plausible Excel-serial range -- it's an elapsed-minutes value,
+    # not a date -- and Fallback 2's generic dateutil parse also has no date-like shape to read
+    # out of a bare decimal, so the result must be NaT, not 1900-03-25.
+    s = pd.Series(["85.00000"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert pd.isna(result.iloc[0])
+
+
+def test_load_csv_bare_numeric_elapsed_column_falls_back_to_fix_b(tmp_path):
+    # With the serial-range guard in place, a file whose only time-ish column is a bare numeric
+    # elapsed-minutes column no longer misparses as ~1900 dates (valid_frac drops to ~0) -- it now
+    # correctly drops through to the FIX B elapsed-column fallback (_find_elapsed_column) instead,
+    # provided that column is named the way FIX B recognizes ("delta"/"elapsed", see
+    # _find_elapsed_column). Before the guard, Fallback 1 accepted every bare number as a serial,
+    # so valid_frac read 1.0 and FIX B never got a chance to run -- this file loaded, silently,
+    # with the same class of bogus ~1900 dates as the Badger bug.
+    p = tmp_path / "elapsed_only.csv"
+    p.write_text(
+        "Elapsed (min),Pressure (psi)\n"
+        "0.00000,5000.0\n"
+        "0.01667,4995.0\n"
+        "0.03334,4990.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.n == 3
+    assert td.t_s[0] == 0.0
+    np.testing.assert_allclose(td.t_s, [0.0, 1.0002, 2.0004], atol=1e-6)
+
+
+# --------------------------------------------------------------------------------------------------
+# parse_datetime -- Fallback 2 must never resolve a value pd.to_numeric accepts
+#
+# Review finding: rejecting an out-of-range value in Fallback 1 (above) isn't enough on its own --
+# Fallback 2's unrestricted dateutil parse was still happy to read a bare number as a date by a
+# different route ("2024" -> 2024-01-01, "1500.5" -> 1500-05-01, "20171221" -> 2017-12-21). A
+# purely numeric string gets exactly one route to a date (Fallback 1's Excel-serial parse); if
+# that fallback already rejected it, Fallback 2 must not get a second, unguarded attempt.
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("value", ["2024", "1500.5", "20171221", "1999.99"])
+def test_parse_datetime_fallback2_never_parses_bare_numbers(value):
+    s = pd.Series([value], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert pd.isna(result.iloc[0])
+
+
+# --------------------------------------------------------------------------------------------------
+# parse_datetime -- 12-hour AM/PM fast path
+#
+# A whole-file AM/PM-formatted column (e.g. Badger 25N-3HZ's "12/21/2017 9:22:20 AM") must resolve
+# through the second exact, vectorized fast path (_PRIMARY_DT_FORMAT_AMPM) rather than falling
+# through to the much slower per-element dateutil parse -- verified here by asserting no
+# "Could not infer format" UserWarning fires (that warning only ever comes from the dateutil
+# fallback), not just by checking the parsed value.
+# --------------------------------------------------------------------------------------------------
+def test_parse_datetime_ampm_fast_path_no_dateutil_warning():
+    s = pd.Series(["12/21/2017 9:22:20 AM", "12/21/2017 9:22:21 AM"], dtype="string")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2017-12-21 09:22:20")
+    assert result.iloc[1] == pd.Timestamp("2017-12-21 09:22:21")
+
+
+def test_parse_datetime_ampm_fast_path_dayfirst_variant():
+    # Day-first hint (day component exceeds 12 in one row) must select the day-first AM/PM format,
+    # not just the month-first one.
+    s = pd.Series(["15/8/2022 9:22:20 AM", "20/8/2022 1:05:00 PM"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2022-08-15 09:22:20")
+    assert result.iloc[1] == pd.Timestamp("2022-08-20 13:05:00")
+
+
+def test_parse_datetime_tz_aware_string_does_not_raise():
+    # Measured case: a SCADA-style "Datetime(UTC)" column with an explicit UTC marker (e.g.
+    # "2019-08-29 14:13:35Z") makes Fallback 2's dateutil parse infer a tz-AWARE result, which
+    # `.astype("datetime64[us]")` refuses outright (a TypeError, not a parse failure) -- this
+    # column doesn't even have to be the one `load_csv` ends up using: _best_datetime_column
+    # scores every multi-candidate column, including ones it ultimately rejects, so a tz-aware
+    # sibling must not crash the load just for being evaluated. The offset is dropped (local
+    # wall-clock time kept), not converted -- elapsed-time math never needs absolute UTC.
+    s = pd.Series(["2019-08-29 14:13:35Z", "2019-08-29 14:13:39Z"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2019-08-29 14:13:35")
+    assert result.iloc[1] == pd.Timestamp("2019-08-29 14:13:39")
+
+
+def test_parse_datetime_fallback2_rejects_implausible_dateutil_guess():
+    # Measured case: Hodges 2CH DFIT.csv's ~1.05M-row "Date Time" column has two genuinely
+    # corrupted cells ("23 23:43:18" -- missing its date entirely, "4/19/227" -- a typo'd year),
+    # and dateutil's generic parser happily guesses year-1 and year-227 timestamps for them
+    # rather than failing. Unguarded, either one poisons a min/max computed over the column with
+    # a bogus multi-century span. Both must stay NaT, same as an out-of-window Excel serial.
+    s = pd.Series(["04/11/2023 14:33:12", "23 23:43:18", "4/19/227"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2023-04-11 14:33:12")
+    assert pd.isna(result.iloc[1])
+    assert pd.isna(result.iloc[2])
+
+
+def test_load_csv_tz_aware_sibling_column_does_not_crash(tmp_path):
+    # End-to-end version of the above: a good, primary-format "Datetime" column (no tz) alongside
+    # a tz-aware "Datetime(UTC)" sibling -- both are datetime-name-matching candidates, and the
+    # tz-aware one must not crash multi-candidate scoring even though "Datetime" wins outright.
+    p = tmp_path / "tz_sibling.csv"
+    p.write_text(
+        "Datetime,Datetime(UTC),Pressure (psi)\n"
+        "08/29/2019 08:13:35,2019-08-29 14:13:35Z,75.0\n"
+        "08/29/2019 08:13:39,2019-08-29 14:13:39Z,0.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Datetime"
+
+
+def test_parse_datetime_numeric_utc_offset_does_not_raise():
+    # Same TypeError as the "Z"-suffixed case above, but with a numeric UTC offset instead of a
+    # bare "Z" marker (e.g. Edge Energy Simpson 36-1H / Synergy Resources Sanford's
+    # "HistReport_..." files, whose SCADA export uses "-07:00"-style offsets). The offset is
+    # dropped (local wall-clock kept), matching the "Z" case.
+    s = pd.Series(
+        ["2019-11-08 07:00:00-07:00", "2019-11-08 07:00:01-07:00"], dtype="string"
+    )
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2019-11-08 07:00:00")
+    assert result.iloc[1] == pd.Timestamp("2019-11-08 07:00:01")
+
+
+def test_parse_datetime_rejects_bare_clock_strings():
+    # Measured case: Crescent Point's Dressler "...1secdata.csv" has an unnamed first column
+    # (an INSITE treatment log under an undetected preamble) whose real values are elapsed
+    # "MM:SS.f" clock strings with no hours and no date at all -- e.g. "09:07.0". Read alone,
+    # dateutil parses "09:07.0" as 09:07:00 defaulted to TODAY's date (a "valid" timestamp that
+    # is really just an artifact of when the code runs), while a minutes value >= 24 (an invalid
+    # hour) correctly fails as NaT already -- both must end up NaT, not a mix of NaT and
+    # spuriously-dated rows.
+    s = pd.Series(["09:07.0", "09:08.0", "27:32.7", "13:05:01"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.isna().all()
+
+
+def test_load_csv_bare_clock_column_fails_instead_of_garbage_duration(tmp_path):
+    # End-to-end Dressler repro: an unnamed, numeric-named first column (no header row detected
+    # under a uniformly-7-field preamble, so a job-header line and a units line both land as
+    # "data") whose real values are "MM:SS.f" elapsed clock strings. Before the guard above, one
+    # genuine date elsewhere in the column (a job-header line, "11-Aug-14") anchored the elapsed-
+    # time math against thousands of today-dated "MM:SS.f" rows years apart -- a ~12-YEAR
+    # "duration" for what is actually a same-day 1-second-cadence pump job. With the guard, only
+    # that one genuine date survives, which is not enough to define a usable timeframe, so the
+    # load must fail outright rather than report a plausible-looking but meaningless result.
+    lines = [
+        "2,3,4",
+        "Job Data Listing 1secdata,,",
+        "INSITE for Stimulation v4.5.1,,",
+        "11-Aug-14,,",
+        "Time,Slurry Rate,Treating Pressure",
+        "(hh:mm:ss.ttt),(bpm),(psi)",
+        "09:07.0,10.0,5000.0",
+        "09:08.0,10.0,4995.0",
+        "09:09.0,10.0,4990.0",
+    ]
+    p = tmp_path / "dressler_shape.csv"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError):
+        io_load.load_csv(str(p))
+
+
+# --------------------------------------------------------------------------------------------------
+# FIX B -- broader numeric-time-column fallback (_find_numeric_time_column)
+#
+# Measured case: a Fracpro ASCII export whose only time-ish column is bare elapsed time with no
+# "delta"/"elapsed" in its name at all (_find_elapsed_column's stricter rule never matches it).
+# Before the Fallback-1 serial-range guard, a file like this silently misparsed as ~1900 dates;
+# guarded, it correctly reads as no date at all and used to hard-fail with "Could not parse any
+# datetimes" -- this fallback resolves the column's unit (header suffix -> units row -> name
+# token -> bare-"Time"-assume-minutes) and loads it as elapsed time instead.
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_time_header_suffix_seconds(tmp_path):
+    p = tmp_path / "time_sec.csv"
+    p.write_text("Time (sec),Pressure (psi)\n0.0,5000.0\n1.0,4995.0\n2.0,4990.0\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, [0.0, 1.0, 2.0])
+    assert td.load_warnings == []
+
+
+def test_load_csv_time_name_token_seconds(tmp_path):
+    p = tmp_path / "time_us_sec.csv"
+    p.write_text("Time_sec,Pressure (psi)\n0.0,5000.0\n1.0,4995.0\n2.0,4990.0\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, [0.0, 1.0, 2.0])
+
+
+def test_load_csv_bare_minutes_name_no_needle_match(tmp_path):
+    # "Minutes" contains none of suggest_channels' own datetime needles ("time"/"date"/...), so
+    # it's never a multi-candidate; load_csv falls back to it as the first column, and the unit
+    # resolves from the name token alone.
+    p = tmp_path / "minutes.csv"
+    p.write_text("Minutes,Pressure (psi)\n0.0,5000.0\n1.0,4995.0\n2.0,4990.0\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, [0.0, 60.0, 120.0])
+    assert td.load_warnings == []
+
+
+def test_load_csv_units_declaration_row(tmp_path):
+    # Badger 25N-3HZ shape: a literal "(min) , " row right after the header, read as an ordinary
+    # (garbage) first data row rather than a header. No header suffix, no name token -- the unit
+    # comes only from this row.
+    p = tmp_path / "unit_row.csv"
+    p.write_text("Time,Pressure (psi)\n(min) , \n0.0,5000.0\n1.0,4995.0\n2.0,4990.0\n")
+    td = io_load.load_csv(str(p))
+    assert np.isnan(td.t_s[0])
+    np.testing.assert_allclose(td.t_s[1:], [0.0, 60.0, 120.0])
+    assert td.load_warnings == []
+
+
+def test_load_csv_bare_time_assumes_minutes_with_warning(tmp_path):
+    # No header suffix, no units row, no name token anywhere -- a bare "Time" header falls back to
+    # assuming minutes (the plain Fracpro ASCII convention), but only with an explicit
+    # load_warnings entry, since it's a guess.
+    p = tmp_path / "bare_time.csv"
+    p.write_text("Time,Pressure (psi)\n0.0,5000.0\n1.0,4995.0\n2.0,4990.0\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, [0.0, 60.0, 120.0])
+    assert len(td.load_warnings) == 1
+    assert "minute" in td.load_warnings[0].lower()
+
+
+def test_load_csv_delta_hrs_path_still_preferred_over_broader_fallback(tmp_path):
+    # Keep the existing, stricter delta/elapsed behavior intact: when _find_elapsed_column
+    # already finds a usable column, the broader numeric-time-column fallback is never consulted.
+    lines = [
+        "Date/Time, TZ,Delta(Hrs), Casing 1 pressure (psi)",
+        "26:13.0,CDT,0,11.297",
+        "26:14.0,CDT,0.0002778,11.313",
+        "42:27.0,CDT,291.2705556,1393.0",
+    ]
+    p = tmp_path / "goodnight.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "DateTime"
+    assert td.load_warnings == []
+    assert td.t_s[-1] / 3600 == pytest.approx(291.2705556, abs=1e-3)
+
+
+# --------------------------------------------------------------------------------------------------
+# _best_datetime_column -- always score the default; exclude a bare time-of-day-only candidate
+# --------------------------------------------------------------------------------------------------
+def test_best_datetime_column_scores_default_even_when_not_a_candidate(tmp_path):
+    # "Clock Time" (pure time-of-day) is suggest_channels' own first-match default; "Timestamp"
+    # (real dates, with a couple of blanks) must still win outright, even though the default
+    # itself is never excluded from being scored (issue: an unscored default used to read as 0.0
+    # and lose to literally any candidate).
+    rows = []
+    for i in range(10):
+        ts = f"1/1/2024 08:{i:02d}:00" if i not in (3, 7) else ""
+        clock = f"8:{i:02d}:00 AM"
+        rows.append(f"{clock},{ts}")
+    guess = io_load.suggest_channels(["Clock Time", "Timestamp"])
+    assert guess["datetime"] == "Clock Time"
+    p = tmp_path / "tod.csv"
+    p.write_text("Clock Time,Timestamp\n" + "\n".join(rows) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Timestamp"
+
+
+def test_best_datetime_column_excludes_pure_time_of_day_candidate(tmp_path):
+    # Same shape, opposite column order: the real datetime column ("Timestamp") is
+    # suggest_channels' own default here, and the bare time-of-day column ("Clock Time") must not
+    # be able to steal the win just because dateutil silently defaults its missing date to today.
+    rows = []
+    for i in range(10):
+        ts = f"1/1/2024 08:{i:02d}:00" if i not in (3, 7) else ""
+        clock = f"8:{i:02d}:00 AM"
+        rows.append(f"{ts},{clock}")
+    p = tmp_path / "tod2.csv"
+    p.write_text("Timestamp,Clock Time\n" + "\n".join(rows) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Timestamp"
 
 
 # --------------------------------------------------------------------------------------------------
