@@ -325,6 +325,262 @@ def test_load_csv_bare_clock_column_fails_instead_of_garbage_duration(tmp_path):
         io_load.load_csv(str(p))
 
 
+def test_parse_datetime_mixed_utc_offsets_across_dst_does_not_raise():
+    # L2: plain pd.to_datetime raises "Mixed timezones detected" outright (even with
+    # errors="coerce") when an array mixes tz-aware values with DIFFERENT UTC offsets -- e.g. a
+    # SCADA export spanning a DST transition, "-05:00" before it and "-06:00" after. This must be
+    # caught and retried with utc=True (a common reference instant), not allowed to propagate --
+    # including when the column carrying it merely LOSES multi-candidate scoring, so this must
+    # never raise out of _score_datetime_candidate either.
+    s = pd.Series(
+        ["2019-11-03 01:00:00-05:00", "2019-11-03 01:30:00-05:00",
+         "2019-11-03 01:00:00-06:00", "2019-11-03 01:30:00-06:00"],
+        dtype="string",
+    )
+    result = io_load.parse_datetime(s)
+    assert result.notna().all()
+    # Real elapsed time across the fall-back transition: 90 minutes, not the 30 minutes naive
+    # local-wall-clock arithmetic would show (each pair 30 min apart, but the second pair is a
+    # further hour later in absolute time once the clocks fall back).
+    assert (result.iloc[-1] - result.iloc[0]).total_seconds() == 90 * 60
+
+
+def test_score_datetime_candidate_mixed_tz_losing_candidate_does_not_raise(tmp_path):
+    # End-to-end version of the above: a good "Datetime" column wins outright, but a losing
+    # sibling candidate carries the DST-mixed offsets. Scoring it must not crash the whole load.
+    p = tmp_path / "mixed_tz_sibling.csv"
+    p.write_text(
+        "Datetime,Datetime(local),Pressure (psi)\n"
+        "11/03/2019 01:00:00,2019-11-03 01:00:00-05:00,75.0\n"
+        "11/03/2019 01:05:00,2019-11-03 01:00:00-06:00,74.0\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Datetime"
+
+
+# --------------------------------------------------------------------------------------------------
+# M2 -- Fallback 2 runs at full length (not reindexed to the still-NaT subset), so a malformed
+# row keeps its real neighbors for format-inference context.
+# --------------------------------------------------------------------------------------------------
+def test_parse_datetime_corrupted_row_stays_nat_with_well_formed_neighbors():
+    # Measured case: Strathcona's 100-09-14-062-04W6-rt.csv has a row whose Date cell lost its
+    # leading day digits ("/10/2022" instead of "31/10/2022"), joined with a real Time into
+    # "/10/2022 22:11:25", sitting among thousands of well-formed "31/10/2022 22:11:25"-shaped
+    # neighbors. Parsed WITH those neighbors, pandas correctly guesses the shared dayfirst format
+    # and the corrupted row fails to match it (NaT) -- parsed in isolation (or reindexed into a
+    # subset without those neighbors), dateutil's own single-value guess reads it as a
+    # plausible-but-wrong 2022-10-01, which this must not do.
+    good = ["31/10/2022 22:11:{:02d}".format(s) for s in range(20)]
+    values = good[:5] + ["/10/2022 22:11:25"] + good[5:]
+    s = pd.Series(values, dtype="string")
+    result = io_load.parse_datetime(s)
+    assert pd.isna(result.iloc[5])
+    assert result.iloc[4] == pd.Timestamp("2022-10-31 22:11:04")
+    assert result.iloc[6] == pd.Timestamp("2022-10-31 22:11:05")
+
+
+def test_parse_datetime_no_digit_value_does_not_break_whole_column_format_guess():
+    # A value with no digit at all (e.g. a units-declaration row misread as data, "(date time)")
+    # must be masked out BEFORE the generic parse, not just discarded after -- left in, it can
+    # make pandas fail to guess ANY shared format for the array at all (a real perf cliff on a
+    # large column, see the fix's own comment; here just checked for correctness) and everything
+    # else in the array must still parse normally around it.
+    good = ["12/14/2016 10:25:{:02d} AM".format(s) for s in range(20)]
+    values = ["(date time)"] + good
+    s = pd.Series(values, dtype="string")
+    result = io_load.parse_datetime(s)
+    assert pd.isna(result.iloc[0])
+    assert result.iloc[1] == pd.Timestamp("2016-12-14 10:25:00")
+    assert result.notna().sum() == 20
+
+
+# --------------------------------------------------------------------------------------------------
+# H1 -- clock-only elapsed-time fallback (_find_clock_column): a wall-clock-only column with no
+# date anywhere in the file.
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_clock_only_ampm_column(tmp_path):
+    # Great Western Marcus Pad shape: "Time Stamp" is a bare 12-hour clock, no date column at all.
+    lines = ["Time Stamp,Rate,Pressure"]
+    lines += [f"9:13:{s:02d} AM,0,100" for s in range(32, 40)]
+    p = tmp_path / "clock_ampm.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, list(range(8)))
+    assert any("clock times only" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_only_24h_column(tmp_path):
+    # Tap Rock Enron shape: bare "Time", 24-hour, no AM/PM, no date.
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"16:20:{s:02d},0,100" for s in range(0, 8)]
+    p = tmp_path / "clock_24h.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, list(range(8)))
+
+
+def test_load_csv_clock_only_under_units_row(tmp_path):
+    # Fifth Creek / WPX shape: a "(datetime)"/"(hh:mm:ss)" units-declaration row right after the
+    # header, misread as an ordinary data row -- must not stop the clock-only column from being
+    # recognized (it's just one more non-clock-shaped value the fraction check tolerates).
+    lines = ["JobTime,Rate,Pressure", "(datetime),(bpm),(psi)"]
+    lines += [f"11:50:{s:02d},0,100" for s in range(56, 60)]
+    lines += [f"11:51:{s:02d},0,100" for s in range(0, 4)]
+    p = tmp_path / "clock_units_row.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.n == 9
+    assert np.isnan(td.t_s[0])
+    np.testing.assert_allclose(td.t_s[1:], list(range(8)))
+
+
+def test_load_csv_clock_only_unwraps_midnight_rollover(tmp_path):
+    # A job that runs past midnight: the elapsed time must keep increasing across the rollover,
+    # not jump backward.
+    lines = ["Time,Rate,Pressure"]
+    lines += ["23:59:58,0,100", "23:59:59,0,100", "0:00:00,0,100", "0:00:01,0,100"]
+    p = tmp_path / "clock_rollover.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s, [0.0, 1.0, 2.0, 3.0])
+
+
+def test_clock_seconds_of_day_excludes_dressler_ambiguous_mm_ss_shape():
+    # H1's own carve-out: Dressler's "MM:SS.f" shape (exactly two colon-separated fields plus a
+    # fraction, no seconds group) is ambiguous with an "H:MM" reading of a fractional minute, so
+    # _clock_seconds_of_day must never treat it as a usable clock value.
+    s = pd.Series(["27:32.7", "09:07.0"], dtype="string")
+    result = io_load._clock_seconds_of_day(s)
+    assert result.isna().all()
+
+
+def test_load_csv_dressler_shape_still_fails_not_rescued_by_clock_fallback(tmp_path):
+    # H1 must not rescue Crescent Point's Dressler shape: its "MM:SS.f" values are excluded from
+    # the clock fallback on principle (see the test above), so this file must keep failing to
+    # load exactly as it did before H1 was added.
+    lines = [
+        "2,3,4",
+        "Job Data Listing 1secdata,,",
+        "INSITE for Stimulation v4.5.1,,",
+        "11-Aug-14,,",
+        "Time,Slurry Rate,Treating Pressure",
+        "(hh:mm:ss.ttt),(bpm),(psi)",
+        "09:07.0,10.0,5000.0",
+        "09:08.0,10.0,4995.0",
+        "09:09.0,10.0,4990.0",
+    ]
+    p = tmp_path / "dressler_shape2.csv"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError):
+        io_load.load_csv(str(p))
+
+
+# --------------------------------------------------------------------------------------------------
+# H2a -- the clock regex accepts 1- or 2-digit seconds (e.g. "15:10:9"), not just 2-digit.
+# --------------------------------------------------------------------------------------------------
+def test_parse_datetime_rejects_single_digit_second_clock_string():
+    # Companion check to the clock-fallback test below: a single-digit-second clock string is
+    # still recognized as bare-clock-shaped (and so still rejected by parse_datetime, not handed
+    # to dateutil's same-day default).
+    s = pd.Series(["15:10:9"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.isna().all()
+
+
+def test_load_csv_clock_only_single_digit_seconds(tmp_path):
+    # Measured case: Sandpoint's "Sandpoint Resources LLC_07-09-20_15-10-08.csv" opens with
+    # "15:10:9" (single-digit seconds) before the rest of the column zero-pads normally -- with
+    # only a 2-digit-seconds regex, this one row silently fails the clock-fallback's own
+    # predominantly-clock check on a small file, or reads as garbage elsewhere; widened to 1-2
+    # digits, the whole column loads.
+    lines = ["Time,Rate,Pressure", "15:10:9,0,100", "15:10:10,0,100", "15:10:11,0,100"]
+    p = tmp_path / "clock_single_digit_sec.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.n == 3
+    np.testing.assert_allclose(td.t_s, [0.0, 1.0, 2.0])
+
+
+# --------------------------------------------------------------------------------------------------
+# H2b -- the trust-fraction check divides by non-empty cells, not every row (blank trailing
+# padding rows don't count against it), and raises unconditionally (no ">=2 valid" exception)
+# when nothing survives the fraction check and no elapsed/clock fallback applies either.
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_blank_trailing_rows_do_not_fail_valid_fraction_check(tmp_path):
+    # A file with real, fully-parseable data followed by blank padding rows (no values in any
+    # column at all) must not have its trust fraction dragged down by those padding rows -- they
+    # carry no "invalid" datetime cell, just no cell at all.
+    lines = ["Job Time,Pressure(psi)"]
+    lines += [f"12/21/2017 9:22:{s:02d} AM,5000" for s in range(20, 40)]
+    lines += [",", ",", ","]
+    p = tmp_path / "trailing_blanks.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Job Time"
+    assert td.n == 23
+
+
+def test_load_csv_low_fraction_with_no_fallback_raises_even_with_many_valid_rows(tmp_path):
+    # H2b's replacement for the old ">=2 valid" exception: a column with a low VALID FRACTION
+    # (most non-empty cells fail to parse) must raise even when the absolute valid COUNT is well
+    # above 2, as long as no elapsed or clock fallback rescues it. Measured case: Liberty's
+    # Anderson "DFIT-FINAL.csv" -- a plain sample-index column where ~9% of the integers happen
+    # to fall inside the plausible Excel-serial range and misparse as real (but wrong) dates.
+    lines = ["Index,Pressure(psi)"]
+    # 9 non-date-shaped small integers (never in Excel-serial range) for every 1 that happens to
+    # fall in range (32874-73051) -- an ~10% valid fraction, comfortably below the 50% threshold,
+    # with more than 2 "valid" rows in absolute terms.
+    for i in range(1, 41):
+        val = 32900 + i if i % 10 == 0 else i
+        lines.append(f"{val},{5000 - i}")
+    p = tmp_path / "low_fraction_index.csv"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError):
+        io_load.load_csv(str(p))
+
+
+def test_load_csv_trailing_excel_ref_error_rows_do_not_fail_valid_fraction(tmp_path):
+    # H2b's own fraction check must not punish a file for something that isn't really data at
+    # all: a broken Excel formula reference ("#REF!") filling every cell of a large trailing
+    # block. Measured case: Crestone Peak's "21011234 raw data.csv" has 233,470 genuinely valid,
+    # contiguous "Date Time" rows followed by ~713,000 trailing "#REF!" rows -- a real, good
+    # DFIT record padded by spreadsheet corruption, not the "mostly nothing ever parsed" shape
+    # the fraction check exists to catch. "#REF!" (and the other common Excel error sentinels)
+    # must be excluded from the non-empty-cell denominator the same way a blank cell is.
+    lines = ["Date Time,Pressure(psi)"]
+    lines += [f"1/1/24 00:00:{s:02d},5000" for s in range(20)]
+    lines += ["#REF!,#REF!"] * 200
+    p = tmp_path / "trailing_ref_error.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Date Time"
+    assert np.isfinite(td.t_s).sum() == 20
+
+
+# --------------------------------------------------------------------------------------------------
+# L1 -- date/companion pairing is independent of column order (a bare "Time" column before its
+# real "Date" pair must not win just by coming first).
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_time_before_date_column_order_independent(tmp_path):
+    # suggest_channels' find() takes the first column-order match -- "Time" before "Date" -- but
+    # _datetime_column_candidates correctly identifies "Date" as the one real candidate (with
+    # "Time" reserved as its FIX-A companion). load_csv must switch to "Date" even though there's
+    # only one candidate to consider (previously only multi-candidate cases triggered a switch).
+    lines = [
+        "Time,Date,Pressure(psi)",
+        "8:23:17,9/8/2022,100",
+        "8:23:29,9/8/2022,101",
+        "8:23:40,9/8/2022,102",
+        "8:23:50,9/8/2022,103",
+        "8:24:00,9/8/2022,104",
+    ]
+    p = tmp_path / "time_before_date.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Date"
+    np.testing.assert_allclose(td.t_s, [0.0, 12.0, 23.0, 33.0, 43.0])
+
+
 # --------------------------------------------------------------------------------------------------
 # FIX B -- broader numeric-time-column fallback (_find_numeric_time_column)
 #

@@ -73,49 +73,113 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   (24-hour, then 12-hour AM/PM) before falling back to a bare Excel-serial parse -- accepted only
   within a plausible 1990-2100 range (`_EXCEL_SERIAL_MIN/MAX`; a small bare number like an
   elapsed-minutes value is otherwise misread as an implausible 1900-ish date) -- and then a
-  generic dateutil parse restricted to whatever's still unparsed, which is guarded three ways
-  before it's trusted: never a bare number `pd.to_numeric` accepts (that has exactly one
-  sanctioned route to a date -- the Excel-serial fallback -- so one that fallback already
-  rejected can't sneak through dateutil's own date-from-a-bare-number guesses instead); never a
-  result outside the same plausible 1990-2100 window (`_PLAUSIBLE_DT_MIN/MAX` -- a genuinely
-  corrupted cell, e.g. a truncated date or a typo'd year, that dateutil still "successfully"
-  guesses a year-1 or year-227 timestamp for rather than failing outright); and never a bare
+  generic dateutil parse over whatever's still unparsed. That last, generic parse runs at FULL
+  LENGTH (never reindexed to just the still-unparsed rows): pandas' own format-inference reads a
+  shared strptime format from the array's first non-null value and applies it fast to the rest,
+  so feeding it a smaller, already-more-homogeneous-garbage subset can change what gets guessed
+  and therefore change a row's OWN result even though dateutil parses each row independently once
+  the guess is fixed (measured case: Strathcona's `100-09-14-062-04W6-rt.csv` has a row whose
+  Date cell lost its leading day digits, joined with a real Time into `"/10/2022 22:11:25"`,
+  sitting among thousands of well-formed `"31/10/2022 22:11:25"`-shaped neighbors -- parsed WITH
+  those neighbors, pandas guesses their shared dayfirst format and the corrupted row simply fails
+  to match it (correct NaT); parsed alone, dateutil's own single-value guess reads it as a
+  plausible-but-wrong `2022-10-01`). What runs BEFORE this call, not after, is blanking (to NA,
+  never removing -- length must stay full) every value that could never legitimately become a
+  NEW date through it anyway: a bare number `pd.to_numeric` accepts (that has exactly one
+  sanctioned route to a date -- the Excel-serial fallback above -- so one that fallback already
+  rejected can't sneak through dateutil's own date-from-a-bare-number guesses instead); a bare
   time-of-day/clock string with no date part at all -- not just `"9:22:20 AM"`, but also an
   Excel-mangled elapsed `MM:SS.f` reading like `"09:07.0"` (`_TIME_OF_DAY_RE`, its trailing
-  fractional-seconds group written to also match with no seconds-colon present) -- since dateutil
-  silently defaults the missing date to TODAY, producing a "valid" timestamp that is really just
-  an artifact of when the code happened to run. A tz-aware result (an explicit UTC/offset marker,
-  e.g. `"2019-08-29 14:13:35Z"` or `"...-07:00"`) has its offset dropped via `tz_localize(None)`
-  rather than converted -- DFIT elapsed-time math only ever needs local wall-clock time, and
-  pandas 3.0's unit-strict cast to `datetime64[us]` raises outright on a tz-aware source instead
-  of silently converting it. The bare-clock guard is skippable
+  fractional-seconds group written outside the optional seconds-colon group so it matches with or
+  without one, and its seconds group itself `\d{1,2}` so a non-zero-padded second like `"15:10:9"`
+  still counts) -- since dateutil silently defaults the missing date to TODAY, producing a
+  "valid" timestamp that is really just an artifact of when the code happened to run; and a value
+  with no digit in it at all, which cannot be a date under any interpretation and, left in, can
+  make pandas fail to guess ANY shared format for the WHOLE array (not just fail to match one),
+  falling back to a slow per-element dateutil pass over every non-null value (measured case:
+  Horsetail 07E-0636's 631k-row Job Time column carries a literal `"(date time)"`
+  units-declaration row -- misread as data, see FIX B below -- at the very start of the column;
+  left unmasked, ~26s; masked, ~1.4s). Leaving already-resolved rows unmasked (not blanked) is
+  what preserves the Strathcona good-neighbor context above -- blanking them would reproduce the
+  same "malformed row parsed with no context" problem a reindexed subset caused, and costs
+  nothing extra either way, since a null entry is skipped immediately with no format-guess or
+  per-row parse charged against it. The bare-clock guard is skippable
   (`parse_datetime(..., reject_bare_clock=False)`) for exactly one caller: FIX A's companion-Time
   join below, where a blank Date field beside a real Time value intentionally joins to a
-  date-less string and is meant to parse as a same-day guess (DEFECT 1a) rather than fail. When
-  more than one column name looks datetime-ish, `load_csv` picks by whichever scores highest on a
-  bounded, evenly-spaced sample (capped at 5,000 non-null rows, so scoring several candidates in a
-  multi-million-row file stays cheap -- `_best_datetime_column`/`_score_datetime_candidate`): the
-  default is always scored too, even when it isn't itself a candidate, and a column that is
-  *entirely* bare time-of-day values never wins outright even before the per-value guard above
-  runs (`_looks_like_time_of_day_only`, scored 0.0). When NO column parses as a datetime at all,
-  `load_csv` falls back to treating a plain numeric, non-decreasing column as elapsed time:
-  `_find_elapsed_column` for a `delta`/`elapsed`-named column with a recognized parenthesized
-  unit suffix, or the broader `_find_numeric_time_column` for any other datetime-name-matching
-  column (e.g. a bare Fracpro ASCII `Time`) -- unit resolved in order: the column's own header
-  suffix -> a units-declaration data row (e.g. a literal `"(min)"` cell right after the header,
-  misread as an ordinary data row) -> a unit token in the column's name (`Time_sec`, `Minutes`)
-  -> else, for a bare `Time` header with no other hint at all, an assumed-MINUTES guess (the
-  plain Fracpro ASCII convention) recorded as a `TestData.load_warnings` entry, since it's a
-  guess, not a read. If the datetime column still parsed too little to trust (`_MIN_VALID_DT_FRACTION`)
-  and neither elapsed fallback found anything either, `load_csv` raises rather than silently
-  proceeding with an untrustworthy column, UNLESS it still has >=2 genuinely valid timestamps
-  (enough to define a real, if sparse, elapsed timeframe) -- measured case: Crescent Point's
-  Dressler `"...1secdata.csv"`, an unnamed numeric-named column (an INSITE treatment log under an
-  undetected preamble) of `"MM:SS.f"` clock strings that, before the bare-clock guard above,
-  spuriously validated as today-dated rows and, anchored against one genuine date elsewhere in
-  the same column (a job-header line misread as data), reported a ~12-YEAR "duration" for what is
-  actually a same-day pump job; with the guard, exactly one genuine date survives, which this
-  final check now correctly treats as not enough to load. `suggest_channels` suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
+  date-less string and is meant to parse as a same-day guess (DEFECT 1a) rather than fail. A tz-
+  aware result (an explicit UTC/offset marker, e.g. `"2019-08-29 14:13:35Z"` or `"...-07:00"`) has
+  its offset dropped via `tz_localize(None)` rather than converted in place -- DFIT elapsed-time
+  math only ever needs local wall-clock time, and pandas 3.0's unit-strict cast to
+  `datetime64[us]` raises outright on a tz-aware source instead of silently converting it -- EXCEPT
+  when the array mixes tz-aware values with DIFFERENT UTC offsets (e.g. `"-05:00"` and `"-06:00"`
+  either side of a DST transition in the same SCADA export), where plain `pd.to_datetime` raises
+  `"Mixed timezones detected"` outright, even with `errors="coerce"`, since it can't represent
+  non-uniform offsets in one array without a common timezone; caught and retried with `utc=True`
+  (a common UTC reference instant, offset then dropped the same way) on that specific error only,
+  which is also what makes the resulting elapsed-time span correct ACROSS the transition -- a
+  uniform, unchanging offset cancels out in any later subtraction either way, but a transition's
+  real ~1-hour jump only shows up correctly once every value shares one reference instant. Both
+  the mixed-offset retry and the tz-drop have to survive a candidate that ultimately LOSES the
+  multi-candidate comparison below (every candidate gets scored, including ones this call
+  rejects) without crashing the whole load, or scoring, just for being evaluated. Anything
+  dateutil returns outside the same plausible 1990-2100 window is rejected too
+  (`_PLAUSIBLE_DT_MIN/MAX` -- a genuinely corrupted cell, e.g. a truncated date or a typo'd year,
+  that dateutil still "successfully" guesses a year-1 or year-227 timestamp for rather than
+  failing outright). When more than one column name looks datetime-ish, `load_csv` picks by
+  whichever scores highest on a bounded, evenly-spaced sample (capped at 5,000 non-null rows, so
+  scoring several candidates in a multi-million-row file stays cheap --
+  `_best_datetime_column`/`_score_datetime_candidate`): the default is always scored too, even
+  when it isn't itself a candidate, and a column that is *entirely* bare time-of-day values never
+  wins outright even before the per-value guard above runs (`_looks_like_time_of_day_only`,
+  scored 0.0). Pairing a date-like-but-not-time-like column with its bare-`"Time"` companion (FIX
+  A) is independent of which one comes first in the file: even when there's only ONE real
+  candidate left after `_datetime_column_candidates` reserves the companion for its date column,
+  `load_csv` still switches to it if `suggest_channels`' own order-dependent first-match had
+  picked the companion instead (measured case: a bare `"Time"` column sitting before its real
+  `"Date"` pair in column order) -- switching used to happen only when there was more than one
+  candidate to SCORE, which silently kept the wrong single-candidate pick.
+
+  When the datetime column parses too little of the file to trust
+  (`_MIN_VALID_DT_FRACTION`, fraction computed over the column's own non-empty cells, not every
+  row in the file, so blank trailing padding rows -- some exports pad past the last logged sample
+  with fully empty rows -- don't drag the fraction down despite every real row parsing fine),
+  `load_csv` tries three fallbacks in order, in each case converting to elapsed seconds from the
+  first valid sample (rebased so the source column need not itself start at 0) and synthesizing a
+  `"DateTime"` column the same way regardless of which fallback supplied it: `_find_elapsed_column`
+  for a `delta`/`elapsed`-named column with a recognized parenthesized unit suffix; the broader
+  `_find_numeric_time_column` for any other datetime-name-matching column, trying `dt_col` itself
+  first (the common case: the very column `load_csv` just failed to parse as a datetime, e.g. a
+  bare Fracpro ASCII `Time`) and only then any other candidate -- unit resolved in order: the
+  column's own header suffix -> a units-declaration data row (e.g. a literal `"(min)"` cell right
+  after the header, misread as an ordinary data row) -> a unit token in the column's name
+  (`Time_sec`, `Minutes`) -> else, for a bare `Time` header with no other hint at all, an
+  assumed-MINUTES guess (the plain Fracpro ASCII convention) recorded as a `TestData.load_warnings`
+  entry, since it's a guess, not a read; and, only once that broader numeric path also finds
+  nothing, `_find_clock_column` -- a column whose non-empty values are PREDOMINANTLY (same
+  `_MIN_VALID_DT_FRACTION`) bare clock/time-of-day strings and nothing else, the file's only time
+  base being a wall clock with no date column anywhere (a plain instrument/pump log, not a Fracpro
+  export). `_clock_seconds_of_day` extracts hour/minute/second/AM-PM from `_TIME_OF_DAY_RE`'s
+  named groups (hour range 0-23 with no AM/PM marker, 1-12 with one) and DELIBERATELY excludes the
+  Dressler-shaped `"MM:SS.f"` value (exactly two colon-separated fields plus a fraction, no
+  seconds group) as ambiguous with an `"H:MM"` reading of a fractional minute -- Crescent Point's
+  own Dressler `"...1secdata.csv"` must keep failing here, not land on a wrong reading through
+  this fallback instead. `_unwrap_midnight_rollovers` then adds 24h for every backward step of
+  more than 12h between consecutive finite samples (a clock-only column has no date to carry the
+  day boundary, so a big backward jump means the clock wrapped past midnight, not that time ran
+  backward), and the returned warning says so: `"Time column has clock times only (no date);
+  elapsed time computed from the first sample, midnight rollovers unwrapped."` If NONE of the
+  three fallbacks finds anything, `load_csv` raises -- unconditionally, regardless of how many
+  "valid" timestamps the untrustworthy column happens to have in absolute terms, since a low,
+  isolated minority is not a working time base. Measured case: Liberty's Anderson
+  `"DFIT-FINAL.csv"` -- an undetected preamble collapses its real Date + Real Time columns to
+  anonymous `"Unnamed: N"` ones, landing `dt_col` on a plain sample-INDEX column instead (`"1"`,
+  `"2"`, `"3"`, ...); roughly 1 in 11 of those integers happens to fall inside the plausible
+  Excel-serial range and gets misread as a real (but wrong) date, reaching a nonzero valid COUNT
+  -- 40,178 of 431,349 rows -- that a "some rows parsed" check alone would have accepted; the
+  FRACTION (~9%) is what correctly flags it as untrustworthy instead, matching Crescent Point's
+  Dressler file (a single genuine date surviving among thousands of rejected bare-clock rows)
+  under the exact same rule -- there is no more special-cased ">=2 valid" exemption from it.
+  `suggest_channels` suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
   treating-named beats generic beats demoted aux/pump/annulus/max/avg-type channels, though a
   BHP-named channel still wins outright; when given a loaded `TestData.column` callable, it also
   filters to "live" candidates first, since a dead/backside gauge or a locked-constant channel
@@ -1049,3 +1113,18 @@ ambiguity, not fixed.
   `relim()`) would walk every artist on the Axes, including the markers, and pull them back into
   the bounding box. No current code path does this on these two renderers' Axes, but it's a latent
   trap for a future change that adds one.
+- INSITE-preamble files whose real header row is misread as data (e.g. Spearhead, Powell -- see
+  `_find_numeric_time_column`/`_find_clock_column`'s own "undetected preamble" cases) start their
+  reported elapsed-time record a few hours early: a job-header line holding a plain date (e.g.
+  `"15-Sep-2017"`, no time) sits ahead of the real first sample and, when it happens to be the
+  first value `parse_datetime` accepts, becomes `t_s`'s zero point instead of the first real
+  reading -- typically ~13h early on the two measured files. `_detect_header_skiprows`'s own
+  preamble-skip only fires on a `ParserError`, which a uniformly-wide preamble (same field count
+  as the real data) never raises, so this is a `_detect_header_skiprows` gap, not something the
+  datetime parsing itself can distinguish (the date line is a perfectly genuine, correctly-parsed
+  date -- just the wrong row).
+- `_find_numeric_time_column`'s bare-`"Time"`-header assumed-MINUTES guess is a guess, not a read,
+  and a load warning says so -- but it is still occasionally wrong on a file whose bare `"Time"`
+  column is actually SECONDS (no other hint anywhere resolves the unit), reporting a duration
+  60x too long. There is no way to tell the two apart from the column alone; the warning is the
+  only mitigation.
