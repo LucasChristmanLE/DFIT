@@ -479,7 +479,7 @@ def test_extract_nan_timestamp_dropped_count_is_surfaced(tmp_path):
     whose datetime column is largely unparseable must not report confident numbers with nothing
     on screen saying a chunk of it was dropped."""
     t_s, p, r = _dfit_arrays()
-    bad_indices = [0, 5, 200, 1500, 3000]
+    bad_indices = [50, 200, 1500, 3000, 3500]  # away from either edge -- see the io_load extrapolation feature
     path = tmp_path / "nan_scattered_count.csv"
     _write_csv_with_bad_datetime_rows(path, t_s, p, r, bad_indices=bad_indices)
 
@@ -1553,7 +1553,7 @@ def test_render_file_png_shows_nonfinite_time_dropped_when_nonzero(tmp_path, mon
     alongside the existing `trailing_dropped` line -- mutating this to drop the `if
     feat.nonfinite_time_dropped:` block (or the append itself) leaves this test failing."""
     t_s, p, r = _dfit_arrays()
-    bad_indices = [0, 5, 200, 1500, 3000]
+    bad_indices = [50, 200, 1500, 3000, 3500]  # away from either edge -- see the io_load extrapolation feature
     path = tmp_path / "nan_scattered.csv"
     _write_csv_with_bad_datetime_rows(path, t_s, p, r, bad_indices=bad_indices)
     feat = features.extract(str(path))
@@ -1648,7 +1648,7 @@ def test_render_file_png_masks_nan_timestamps_not_just_truncation(tmp_path, monk
     time-axis quantity, unaffected by which pressure values got plotted) doesn't either -- this
     compares the plotted line's actual Y data against independently-recomputed ground truth."""
     t_s, p, r = _dfit_arrays()
-    bad_indices = [0, 5, 200, 1500, 3000]
+    bad_indices = [50, 200, 1500, 3000, 3500]  # away from either edge -- see the io_load extrapolation feature
     path = tmp_path / "nan_scattered.csv"
     _write_csv_with_bad_datetime_rows(path, t_s, p, r, bad_indices=bad_indices)
 

@@ -93,32 +93,72 @@ def _epoch_plus_seconds(epoch: np.datetime64, secs: np.ndarray) -> np.ndarray:
 # 1.00. 0.5 sits between the two with margin on both sides.
 _MIN_VALID_DT_FRACTION = 0.5
 
-# Excel's own literal error-formula sentinels -- treated the same as a blank cell when deciding
-# how much of a column is "real" data (see _non_empty_mask below), not as a value that ought to
-# have parsed. Measured case: Crestone Peak's "21011234 raw data.csv" has 233,470 genuinely
-# valid, contiguous "Date Time" rows followed by ~713,000 trailing "#REF!" rows (a broken Excel
-# formula reference, not a reading of anything) -- a real, good ~64.85h DFIT record padded by
-# spreadsheet corruption, not the ~9%-valid, no-real-data-at-all shape _MIN_VALID_DT_FRACTION's
-# unconditional raise (see load_csv) exists to catch. Counting "#REF!" as non-empty would count
-# every one of those 713,000 rows against the file, sinking a genuinely good record to the same
-# ~25% fraction as Anderson's actual sample-index column -- excluding it (same as a blank cell)
-# correctly reads this file as the ~100%-valid one it actually is.
+# When the two EXACT, vectorized fast paths in parse_datetime (24-hour, then 12-hour AM/PM)
+# have already resolved at least this fraction of a column's non-empty values, Fallback 2 (the
+# generic dateutil parse) is skipped entirely rather than run over the leftovers. Measured case:
+# WPX Energy's "Emma Owner DFIT RawData.csv" -- 1.73M AM/PM-formatted rows resolve completely
+# via fast path 2 except for one "(date time)" units-declaration row, but pandas' own format-
+# INFERENCE (used when to_datetime is given no explicit `format`) never learns the AM/PM layout
+# at all, not even from 1.73M clean examples of it -- so Fallback 2 falls straight to its slow,
+# per-element dateutil.parser.parse() for every one of those already-resolved rows all over
+# again (~55s), even with the masking above in place. At this point the leftover, unresolved
+# rows are -- by construction, once the fast paths already own the overwhelming majority of the
+# column -- units/header lines or corrupt cells, not a second, rescuably-different valid format;
+# leaving them NaT (they already are, from the fast paths' own failure) rather than paying for a
+# whole-column dateutil pass to confirm that is the right trade here.
+_FAST_PATH_SKIP_FRACTION = 0.90
+
+# Excel's own literal error-formula sentinels. A cell holding one of these is treated the same
+# as a blank cell when deciding how much of a column is "real" data (see _non_empty_mask below)
+# -- but ONLY when it sits inside a CONTIGUOUS run at the very start or end of the column (see
+# _edge_run_mask). A scattered error cell mixed into otherwise-real data still counts as a
+# non-empty, invalid cell -- exempting it unconditionally would let a column that's mostly (even
+# ~99.9%) "#N/A" pass the trust-fraction check outright, which is exactly backwards. Measured
+# case for the edge-run rule itself: Crestone Peak's "21011234 raw data.csv" has 233,470
+# genuinely valid, contiguous "Date Time" rows followed by ~713,000 trailing "#REF!" rows (a
+# broken Excel formula reference, not a reading of anything, but genuinely padding-shaped: one
+# unbroken run at the end of the file) -- a real, good DFIT record whose real Pressure/Temp data
+# actually CONTINUES through that trailing block (see the edge-block extrapolation below), not
+# the ~9%-valid, no-real-data-at-all shape _MIN_VALID_DT_FRACTION's unconditional raise (see
+# load_csv) exists to catch.
 _EMPTY_CELL_TOKENS = frozenset({
     "#ref!", "#n/a", "#value!", "#div/0!", "#name?", "#null!", "#num!",
 })
 
 
+def _edge_run_mask(is_pad: np.ndarray) -> np.ndarray:
+    """True for every position in a CONTIGUOUS run of `is_pad` at the very start of the array,
+    or a contiguous run at the very end -- never for one in the middle. Used to tell genuine
+    leading/trailing padding (or corruption) apart from a scattered cell of the same shape (see
+    ``_non_empty_mask``/``_EMPTY_CELL_TOKENS``).
+    """
+    n = len(is_pad)
+    mask = np.zeros(n, dtype=bool)
+    i = 0
+    while i < n and is_pad[i]:
+        mask[i] = True
+        i += 1
+    j = n - 1
+    while j >= i and is_pad[j]:
+        mask[j] = True
+        j -= 1
+    return mask
+
+
 def _non_empty_mask(s: pd.Series) -> pd.Series:
-    """True where `s` (already read as a raw column) holds something other than a blank cell or
-    an Excel literal error-formula sentinel (see _EMPTY_CELL_TOKENS) -- i.e. something that
-    OUGHT to be a real value, whether or not it actually parses as a date.
+    """True where `s` (already read as a raw column) holds something other than a blank cell, or
+    an Excel literal error-formula sentinel (see _EMPTY_CELL_TOKENS) that sits inside a
+    contiguous leading/trailing run of blank-or-error cells (see _edge_run_mask) -- i.e.
+    something that OUGHT to be a real value, whether or not it actually parses as a date. A
+    blank cell is excluded wherever it sits (leading, trailing, or scattered in the middle) --
+    only the error-token exemption is position-restricted.
     """
     stripped = s.astype("string").str.strip()
-    return (
-        stripped.notna()
-        & (stripped.str.len() > 0)
-        & (~stripped.str.lower().isin(_EMPTY_CELL_TOKENS))
-    )
+    is_blank = (stripped.isna() | (stripped.str.len() == 0)).to_numpy()
+    is_error = stripped.str.lower().isin(_EMPTY_CELL_TOKENS).fillna(False).to_numpy()
+    in_edge_run = _edge_run_mask(is_blank | is_error)
+    empty = is_blank | (is_error & in_edge_run)
+    return pd.Series(~empty, index=s.index)
 
 # Plausible-range bounds for parse_datetime's Fallback 1 (bare Excel serial numbers), in whole
 # days since the Excel epoch. A DFIT is never logged before 1990 or after 2100, but a small bare
@@ -245,6 +285,15 @@ def parse_datetime(series: pd.Series, reject_bare_clock: bool = True) -> pd.Seri
         ampm = pd.to_datetime(s, format=ampm_fmt, errors="coerce").astype("datetime64[us]")
         dt = dt.combine_first(ampm)
 
+    # Cheap snapshot (a boolean array copy, no string work) of what the two EXACT fast paths
+    # above resolved, before either fallback below -- see the fast-path-skip gate on Fallback 2
+    # further down for why this has to be captured here and not later, once Fallback 1 may have
+    # resolved MORE rows itself. The actual fraction (which needs _non_empty_mask's string work)
+    # is computed lazily at that gate, only for the (common) case of a column with at least one
+    # value neither fast path resolved -- a column both fast paths fully resolve never pays for
+    # it at all.
+    fast_path_resolved = dt.notna().to_numpy()
+
     # Fallback 1: bare Excel serial numbers (rounded to whole seconds; data is ~1 Hz). Restricted
     # to the still-NaT rows: pd.to_numeric is purely elementwise (one row's parse can never
     # depend on another's), so subsetting first and combining back is exactly equivalent to
@@ -266,53 +315,77 @@ def parse_datetime(series: pd.Series, reject_bare_clock: bool = True) -> pd.Seri
         excel = pd.Series(excel_vals, index=s.index)
         dt = dt.combine_first(excel)
 
-    # Fallback 2: flexible parse for anything still missing (other string layouts). Run at FULL
-    # LENGTH, not reindexed to the still-NaT subset -- pd.to_datetime with no explicit `format`
-    # guesses a shared strptime format from the array's first non-null value and, when that guess
-    # succeeds, applies it via a fast compiled loop (a mismatching value simply becomes NaT, no
-    # further cost); reindexing to a smaller, already-more-homogeneous-garbage subset can change
-    # what gets guessed, and therefore change a row's OWN result even though dateutil parses each
-    # row independently once the guess is fixed. Measured case: Strathcona's
-    # 100-09-14-062-04W6-rt.csv has a corrupted row (a Date cell's leading day digits are simply
-    # gone, joined with a real Time into "/10/2022 22:11:25") sitting among thousands of
-    # well-formed "31/10/2022 22:11:25"-shaped neighbors -- parsed WITH those neighbors visible,
-    # pandas guesses the neighbors' shared format and the corrupted row simply fails to match it
-    # (NaT, correct); parsed ALONE, or reindexed into a subset dominated by other unresolved
-    # oddities, dateutil's own single-value guess reads it as a plausible-but-wrong 2022-10-01.
-    #
-    # What must still happen BEFORE this call, not after, is blanking (to NA, not removing --
-    # length must stay full so every remaining value keeps its real neighbors) every value that
-    # could never legitimately become a NEW date through this fallback anyway:
-    #
-    # - A bare number: dateutil's generic inference happily reads "2024" as 2024-01-01, "1500.5"
-    #   as 1500-05-01, or "20171221" as 2017-12-21 -- exactly the class of bug Fallback 1's
-    #   plausible-serial-range guard exists to prevent, just reached by a different path. A
-    #   purely numeric string gets exactly one sanctioned route to a date -- Fallback 1's
-    #   Excel-serial parse above -- and anything that fallback already rejected (out of the
-    #   plausible 1990-2100 range) must stay NaT here too, not get a second, unguarded attempt.
-    # - A bare time-of-day/clock string (see _TIME_OF_DAY_RE above, e.g. "9:22:20 AM" or the
-    #   Dressler-shaped "09:07.0") -- it has no date component at all, so whatever date dateutil
-    #   defaulted it to (today, always) is not a reading of the file, just an artifact of when
-    #   this code happened to run. Skippable (see the docstring's ``reject_bare_clock`` note) for
-    #   FIX A's join, which relies on this exact defaulting for a blank Date value beside a real
-    #   Time one.
-    # - A value with no digit in it at all -- it cannot be a date or time under ANY
-    #   interpretation, and dateutil's format-GUESS itself (not just the eventual per-row parse)
-    #   can fail outright on one, which is worse than merely wasting time on it: pandas then gives
-    #   up guessing ANY format and falls back to the slow, per-element dateutil.parser.parse() for
-    #   EVERY remaining non-null value in the array, not just this one. Measured case: Horsetail
-    #   07E-0636's 631k-row Job Time column carries a literal "(date time)" units-declaration row
-    #   (misread as data, see FIX B) at the very start of the column -- left unmasked, the whole-
-    #   column call above takes ~26s (the slow path, for one single bad row); masked, ~1.4s.
-    #
-    # Not blanking every row that's ALREADY resolved (dt.notna()) is deliberate too, and is
-    # exactly what preserves Strathcona's good-neighbor context above -- blanking them would
-    # reproduce the same "malformed row parsed with no real context" problem subsetting caused.
-    # Blanking (rather than removing) is also free: a null entry is skipped immediately by
-    # pd.to_datetime, with no format-guess or per-row parse attempt charged against it, so a
-    # mostly-null full-length array costs the same as a compacted one of just its non-null values.
+    # Fallback 2: flexible parse for anything still missing (other string layouts) -- but ONLY
+    # when the two exact fast paths above haven't already resolved the overwhelming majority of
+    # the column (see _FAST_PATH_SKIP_FRACTION). Skipped entirely otherwise: pandas' own format-
+    # INFERENCE (used here, with no explicit `format`) simply never learns some layouts at all,
+    # no matter how many clean examples of it the column has -- measured case: WPX Energy's
+    # "Emma Owner DFIT RawData.csv", 1.73M rows, ALL but one exact 12-hour-AM/PM-formatted (the
+    # exception a "(date time)" units-declaration row). Fast path 2 resolves every real row
+    # already; Fallback 2 (masking notwithstanding -- see below) still burns ~55s running the
+    # slow, per-element dateutil.parser.parse() over the other 1,729,999 already-resolved rows,
+    # because pandas' auto-format-guess never recognizes the AM/PM layout to begin with and so
+    # always falls to that slow path for this shape, REGARDLESS of how clean the data is. Once
+    # the fast paths already own >=90% of the column, the small remainder is -- by construction
+    # -- units/header lines or corrupt cells, not a second, rescuably-different valid format, so
+    # this is a fair trade: leave them NaT (they already are, from the fast paths' own failure)
+    # rather than pay for a whole-column dateutil pass just to confirm that.
     still_na = dt.isna()
     if still_na.any():
+        non_empty = _non_empty_mask(s)
+        n_non_empty = int(non_empty.sum())
+        fast_path_frac = (
+            float((fast_path_resolved & non_empty.to_numpy()).sum()) / n_non_empty
+            if n_non_empty else 0.0
+        )
+    else:
+        fast_path_frac = 1.0
+    if still_na.any() and fast_path_frac < _FAST_PATH_SKIP_FRACTION:
+        # What must happen BEFORE the parse call below, not after, is blanking (to NA, not
+        # removing -- length must stay full so every remaining value keeps its real neighbors)
+        # every value that could never legitimately become a NEW date through this fallback
+        # anyway:
+        #
+        # - A bare number: dateutil's generic inference happily reads "2024" as 2024-01-01,
+        #   "1500.5" as 1500-05-01, or "20171221" as 2017-12-21 -- exactly the class of bug
+        #   Fallback 1's plausible-serial-range guard exists to prevent, just reached by a
+        #   different path. A purely numeric string gets exactly one sanctioned route to a date
+        #   -- Fallback 1's Excel-serial parse above -- and anything that fallback already
+        #   rejected (out of the plausible 1990-2100 range) must stay NaT here too, not get a
+        #   second, unguarded attempt.
+        # - A bare time-of-day/clock string (see _TIME_OF_DAY_RE above, e.g. "9:22:20 AM" or the
+        #   Dressler-shaped "09:07.0") -- it has no date component at all, so whatever date
+        #   dateutil defaulted it to (today, always) is not a reading of the file, just an
+        #   artifact of when this code happened to run. Skippable (see the docstring's
+        #   ``reject_bare_clock`` note) for FIX A's join, which relies on this exact defaulting
+        #   for a blank Date value beside a real Time one.
+        # - A value with no digit in it at all -- it cannot be a date or time under ANY
+        #   interpretation, and dateutil's format-GUESS itself (not just the eventual per-row
+        #   parse) can fail outright on one, which is worse than merely wasting time on it:
+        #   pandas then gives up guessing ANY format and falls back to the slow, per-element
+        #   dateutil.parser.parse() for EVERY remaining non-null value in the array, not just
+        #   this one. This masking is what keeps a file BELOW the 90% fast-path-skip threshold
+        #   fast when it still has to reach this branch -- e.g. a column where the fast paths
+        #   resolve only 70-80% of rows and a "(date time)" units line is one of the genuinely
+        #   unresolved remainder: without masking it out first, that one non-digit value can
+        #   still force the slow path over the WHOLE column, the same failure mode the skip gate
+        #   above exists to avoid for a much-more-resolved column, just below its threshold.
+        #
+        # Reindexing to a smaller, already-more-homogeneous-garbage subset instead of blanking
+        # in place would reopen a correctness gap on top of all this: pd.to_datetime's format
+        # guess reads from the WHOLE array's context, so a smaller subset can change what gets
+        # inferred for a row that would parse fine with its real neighbors visible. Measured
+        # case: Strathcona's 100-09-14-062-04W6-rt.csv has a corrupted row (a Date cell's
+        # leading day digits are simply gone, joined with a real Time into
+        # "/10/2022 22:11:25") sitting among thousands of well-formed
+        # "31/10/2022 22:11:25"-shaped neighbors -- parsed WITH those neighbors visible, pandas
+        # guesses their shared format and the corrupted row simply fails to match it (NaT,
+        # correct); parsed alone, dateutil's own single-value guess reads it as a
+        # plausible-but-wrong 2022-10-01. (In practice this file's fast-path-resolved fraction is
+        # itself so high that the skip gate above never even lets this call run for it any
+        # more -- the corrupted row is already NaT from the fast paths' own failure, which is the
+        # same correct outcome by construction. This reasoning is kept for the rarer file that
+        # falls just under the skip threshold.)
         for_parse = s.copy()
         is_numeric = pd.to_numeric(s, errors="coerce").notna().to_numpy()
         for_parse = for_parse.where(~is_numeric, pd.NA)
@@ -1065,16 +1138,11 @@ def _find_numeric_time_column(
     return None
 
 
-def _clock_seconds_of_day(s: pd.Series) -> pd.Series:
-    """Seconds-since-midnight for a bare clock/time-of-day string (H:MM, H:MM:S, or H:MM:SS,
-    optional AM/PM), or NaN when the string doesn't match ``_TIME_OF_DAY_RE`` at all, its
-    hour/minute/second is out of range, or its shape is the Dressler-ambiguous "MM:SS.f" one --
-    exactly two colon-separated fields plus a fraction, e.g. "27:32.7" -- indistinguishable from
-    an "H:MM" reading with a fractional minute, so never treated as a usable clock value here
-    (see ``_find_clock_column``, which relies on this exclusion to keep Dressler's own file
-    correctly failing rather than landing on a wrong reading through this fallback instead).
-    Hour range is 0-23 with no AM/PM marker, 1-12 with one (``12 AM`` -> midnight, ``12 PM`` ->
-    noon, matching the ordinary 12-hour convention).
+def _clock_extract(s: pd.Series) -> dict:
+    """Regex-extract h/m/s/frac/AM-PM plus derived per-row booleans from a clock-shaped string
+    series (see ``_TIME_OF_DAY_RE``'s named groups) -- shared by ``_clock_seconds_of_day`` (the
+    ordinary wall-clock reading), the two elapsed-duration readings below, and
+    ``_classify_clock_mode``'s decision between them.
     """
     s = s.astype("string").str.strip()
     m = s.str.extract(_TIME_OF_DAY_RE)
@@ -1089,31 +1157,163 @@ def _clock_seconds_of_day(s: pd.Series) -> pd.Series:
     has_ampm = ampm.to_numpy() != ""
     is_am = ampm.to_numpy() == "AM"
     is_pm = ampm.to_numpy() == "PM"
-
-    ambiguous = (~has_sec) & has_frac
+    # Dressler's own ambiguous shape (exactly two colon fields plus a fraction, no seconds
+    # group) -- never a usable value through ANY of the three readings below.
+    ambiguous_shape = (~has_sec) & has_frac
     with np.errstate(invalid="ignore"):
-        hour_ok = np.where(has_ampm, (h >= 1) & (h <= 12), (h >= 0) & (h <= 23))
         min_ok = (mi >= 0) & (mi <= 59)
         sec_ok = (~has_sec) | ((sec >= 0) & (sec <= 59))
-    ok = matched & ~ambiguous & hour_ok & min_ok & sec_ok
+    return dict(
+        index=s.index, matched=matched, h=h, mi=mi, has_sec=has_sec, sec=sec,
+        has_frac=has_frac, frac=frac, has_ampm=has_ampm, is_am=is_am, is_pm=is_pm,
+        ambiguous_shape=ambiguous_shape, min_ok=min_ok, sec_ok=sec_ok,
+    )
 
-    h24 = np.where(is_am & (h == 12), 0.0, h)
-    h24 = np.where(is_pm & (h24 != 12), h24 + 12.0, h24)
-    sec_val = np.where(has_sec, sec, 0.0)
-    frac_val = np.where(has_frac, frac, 0.0)
-    total = h24 * 3600.0 + mi * 60.0 + sec_val + frac_val
+
+def _clock_seconds_of_day(s: pd.Series) -> pd.Series:
+    """Seconds-since-midnight for a bare clock/time-of-day string (H:MM, H:MM:S, or H:MM:SS,
+    optional AM/PM), or NaN when the string doesn't match ``_TIME_OF_DAY_RE`` at all, its
+    hour/minute/second is out of range, or its shape is the Dressler-ambiguous "MM:SS.f" one --
+    exactly two colon-separated fields plus a fraction, e.g. "27:32.7" -- indistinguishable from
+    an "H:MM" reading with a fractional minute, so never treated as a usable clock value here
+    (see ``_find_clock_column``, which relies on this exclusion to keep Dressler's own file
+    correctly failing rather than landing on a wrong reading through this fallback instead).
+    Hour range is 0-23 with no AM/PM marker, 1-12 with one (``12 AM`` -> midnight, ``12 PM`` ->
+    noon, matching the ordinary 12-hour convention). This is the "clock" mode reading -- see
+    ``_classify_clock_mode`` for when a value this shape is actually an elapsed DURATION
+    instead, which is read by ``_elapsed_hms_seconds``/``_elapsed_mmss_seconds`` below.
+    """
+    g = _clock_extract(s)
+    with np.errstate(invalid="ignore"):
+        hour_ok = np.where(g["has_ampm"], (g["h"] >= 1) & (g["h"] <= 12),
+                            (g["h"] >= 0) & (g["h"] <= 23))
+    ok = g["matched"] & ~g["ambiguous_shape"] & hour_ok & g["min_ok"] & g["sec_ok"]
+    h24 = np.where(g["is_am"] & (g["h"] == 12), 0.0, g["h"])
+    h24 = np.where(g["is_pm"] & (h24 != 12), h24 + 12.0, h24)
+    sec_val = np.where(g["has_sec"], g["sec"], 0.0)
+    frac_val = np.where(g["has_frac"], g["frac"], 0.0)
+    total = h24 * 3600.0 + g["mi"] * 60.0 + sec_val + frac_val
     total = np.where(ok, total, np.nan)
-    return pd.Series(total, index=s.index)
+    return pd.Series(total, index=g["index"])
+
+
+def _elapsed_hms_seconds(s: pd.Series) -> pd.Series:
+    """h*3600 + m*60 + s for a 3-field "H:MM:SS" value read as an elapsed DURATION -- the hour
+    field is left UNBOUNDED (no <=23 check) rather than a wall-clock hour, since a duration can
+    genuinely run past 24h (see ``_classify_clock_mode``'s "elapsed_hms" mode, e.g. "39:59:00"
+    forty minutes before hour 40). No AM/PM marker is accepted here -- a duration with one would
+    be self-contradictory.
+    """
+    g = _clock_extract(s)
+    with np.errstate(invalid="ignore"):
+        ok = (
+            g["matched"] & g["has_sec"] & ~g["has_ampm"] & ~g["ambiguous_shape"]
+            & g["min_ok"] & g["sec_ok"] & (g["h"] >= 0)
+        )
+    total = g["h"] * 3600.0 + g["mi"] * 60.0 + g["sec"]
+    total = np.where(ok, total, np.nan)
+    return pd.Series(total, index=g["index"])
+
+
+def _elapsed_mmss_seconds(s: pd.Series) -> pd.Series:
+    """m*60 + s for a 2-field "MM:SS" value read as an elapsed DURATION -- the first field is
+    left UNBOUNDED (an elapsed-minutes count, not a wall-clock hour), since it can genuinely run
+    past 59 (see ``_classify_clock_mode``'s "elapsed_mmss" mode). No AM/PM marker and no
+    fraction (Dressler's own ambiguous shape) are accepted here.
+    """
+    g = _clock_extract(s)
+    with np.errstate(invalid="ignore"):
+        ok = (
+            g["matched"] & (~g["has_sec"]) & (~g["has_frac"]) & (~g["has_ampm"])
+            & g["min_ok"] & (g["h"] >= 0)
+        )
+    total = g["h"] * 60.0 + g["mi"]
+    total = np.where(ok, total, np.nan)
+    return pd.Series(total, index=g["index"])
+
+
+# Below this many seconds/sample, consecutive clock values are read as a per-second (or faster)
+# counter -- consistent with "MM:SS" (minutes:seconds); at or above it, they read as a
+# per-minute-or-slower clock -- consistent with "H:MM" (hour:minute). Used only to help resolve
+# the genuine 2-field, no-AM/PM ambiguity in _classify_clock_mode; a 3-field or AM/PM-bearing
+# value is never ambiguous in the first place.
+_CLOCK_VS_ELAPSED_STEP_S = 60.0
+
+
+def _classify_clock_mode(raw: pd.Series) -> str:
+    """Decide how a clock-shaped column's matched values should actually be read -- the SAME
+    "H:MM[:SS]" shape is genuinely ambiguous between a wall clock and an elapsed duration, and
+    guessing wrong silently produces a plausible-looking but wrong span (see the three measured
+    cases below). Returns one of:
+
+    - ``"clock"``: an ordinary wall-clock reading (any value carries AM/PM, or every 3-field
+      value's hour stays <=23, or a 2-field value's own shape and cadence prove it's an hour --
+      see below). Read by ``_clock_seconds_of_day``, with midnight-rollover unwrapping.
+    - ``"elapsed_hms"``: a 3-field "H:MM:SS" reading where at least one value's hour exceeds 23
+      -- proof it's an elapsed DURATION (a duration can run arbitrarily long), not a wall-clock
+      hour that wrapped. Measured (synthetic): "39:59:00", forty minutes before hour 40, on a
+      column that would otherwise misread as a wall clock stuck at "23:59:00"-ish, truncating a
+      genuine 40h record to the ~24h a naive wall-clock reading (with no unwrap trigger, since
+      nothing ever drops) would show.
+    - ``"elapsed_mmss"``: a 2-field, no-AM/PM reading where the first field exceeds 23 at some
+      point -- too high to be even a 24-hour hour, so it must be elapsed MINUTES. Measured
+      (synthetic): a 20-minute "00:00".."19:59" MM:SS record that a naive "H:MM" wall-clock
+      reading turns into a bogus ~20-HOUR span.
+    - ``"ambiguous"``: a 2-field, no-AM/PM reading that fits neither proof above -- e.g. the
+      first field never reaches 13 (looks equally plausible as either MM or H), or it reaches
+      13+ but the sample cadence looks like a once-a-second counter rather than a
+      once-a-minute-or-slower clock. Never guessed -- see ``_find_clock_column``, which raises
+      instead.
+
+    A value carrying AM/PM is unambiguous on its own (only a real clock hour takes one), so its
+    presence anywhere in the column settles "clock" outright before any of the above runs.
+    """
+    g = _clock_extract(raw)
+    valid_shape = g["matched"] & ~g["ambiguous_shape"] & g["min_ok"] & g["sec_ok"]
+    if bool((valid_shape & g["has_ampm"]).any()):
+        return "clock"
+
+    has_sec_vals = valid_shape & g["has_sec"]
+    no_sec_vals = valid_shape & ~g["has_sec"]
+    with np.errstate(invalid="ignore"):
+        if bool(has_sec_vals.any()) and not bool(no_sec_vals.any()):
+            # Dominant/only shape is 3-field (H:MM:SS).
+            if bool((g["h"][has_sec_vals] > 23).any()):
+                return "elapsed_hms"
+            return "clock"
+        if bool(no_sec_vals.any()) and not bool(has_sec_vals.any()):
+            # Dominant/only shape is 2-field, no AM/PM -- genuinely ambiguous on its own.
+            first = g["h"][no_sec_vals]
+            # Naive elapsed-seconds proxy (treating the first field as minutes) purely to read
+            # the sample CADENCE -- this is a reasonable order-of-magnitude estimate regardless
+            # of which interpretation turns out correct, since a per-second counter and a
+            # per-minute clock differ by ~60x, far more than any rollover/unwrap ambiguity could
+            # skew a MEDIAN by.
+            raw_total = (g["h"] * 60.0 + g["mi"])[no_sec_vals]
+            med_step = float(np.median(np.abs(np.diff(raw_total)))) if raw_total.size > 1 else np.nan
+            if bool((first >= 13).any()) and np.isfinite(med_step) and med_step >= _CLOCK_VS_ELAPSED_STEP_S:
+                return "clock"
+            if bool((first > 23).any()):
+                return "elapsed_mmss"
+            return "ambiguous"
+    # Mixed 2-field and 3-field shapes in the same column (not seen in the corpus) -- fall back
+    # to the ordinary wall-clock reading and let its own per-value range checks sort out what
+    # they can, rather than guessing at a mode for a shape this function has no real case for.
+    return "clock"
 
 
 def _unwrap_midnight_rollovers(raw_secs: np.ndarray) -> np.ndarray:
-    """Add 24h for every backward step of more than 12h in `raw_secs` (seconds-of-day, NaN
+    """Add 24h for every backward step of more than 1h in `raw_secs` (seconds-of-day, NaN
     allowed, as returned by ``_clock_seconds_of_day``).
 
     A clock-only column has no date to carry the day boundary, so a value that drops by more
-    than half a day from the previous FINITE sample is read as the clock having wrapped past
-    midnight, not as time running backward. NaN entries are skipped when looking for the
-    previous sample (never treated as a step themselves) and stay NaN in the result.
+    than an hour from the previous FINITE sample is read as the clock having wrapped past
+    midnight, not as time running backward -- 1h (rather than requiring something closer to a
+    full 12h) so a genuine but sparsely-sampled overnight gap (e.g. a ~13h break between an
+    evening and the next morning's readings) still unwraps correctly; a small backward step
+    (a few seconds, from ordinary out-of-order noise) stays well under this and is left alone.
+    NaN entries are skipped when looking for the previous sample (never treated as a step
+    themselves) and stay NaN in the result.
     """
     raw_secs = np.asarray(raw_secs, dtype=float)
     out = np.full(raw_secs.shape, np.nan)
@@ -1121,7 +1321,7 @@ def _unwrap_midnight_rollovers(raw_secs: np.ndarray) -> np.ndarray:
     vals = raw_secs[valid]
     if vals.size:
         diffs = np.diff(vals)
-        rollover = diffs < -12 * 3600.0
+        rollover = diffs < -3600.0
         offset = np.concatenate([[0.0], np.cumsum(np.where(rollover, 24 * 3600.0, 0.0))])
         out[valid] = vals + offset
     return out
@@ -1129,16 +1329,33 @@ def _unwrap_midnight_rollovers(raw_secs: np.ndarray) -> np.ndarray:
 
 def _find_clock_column(
     df: pd.DataFrame, dt_col: str
-) -> Optional[tuple[str, np.ndarray, list[str]]]:
+) -> Optional[tuple[str, np.ndarray, list[str], bool]]:
     """H1's clock-only fallback for when no column parses as a datetime at all and no elapsed
     numeric column exists either: a column whose non-empty values are PREDOMINANTLY (fraction
-    >= ``_MIN_VALID_DT_FRACTION``, over non-empty cells) bare clock/time-of-day strings (see
-    ``_clock_seconds_of_day``) and nothing else -- the file's only time base is a wall clock with
-    no date column anywhere, a plain instrument/pump log rather than a Fracpro ASCII export.
-    Converted to elapsed seconds from the first valid sample (by the shared rebase-and-synthesize
-    code in ``load_csv``, same as ``_find_numeric_time_column``), with midnight rollovers
-    unwrapped first (``_unwrap_midnight_rollovers``) so a job that runs past midnight doesn't
-    read as time running backward.
+    >= ``_MIN_VALID_DT_FRACTION``, over non-empty cells) bare clock/time-of-day strings and
+    nothing else -- the file's only time base is a wall clock (or, per ``_classify_clock_mode``,
+    an elapsed duration written in the same H:MM[:SS] shape) with no date column anywhere, a
+    plain instrument/pump log rather than a Fracpro ASCII export. Converted to elapsed seconds
+    from the first valid sample (by the shared rebase-and-synthesize code in ``load_csv``, same
+    as ``_find_numeric_time_column``).
+
+    A genuine wall-clock reading gets two more corrections before midnight-rollover unwrapping
+    (``_unwrap_midnight_rollovers``): if MOST of its consecutive steps run backward (a
+    newest-first log, mirroring FIX D above but for this column specifically -- FIX D itself
+    only ever looks at the PRIMARY datetime column, which this fallback runs only after that one
+    has already failed), the row order is reversed first, matching FIX D's own treatment of a
+    genuinely reverse-chronological export.
+
+    Returns ``(column, elapsed_seconds, warnings, was_reversed)`` -- `was_reversed` tells
+    ``load_csv`` to reverse `df` itself (every other column along with the time base) the same
+    way FIX D does, or ``None`` if no candidate qualifies. Raises ``ValueError`` directly,
+    rather than returning ``None``, when NO candidate resolves cleanly and at least one hit a
+    genuinely unresolvable clock-vs-elapsed ambiguity (see ``_classify_clock_mode``'s
+    ``"ambiguous"``) -- a clear, specific error (naming the FIRST such candidate) beats silently
+    falling through to load_csv's generic "no fallback found" message when the tool DID find a
+    column that's clearly meant to be the time base and just can't tell what it means. An
+    ambiguous candidate is not fatal on its own, though -- a LATER candidate that resolves
+    cleanly still wins normally.
 
     Measured case: Great Western's "Rate Pres.csv" (``"Time Stamp"``, AM/PM), Tap Rock's "Enron
     9 State Com 1 Pump Data.csv" (``"Time"``, 24-hour), Fifth Creek's "Pump_data.csv"
@@ -1151,19 +1368,33 @@ def _find_clock_column(
     Candidates are `dt_col` itself, then any other datetime-name-matching column (mirroring
     ``_find_numeric_time_column``). Deliberately never matches Crescent Point's Dressler
     "...1secdata.csv": its clock values are the ambiguous "MM:SS.f" shape that
-    ``_clock_seconds_of_day`` excludes on principle, so that file keeps failing to load here
-    exactly as it does everywhere else in this module, rather than landing on a wrong reading
-    through this fallback instead.
+    ``_clock_extract`` excludes on principle (the same exclusion feeds all three readings above),
+    so that file keeps failing to load here exactly as it does everywhere else in this module,
+    rather than landing on a wrong reading through this fallback instead.
     """
     candidates = [dt_col] + [
         c for c in _datetime_column_candidates(list(df.columns)) if c != dt_col
     ]
+    ambiguous_col: Optional[str] = None
     for col in candidates:
         raw = df[col].astype("string").str.strip()
         n_non_empty = int(_non_empty_mask(raw).sum())
         if n_non_empty == 0:
             continue
-        secs_of_day = _clock_seconds_of_day(raw)
+        mode = _classify_clock_mode(raw)
+        if mode == "ambiguous":
+            # Try the remaining candidates before giving up on this one -- a later column might
+            # still resolve cleanly even though this one can't. Remembered (first one only) so
+            # a clear, specific error can still be raised below if NOTHING else works out either.
+            if ambiguous_col is None:
+                ambiguous_col = col
+            continue
+        if mode == "elapsed_hms":
+            secs_of_day = _elapsed_hms_seconds(raw)
+        elif mode == "elapsed_mmss":
+            secs_of_day = _elapsed_mmss_seconds(raw)
+        else:
+            secs_of_day = _clock_seconds_of_day(raw)
         frac = float(secs_of_day.notna().sum()) / n_non_empty
         if frac < _MIN_VALID_DT_FRACTION:
             continue
@@ -1171,14 +1402,196 @@ def _find_clock_column(
         if np.isfinite(raw_secs).sum() < 2:
             continue
 
-        unwrapped = _unwrap_midnight_rollovers(raw_secs)
-        warn = (
-            "Time column has clock times only (no date); elapsed time computed from the first "
-            "sample, midnight rollovers unwrapped."
-        )
-        return col, unwrapped, [warn]
+        reversed_ = False
+        if mode == "clock":
+            valid_vals = raw_secs[np.isfinite(raw_secs)]
+            diffs = np.diff(valid_vals)
+            if int((diffs < 0).sum()) > int((diffs > 0).sum()):
+                raw = raw.iloc[::-1].reset_index(drop=True)
+                secs_of_day = _clock_seconds_of_day(raw)
+                raw_secs = secs_of_day.to_numpy(dtype=float)
+                reversed_ = True
+            unwrapped = _unwrap_midnight_rollovers(raw_secs)
+            warn = (
+                "Time column has clock times only (no date); elapsed time computed from the "
+                "first sample, midnight rollovers unwrapped."
+                + (" Row order was reversed (newest-first log)." if reversed_ else "")
+            )
+        else:
+            # An elapsed duration is already monotonic by construction (its "hour" or "minutes"
+            # field is exactly the thing that keeps counting past the ordinary wrap point), so
+            # no unwrap or reversal check applies here.
+            unwrapped = raw_secs
+            shape = "H:MM:SS" if mode == "elapsed_hms" else "MM:SS"
+            warn = (
+                f"Time column has {shape} durations past its usual wrap point (an elapsed "
+                f"duration, not a wall clock); no midnight unwrap applied."
+            )
+        return col, unwrapped, [warn], reversed_
 
+    if ambiguous_col is not None:
+        raise ValueError(
+            f"Column {ambiguous_col!r} looks like a bare H:MM/MM:SS clock reading, but whether "
+            f"it's an hour:minute clock or a minutes:seconds elapsed duration is ambiguous (no "
+            f"AM/PM marker, and neither field's range nor the sample cadence proves it either "
+            f"way) -- resolve it with a unit or format override rather than guess."
+        )
     return None
+
+
+def _find_edge_nat_block(dt: pd.Series) -> Optional[tuple[str, int, int]]:
+    """The bounds of a contiguous leading or trailing run of NaT in `dt`, if one exists at
+    either edge -- or None if there is no such run (including a column that's entirely NaT,
+    which is the trust-fraction check's job in load_csv, not this one's). Returns
+    ``(side, start, end)`` (end-exclusive), `side` one of ``"leading"``/``"trailing"``. When
+    both edges carry a run, the longer one wins (a tie favors trailing, the more common shape --
+    a mid-export corruption or cutoff).
+    """
+    n = len(dt)
+    valid = dt.notna().to_numpy()
+    if valid.all() or not valid.any():
+        return None
+    i = 0
+    while i < n and not valid[i]:
+        i += 1
+    leading_len = i
+    j = n - 1
+    while j >= 0 and not valid[j]:
+        j -= 1
+    trailing_start = j + 1
+    trailing_len = n - trailing_start
+    if trailing_len >= leading_len and trailing_len > 0:
+        return ("trailing", trailing_start, n)
+    if leading_len > 0:
+        return ("leading", 0, leading_len)
+    return None
+
+
+def _edge_block_has_other_data(
+    df: pd.DataFrame, exclude_cols: set, start: int, end: int
+) -> bool:
+    """True if any column OTHER than the ones used for the datetime itself (`exclude_cols`) has
+    a finite numeric value anywhere in rows ``[start, end)`` -- i.e. the block is real,
+    data-bearing rows that just happen to have no usable timestamp, not genuine padding with
+    nothing real in it at all.
+    """
+    other_cols = [c for c in df.columns if c not in exclude_cols]
+    if not other_cols:
+        return False
+    sub = df.iloc[start:end][other_cols]
+    for c in other_cols:
+        vals = pd.to_numeric(sub[c], errors="coerce").to_numpy(dtype=float)
+        if np.isfinite(vals).any():
+            return True
+    return False
+
+
+def _extrapolate_or_warn_edge_block(
+    dt: pd.Series, df: pd.DataFrame, dt_col: str, time_col: Optional[str]
+) -> tuple[pd.Series, list[str]]:
+    """After ordinary parsing, a contiguous leading or trailing run of NaT (see
+    ``_find_edge_nat_block``) that still carries real values in some OTHER column is real,
+    data-bearing rows that just happen to have no usable timestamp -- typically the same
+    corruption ``_non_empty_mask`` exempts from the trust-fraction check in the first place
+    (a genuinely EMPTY edge run, with nothing else in it either, is left alone here -- there is
+    nothing to extrapolate FOR). If the surviving good run's own sample interval is regular
+    (>=99% of consecutive steps within 1% of the median), the missing timestamps are
+    extrapolated at that median step; otherwise they are left as NaT (never guessed at an
+    irregular spacing), and a warning says so either way, so this is never silent.
+
+    Measured case: Crestone Peak's "21011234 raw data.csv" -- 233,470 valid, contiguous 1 Hz
+    "Date Time" rows, then ~713,000 trailing "#REF!" rows whose Pressure/Temp columns keep
+    right on reading real, continuing values. Extrapolating the trailing block at the prefix's
+    exact 1.0 s step turns the file's reported span from ~64.85h (the trustworthy prefix alone)
+    into the full ~262.88h record.
+    """
+    block = _find_edge_nat_block(dt)
+    if block is None:
+        return dt, []
+    side, start, end = block
+    exclude_cols = {dt_col} if time_col is None else {dt_col, time_col}
+    if not _edge_block_has_other_data(df, exclude_cols, start, end):
+        return dt, []
+
+    n_block = end - start
+    valid = dt.dropna()
+    if len(valid) < 2:
+        return dt, [f"{n_block} data-bearing rows had no usable timestamp."]
+    secs = (valid - valid.iloc[0]).dt.total_seconds().to_numpy()
+    diffs = np.diff(secs)
+    med = np.median(diffs) if len(diffs) else np.nan
+    if not (np.isfinite(med) and med > 0):
+        return dt, [f"{n_block} data-bearing rows had no usable timestamp."]
+    regular = np.mean(np.abs(diffs - med) <= 0.01 * med) >= 0.99
+    if not regular:
+        return dt, [f"{n_block} data-bearing rows had no usable timestamp."]
+
+    dt = dt.copy()
+    bad_value = str(df[dt_col].iloc[start if side == "trailing" else end - 1]).strip()
+    if side == "trailing":
+        anchor = dt.iloc[:start].dropna().iloc[-1]
+        offsets = np.arange(1, n_block + 1) * med
+        new_vals = (anchor + pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
+            "datetime64[us]")
+        dt.iloc[start:end] = new_vals
+        warn = (
+            f"{n_block} rows past {anchor} had no timestamp ({bad_value}); timestamps "
+            f"extrapolated at {med:g} s spacing."
+        )
+    else:
+        anchor = dt.iloc[end:].dropna().iloc[0]
+        offsets = np.arange(n_block, 0, -1) * med
+        new_vals = (anchor - pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
+            "datetime64[us]")
+        dt.iloc[start:end] = new_vals
+        warn = (
+            f"{n_block} rows before {anchor} had no timestamp ({bad_value}); timestamps "
+            f"extrapolated at {med:g} s spacing."
+        )
+    return dt, [warn]
+
+
+def _mask_isolated_timestamp_outliers(dt: pd.Series) -> tuple[pd.Series, int]:
+    """After ordinary parsing, a single valid sample whose elapsed time differs from BOTH its
+    immediate valid neighbors by more than ``max(1h, 100x the median step)`` -- while those two
+    neighbors are themselves consistent with EACH OTHER (within that same threshold) -- is a
+    corrupted timestamp, not a genuine sudden jump, and is set to NaT.
+
+    Measured case: Strathcona's 100-09-14-062-04W6-rt.csv, row 5563 -- a Date cell reads
+    "8/10/2022" where every neighbor (both before and after) reads "28/10/2022" (a dropped
+    leading digit). Read alone this sample lands 20 days before its neighbors, and the very next
+    sample jumps back 20 days to rejoin them -- a lone sample surrounded on both sides by a huge,
+    but mutually-consistent, discontinuity is exactly the signature of one bad cell, not two
+    genuine jumps. This is what tells it apart from a REAL discontinuity (e.g. a tail-trim-
+    worthy gauge dropout or a genuine gap in logging): a real gap changes the LEVEL and stays
+    there, so the sample after it is close to the sample that caused the jump, not back near
+    where it started.
+
+    Returns ``(dt, n_masked)`` -- `dt` unchanged (same object) when nothing is masked.
+    """
+    valid_mask = dt.notna().to_numpy()
+    valid_idx = np.flatnonzero(valid_mask)
+    if valid_idx.size < 3:
+        return dt, 0
+    valid_vals = dt.to_numpy()[valid_idx]
+    secs = (valid_vals - valid_vals[0]) / np.timedelta64(1, "s")
+    secs = secs.astype(float)
+    step = np.abs(np.diff(secs))
+    if step.size < 2:
+        return dt, 0
+    med_step = float(np.median(step))
+    threshold = max(3600.0, 100.0 * med_step)
+    jump_left = step[:-1]
+    jump_right = step[1:]
+    neighbor_gap = np.abs(secs[2:] - secs[:-2])
+    is_outlier = (jump_left > threshold) & (jump_right > threshold) & (neighbor_gap <= threshold)
+    n_outliers = int(is_outlier.sum())
+    if n_outliers == 0:
+        return dt, 0
+    outlier_positions = valid_idx[1:-1][is_outlier]
+    dt = dt.copy()
+    dt.iloc[outlier_positions] = pd.NaT
+    return dt, n_outliers
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1471,6 +1884,16 @@ def load_csv(path: str) -> TestData:
         df = df.iloc[::-1].reset_index(drop=True)
         dt = _parse_dt()
 
+    # Isolated-timestamp-outlier guard: a single corrupted cell (e.g. a dropped date digit)
+    # surrounded by otherwise-consistent neighbors is set to NaT rather than left to poison the
+    # reported span with a huge, spurious swing (see _mask_isolated_timestamp_outliers).
+    dt, n_outliers = _mask_isolated_timestamp_outliers(dt)
+    outlier_warnings = (
+        [f"{n_outliers} isolated timestamp outlier(s) masked (surrounded by mutually "
+         f"consistent neighbors far closer to each other than to it)."]
+        if n_outliers else []
+    )
+
     # FIX B: the datetime column parsed too little of the file to trust (see
     # _MIN_VALID_DT_FRACTION) -- fall back to a clean elapsed-time or clock-only column if the
     # file has one. The fraction is computed over `dt_col`'s own NON-EMPTY cells (see
@@ -1493,10 +1916,17 @@ def load_csv(path: str) -> TestData:
                 elapsed = (found_col, found_secs)
         if elapsed is None:
             # H1: neither elapsed-numeric path matched either -- try a clock-only (wall-clock,
-            # no date at all) column before giving up (see _find_clock_column).
+            # no date at all) column before giving up (see _find_clock_column). May raise
+            # directly (an unresolvable clock-vs-elapsed-duration ambiguity -- see
+            # _classify_clock_mode) rather than returning None.
             found = _find_clock_column(df, dt_col)
             if found is not None:
-                found_col, found_secs, elapsed_warnings = found
+                found_col, found_secs, elapsed_warnings, was_reversed = found
+                if was_reversed:
+                    # Mirrors FIX D above, but for this fallback column specifically -- FIX D
+                    # itself only ever looks at the primary datetime column, which this
+                    # fallback runs only after that one has already failed.
+                    df = df.iloc[::-1].reset_index(drop=True)
                 elapsed = (found_col, found_secs)
         if elapsed is not None:
             _, secs = elapsed
@@ -1516,7 +1946,7 @@ def load_csv(path: str) -> TestData:
             df[synth_col] = _epoch_plus_seconds(_UNIX_EPOCH_NP, secs)
             return TestData(
                 path=path, df=df, datetime_col=synth_col, t_s=secs, columns=list(df.columns),
-                load_warnings=elapsed_warnings,
+                load_warnings=outlier_warnings + elapsed_warnings,
             )
         # H2: no elapsed or clock fallback either -- a datetime column below the trust threshold
         # with nothing to fall back to is untrustworthy, full stop, regardless of how many
@@ -1537,10 +1967,19 @@ def load_csv(path: str) -> TestData:
             f"clock-only fallback found)"
         )
 
+    # A contiguous leading/trailing NaT block that still carries real data in some OTHER column
+    # (see _extrapolate_or_warn_edge_block) gets its timestamps extrapolated, or an explicit
+    # warning if the surviving run's own spacing is too irregular to extrapolate from -- either
+    # way, never silent. A no-op (empty warnings, dt unchanged) for the ordinary case of no such
+    # block, or one that really is just padding with nothing else in it either.
+    dt, edge_warnings = _extrapolate_or_warn_edge_block(dt, df, dt_col, time_col)
     df[dt_col] = dt
     t_s = elapsed_seconds(dt)
 
-    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns))
+    return TestData(
+        path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns),
+        load_warnings=outlier_warnings + edge_warnings,
+    )
 
 
 # --------------------------------------------------------------------------------------------------

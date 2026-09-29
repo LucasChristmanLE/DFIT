@@ -96,14 +96,33 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   "valid" timestamp that is really just an artifact of when the code happened to run; and a value
   with no digit in it at all, which cannot be a date under any interpretation and, left in, can
   make pandas fail to guess ANY shared format for the WHOLE array (not just fail to match one),
-  falling back to a slow per-element dateutil pass over every non-null value (measured case:
-  Horsetail 07E-0636's 631k-row Job Time column carries a literal `"(date time)"`
-  units-declaration row -- misread as data, see FIX B below -- at the very start of the column;
-  left unmasked, ~26s; masked, ~1.4s). Leaving already-resolved rows unmasked (not blanked) is
-  what preserves the Strathcona good-neighbor context above -- blanking them would reproduce the
-  same "malformed row parsed with no context" problem a reindexed subset caused, and costs
-  nothing extra either way, since a null entry is skipped immediately with no format-guess or
-  per-row parse charged against it. The bare-clock guard is skippable
+  falling back to a slow per-element dateutil pass over every non-null value. Leaving
+  already-resolved rows unmasked (not blanked) is what preserves the Strathcona good-neighbor
+  context above -- blanking them would reproduce the same "malformed row parsed with no
+  context" problem a reindexed subset caused; a null entry costs nothing (skipped immediately,
+  no format-guess or per-row parse charged against it), but an UNMASKED already-resolved row
+  does not, and this generic parse is not even attempted at all once the two fast paths already
+  own enough of the column (see the `_FAST_PATH_SKIP_FRACTION` gate just below) -- masking alone
+  is not sufficient by itself to keep every shape fast; the gate is what actually prevents the
+  measured worst case. Even with every value masked correctly, this generic, no-`format=` parse
+  is only ever attempted at all when the two fast paths above have resolved LESS than
+  `_FAST_PATH_SKIP_FRACTION` (90%) of the column's own non-empty cells -- skipped entirely
+  otherwise, because pandas' format-INFERENCE can fail to ever recognize some layouts, no matter
+  how many clean examples the column has. Measured case: WPX Energy's "Emma Owner DFIT
+  RawData.csv", 1.73M rows, all but one exactly 12-hour-AM/PM-formatted (the exception a
+  `"(date time)"` units row) -- fast path 2 resolves every real row already, but this generic
+  parse (masking notwithstanding) still burns ~55s running the slow per-element path over the
+  other 1,729,999 already-resolved rows, because pandas' auto-format-guess never learns the
+  AM/PM layout at all, REGARDLESS of how clean the data is. Once the fast paths already own
+  >=90% of a column, the remainder is -- by construction -- units/header lines or corrupt
+  cells, not a second, rescuably-different valid format, so the trade is: leave them NaT (they
+  already are, from the fast paths' own failure) rather than pay for a whole-column dateutil
+  pass just to confirm that. Horsetail 07E-0636's own 631k-row Job Time column (a literal
+  `"(date time)"` units-declaration row, misread as data, at the very start of the column, see
+  FIX B below) is now resolved by this SAME skip gate (its fast-path-resolved fraction is
+  ~99.9998%, comfortably past it) rather than needing the masking to keep it fast -- the masking
+  still matters for a column BELOW the 90% threshold that also happens to have a no-digit row
+  mixed into its genuinely-unresolved remainder. The bare-clock guard is skippable
   (`parse_datetime(..., reject_bare_clock=False)`) for exactly one caller: FIX A's companion-Time
   join below, where a blank Date field beside a real Time value intentionally joins to a
   date-less string and is meant to parse as a same-day guess (DEFECT 1a) rather than fail. A tz-
@@ -140,45 +159,112 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   candidate to SCORE, which silently kept the wrong single-candidate pick.
 
   When the datetime column parses too little of the file to trust
-  (`_MIN_VALID_DT_FRACTION`, fraction computed over the column's own non-empty cells, not every
-  row in the file, so blank trailing padding rows -- some exports pad past the last logged sample
-  with fully empty rows -- don't drag the fraction down despite every real row parsing fine),
-  `load_csv` tries three fallbacks in order, in each case converting to elapsed seconds from the
-  first valid sample (rebased so the source column need not itself start at 0) and synthesizing a
-  `"DateTime"` column the same way regardless of which fallback supplied it: `_find_elapsed_column`
-  for a `delta`/`elapsed`-named column with a recognized parenthesized unit suffix; the broader
-  `_find_numeric_time_column` for any other datetime-name-matching column, trying `dt_col` itself
-  first (the common case: the very column `load_csv` just failed to parse as a datetime, e.g. a
-  bare Fracpro ASCII `Time`) and only then any other candidate -- unit resolved in order: the
-  column's own header suffix -> a units-declaration data row (e.g. a literal `"(min)"` cell right
-  after the header, misread as an ordinary data row) -> a unit token in the column's name
-  (`Time_sec`, `Minutes`) -> else, for a bare `Time` header with no other hint at all, an
-  assumed-MINUTES guess (the plain Fracpro ASCII convention) recorded as a `TestData.load_warnings`
-  entry, since it's a guess, not a read; and, only once that broader numeric path also finds
-  nothing, `_find_clock_column` -- a column whose non-empty values are PREDOMINANTLY (same
-  `_MIN_VALID_DT_FRACTION`) bare clock/time-of-day strings and nothing else, the file's only time
-  base being a wall clock with no date column anywhere (a plain instrument/pump log, not a Fracpro
-  export). `_clock_seconds_of_day` extracts hour/minute/second/AM-PM from `_TIME_OF_DAY_RE`'s
-  named groups (hour range 0-23 with no AM/PM marker, 1-12 with one) and DELIBERATELY excludes the
-  Dressler-shaped `"MM:SS.f"` value (exactly two colon-separated fields plus a fraction, no
-  seconds group) as ambiguous with an `"H:MM"` reading of a fractional minute -- Crescent Point's
-  own Dressler `"...1secdata.csv"` must keep failing here, not land on a wrong reading through
-  this fallback instead. `_unwrap_midnight_rollovers` then adds 24h for every backward step of
-  more than 12h between consecutive finite samples (a clock-only column has no date to carry the
-  day boundary, so a big backward jump means the clock wrapped past midnight, not that time ran
-  backward), and the returned warning says so: `"Time column has clock times only (no date);
-  elapsed time computed from the first sample, midnight rollovers unwrapped."` If NONE of the
-  three fallbacks finds anything, `load_csv` raises -- unconditionally, regardless of how many
-  "valid" timestamps the untrustworthy column happens to have in absolute terms, since a low,
-  isolated minority is not a working time base. Measured case: Liberty's Anderson
-  `"DFIT-FINAL.csv"` -- an undetected preamble collapses its real Date + Real Time columns to
-  anonymous `"Unnamed: N"` ones, landing `dt_col` on a plain sample-INDEX column instead (`"1"`,
-  `"2"`, `"3"`, ...); roughly 1 in 11 of those integers happens to fall inside the plausible
-  Excel-serial range and gets misread as a real (but wrong) date, reaching a nonzero valid COUNT
-  -- 40,178 of 431,349 rows -- that a "some rows parsed" check alone would have accepted; the
-  FRACTION (~9%) is what correctly flags it as untrustworthy instead, matching Crescent Point's
-  Dressler file (a single genuine date surviving among thousands of rejected bare-clock rows)
-  under the exact same rule -- there is no more special-cased ">=2 valid" exemption from it.
+  (`_MIN_VALID_DT_FRACTION`, fraction computed over the column's own non-empty cells, via
+  `_non_empty_mask` -- not every row in the file, so blank trailing padding rows -- some exports
+  pad past the last logged sample with fully empty rows -- don't drag the fraction down despite
+  every real row parsing fine), `load_csv` tries three fallbacks in order, in each case
+  converting to elapsed seconds from the first valid sample (rebased so the source column need
+  not itself start at 0) and synthesizing a `"DateTime"` column the same way regardless of which
+  fallback supplied it: `_find_elapsed_column` for a `delta`/`elapsed`-named column with a
+  recognized parenthesized unit suffix; the broader `_find_numeric_time_column` for any other
+  datetime-name-matching column, trying `dt_col` itself first (the common case: the very column
+  `load_csv` just failed to parse as a datetime, e.g. a bare Fracpro ASCII `Time`) and only then
+  any other candidate -- unit resolved in order: the column's own header suffix -> a
+  units-declaration data row (e.g. a literal `"(min)"` cell right after the header, misread as
+  an ordinary data row) -> a unit token in the column's name (`Time_sec`, `Minutes`) -> else,
+  for a bare `Time` header with no other hint at all, an assumed-MINUTES guess (the plain
+  Fracpro ASCII convention) recorded as a `TestData.load_warnings` entry, since it's a guess,
+  not a read; and, only once that broader numeric path also finds nothing, `_find_clock_column`.
+
+  `_non_empty_mask` treats a blank cell as empty wherever it sits (leading, trailing, or
+  scattered), but an Excel literal error-formula sentinel (`_EMPTY_CELL_TOKENS`: `"#REF!"`,
+  `"#N/A"`, `"#VALUE!"`, etc.) only when it sits inside a CONTIGUOUS run at the very start or
+  end of the column (`_edge_run_mask`) -- a SCATTERED error cell mixed into otherwise-real data
+  still counts as a non-empty, invalid cell, closing what would otherwise be a hole: exempting
+  every error token unconditionally would let a column that's mostly (even ~99.9%) `"#N/A"`
+  pass the trust-fraction check outright. Whenever such an edge run (blank OR error-token) still
+  carries real data in some OTHER column -- real rows that just happen to have no usable
+  timestamp, not genuine padding -- `_extrapolate_or_warn_edge_block` runs (regardless of
+  whether the fraction check above even fired) right before `load_csv` returns: if the
+  surviving good run's own sample interval is regular (>=99% of consecutive steps within 1% of
+  the median), the missing timestamps are extrapolated at that median step
+  (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at <step> s
+  spacing."`); otherwise they're left as NaT with a warning that N data-bearing rows had no
+  usable timestamp -- never silently dropped either way. Measured case: Crestone Peak's
+  "21011234 raw data.csv" -- 233,470 genuinely valid, contiguous 1 Hz "Date Time" rows, then
+  ~713,000 trailing `"#REF!"` rows whose Pressure/Temp columns keep reading real, continuing
+  values (a real, good record whose reported span goes from ~64.85h, the trustworthy prefix
+  alone, to the full ~262.88h once the trailing block is extrapolated).
+
+  `_find_clock_column` looks for a column whose non-empty values are PREDOMINANTLY (same
+  `_MIN_VALID_DT_FRACTION`) bare clock/time-of-day strings and nothing else, the file's only
+  time base being a wall clock (or, per `_classify_clock_mode`, an elapsed duration written in
+  the same shape) with no date column anywhere -- a plain instrument/pump log, not a Fracpro
+  export. The SAME `"H:MM[:SS]"` shape is genuinely ambiguous between those two readings, and
+  `_classify_clock_mode` resolves it before any value is converted: any value carrying AM/PM
+  settles `"clock"` outright (only a real hour takes one); otherwise a 3-field `"H:MM:SS"`
+  value with any hour exceeding 23 is `"elapsed_hms"` (an elapsed DURATION -- h*3600+m*60+s,
+  hour unbounded, e.g. `"39:59:00"` forty minutes before hour 40 -- a naive wall-clock reading
+  would misread this as stuck at hour 23, truncating a genuine 40h record to ~24h); a 2-field,
+  no-AM/PM value is read as `"clock"` (H:MM) only if its first field ever reaches >=13 AND the
+  sample cadence (a naive `first*60+second` proxy) runs >=60s/step -- consistent with an
+  hour ticking over roughly once a minute -- else `"elapsed_mmss"` (m*60+s, first field
+  unbounded) if the first field ever exceeds 23 (too high to be even a 24-hour hour, e.g. a
+  40-minute `"00:00"`..`"39:59"` MM:SS record a naive H:MM reading would misread as a bogus
+  ~40-HOUR span), else `"ambiguous"`. An ambiguous candidate doesn't fail the whole search by
+  itself -- `_find_clock_column` still tries any remaining datetime-name-matching candidate
+  before giving up -- but if NOTHING resolves cleanly, it raises a specific `ValueError` naming
+  the first ambiguous candidate, rather than guessing either way. This decision rule has one
+  known, accepted gap: a SHORT
+  no-AM/PM MM:SS record whose first field never reaches either threshold (e.g. a 20-minute
+  `"00:00"`..`"19:59"` record -- never >=13's companion cadence proof, since its own ~1
+  Hz cadence reads as MM:SS not H:MM, but also never >23) lands on `"ambiguous"` and raises,
+  rather than resolving to the 20 minutes a human reader would call obvious; this is exactly
+  the boundary the rule as specified draws, not something patched around. Every one of these
+  readings still excludes Dressler's own ambiguous
+  `"MM:SS.f"` shape (exactly two colon-separated fields plus a fraction, no seconds group) --
+  Crescent Point's "...1secdata.csv" must keep failing here, not land on a wrong reading through
+  any of them. Only the `"clock"` reading gets midnight-rollover unwrapping and reversal
+  correction (the two elapsed-duration readings are already monotonic by construction, so
+  neither applies): if MOST of the column's consecutive steps run backward, the row order is
+  reversed first (mirroring FIX D above, but for this fallback column specifically -- FIX D
+  itself only ever looks at the PRIMARY datetime column, which this fallback runs only after
+  that one has already failed); `_unwrap_midnight_rollovers` then adds 24h for every backward
+  step of more than 1h between consecutive finite samples (1h, not a full half-day, so a
+  genuine but sparsely-sampled overnight gap -- e.g. evening readings, then the next morning's,
+  nothing logged in between -- still unwraps correctly; a small backward step from ordinary
+  out-of-order noise stays well under it and is left alone). The returned warning says so:
+  `"Time column has clock times only (no date); elapsed time computed from the first sample,
+  midnight rollovers unwrapped."` (with `" Row order was reversed (newest-first log)."`
+  appended when that fired), or, for the two elapsed-duration readings, that the column holds
+  durations past its usual wrap point with no unwrap applied.
+
+  After `_parse_dt()` returns (both on the first pass and after any FIX D reversal),
+  `_mask_isolated_timestamp_outliers` runs unconditionally: a single valid sample whose elapsed
+  time differs from BOTH its immediate valid neighbors by more than `max(1h, 100x the median
+  step)`, while those two neighbors are themselves consistent with EACH OTHER within that same
+  threshold, is a corrupted timestamp -- not a genuine sudden jump -- and is set to NaT, with a
+  warning giving the count. This is what tells a single bad cell apart from a REAL
+  discontinuity: a genuine gap changes the level and stays there, so the sample after it lands
+  close to the sample that caused the jump, not back near where the record started. Measured
+  case: Strathcona's `100-09-14-062-04W6-rt.csv`, one row whose Date cell reads `"8/10/2022"`
+  where every neighbor reads `"28/10/2022"` (a dropped leading digit) -- unmasked, that one
+  sample lands ~20 days before its neighbors and the very next sample jumps back ~20 days to
+  rejoin them, inflating the reported span from the record's real ~99h to a bogus, deeply
+  negative one.
+
+  If NONE of the three FIX-B fallbacks finds anything, `load_csv` raises -- unconditionally,
+  regardless of how many "valid" timestamps the untrustworthy column happens to have in
+  absolute terms, since a low, isolated minority is not a working time base. Measured case:
+  Liberty's Anderson `"DFIT-FINAL.csv"` -- an undetected preamble collapses its real Date + Real
+  Time columns to anonymous `"Unnamed: N"` ones, landing `dt_col` on a plain sample-INDEX column
+  instead (`"1"`, `"2"`, `"3"`, ...); roughly 1 in 11 of those integers happens to fall inside
+  the plausible Excel-serial range and gets misread as a real (but wrong) date, reaching a
+  nonzero valid COUNT -- 40,178 of 431,349 rows -- that a "some rows parsed" check alone would
+  have accepted; the FRACTION (~9%) is what correctly flags it as untrustworthy instead,
+  matching Crescent Point's Dressler file (a single genuine date surviving among thousands of
+  rejected bare-clock rows) under the exact same rule -- there is no more special-cased ">=2
+  valid" exemption from it.
   `suggest_channels` suggests channel roles (the pressure pick is ranked, not first-match: surface/WHP-named beats
   treating-named beats generic beats demoted aux/pump/annulus/max/avg-type channels, though a
   BHP-named channel still wins outright; when given a loaded `TestData.column` callable, it also

@@ -370,8 +370,15 @@ def test_parse_datetime_corrupted_row_stays_nat_with_well_formed_neighbors():
     # and the corrupted row fails to match it (NaT) -- parsed in isolation (or reindexed into a
     # subset without those neighbors), dateutil's own single-value guess reads it as a
     # plausible-but-wrong 2022-10-01, which this must not do.
-    good = ["31/10/2022 22:11:{:02d}".format(s) for s in range(20)]
-    values = good[:5] + ["/10/2022 22:11:25"] + good[5:]
+    # Enough total rows, and enough OTHER unparseable ones, that the fast-path-resolved fraction
+    # stays below _FAST_PATH_SKIP_FRACTION (0.90) -- otherwise Fallback 2 would be skipped
+    # entirely and this test would pass for the wrong reason (the fast path alone already fails
+    # the corrupted row, without ever exercising Fallback 2's context-aware rejection).
+    good = ["31/10/2022 22:11:{:02d}".format(s) for s in range(30)]
+    values = (
+        good[:5] + ["/10/2022 22:11:25"] + good[5:15]
+        + ["/10/2022 22:12:10", "/10/2022 22:12:45", "/10/2022 22:13:10"] + good[15:]
+    )
     s = pd.Series(values, dtype="string")
     result = io_load.parse_datetime(s)
     assert pd.isna(result.iloc[5])
@@ -385,13 +392,61 @@ def test_parse_datetime_no_digit_value_does_not_break_whole_column_format_guess(
     # make pandas fail to guess ANY shared format for the array at all (a real perf cliff on a
     # large column, see the fix's own comment; here just checked for correctness) and everything
     # else in the array must still parse normally around it.
+    # Two more no-digit junk rows beyond the measured "(date time)" one, purely to keep the
+    # fast-path-resolved fraction below _FAST_PATH_SKIP_FRACTION (0.90) -- otherwise Fallback 2
+    # would be skipped entirely and this test would pass without ever exercising the masking it
+    # claims to check.
     good = ["12/14/2016 10:25:{:02d} AM".format(s) for s in range(20)]
-    values = ["(date time)"] + good
+    values = ["(date time)"] + good + ["N/A", "---"]
     s = pd.Series(values, dtype="string")
     result = io_load.parse_datetime(s)
     assert pd.isna(result.iloc[0])
     assert result.iloc[1] == pd.Timestamp("2016-12-14 10:25:00")
     assert result.notna().sum() == 20
+
+
+# --------------------------------------------------------------------------------------------------
+# Isolated-timestamp-outlier guard (_mask_isolated_timestamp_outliers): a single corrupted cell
+# surrounded on both sides by mutually consistent neighbors is masked, not left to poison the
+# reported span with a huge spurious swing.
+# --------------------------------------------------------------------------------------------------
+def test_load_csv_isolated_timestamp_outlier_masked(tmp_path):
+    # Measured case: Strathcona's 100-09-14-062-04W6-rt.csv, row 5563 -- a Date cell reads
+    # "8/10/2022" where every neighbor reads "28/10/2022" (a dropped leading digit), landing
+    # that one sample ~20 days before its neighbors and the next sample ~20 days back again.
+    lines = ["Date,Time,Pressure(psi)"]
+    for i in range(20):
+        day = 8 if i == 10 else 28
+        lines.append(f"{day}/10/2022,17:23:{i:02d},{5000 - i}")
+    p = tmp_path / "isolated_outlier.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    t = np.asarray(td.t_s, dtype=float)
+    assert np.isnan(t[10])
+    assert np.isfinite(t).sum() == 19
+    # The surviving samples still increase smoothly at 1s/row across the masked gap.
+    np.testing.assert_allclose(t[9], 9.0)
+    np.testing.assert_allclose(t[11], 11.0)
+    assert any("outlier" in w for w in td.load_warnings)
+
+
+def test_load_csv_genuine_large_gap_not_masked_as_outlier(tmp_path):
+    # A REAL discontinuity -- a genuine gap in logging -- must not be masked: unlike a corrupted
+    # single cell, the samples on either side of a real gap are close to EACH OTHER (both near
+    # the new, shifted level), not mutually far apart with the outlier sandwiched between two
+    # otherwise-adjacent-looking neighbors.
+    lines = ["Date,Time,Pressure(psi)"]
+    for i in range(10):
+        lines.append(f"28/10/2022,17:23:{i:02d},{5000 - i}")
+    # A genuine multi-day gap in logging, then readings resume and continue normally.
+    for i in range(10):
+        lines.append(f"5/11/2022,9:00:{i:02d},{4000 - i}")
+    p = tmp_path / "genuine_gap.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    t = np.asarray(td.t_s, dtype=float)
+    assert np.isfinite(t).sum() == 20
+    assert not any("outlier" in w for w in td.load_warnings)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -443,6 +498,88 @@ def test_load_csv_clock_only_unwraps_midnight_rollover(tmp_path):
     p.write_text("\n".join(lines) + "\n")
     td = io_load.load_csv(str(p))
     np.testing.assert_allclose(td.t_s, [0.0, 1.0, 2.0, 3.0])
+
+
+def _fmt_hms(total_s):
+    total_s = int(total_s)
+    return f"{total_s // 3600}:{(total_s % 3600) // 60:02d}:{total_s % 60:02d}"
+
+
+def test_load_csv_clock_overnight_gap_unwraps_correctly(tmp_path):
+    # L4: a sparsely-sampled overnight gap (evening readings, then the next morning's, nothing
+    # in between) must still unwrap -- the backward step from the last evening sample to the
+    # first morning one is well under the OLD 12h threshold's proof, but well over the new 1h
+    # one. 20:00-21:00 then 10:00-11:00 the next day: 1h + a 13h gap + 1h = 15h total.
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"{_fmt_hms(s)},0,100" for s in range(20 * 3600, 21 * 3600, 60)]
+    lines += [f"{_fmt_hms(s)},0,100" for s in range(10 * 3600, 11 * 3600, 60)]
+    p = tmp_path / "clock_overnight_gap.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    # Last sample is 10:59:00 (range() stops one step short of 11:00:00) -- 14h59m after the
+    # first sample at 20:00:00.
+    np.testing.assert_allclose(td.t_s[-1], 14 * 3600 + 59 * 60, rtol=0, atol=1)
+    assert np.all(np.diff(td.t_s) >= 0)
+
+
+def test_load_csv_clock_reverses_newest_first_log(tmp_path):
+    # L4: a reverse-chronological (newest-first) clock log, crossing midnight, must be reversed
+    # (mirroring FIX D) before unwrapping -- not left descending. Chronological 22:00 -> 26:00
+    # (02:00 the next day), stored newest-first: a real 4h span.
+    times = [_fmt_hms(s % 86400) for s in range(22 * 3600, 26 * 3600, 60)][::-1]
+    lines = ["Time,Rate,Pressure"] + [f"{t},0,100" for t in times]
+    p = tmp_path / "clock_reverse_midnight.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    # Last (chronologically) sample is 01:59:00 (range() stops one step short of 02:00:00) --
+    # 3h59m after the first sample at 22:00:00.
+    np.testing.assert_allclose(td.t_s[-1], 3 * 3600 + 59 * 60, rtol=0, atol=1)
+    assert np.all(np.diff(td.t_s) >= 0)
+    assert any("reversed" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_elapsed_hms_past_24h_not_truncated(tmp_path):
+    # Measured (synthetic) bug: an H:MM:SS elapsed-DURATION column (not a wall clock) whose hour
+    # field genuinely runs past 23 (e.g. "39:59:00") was previously read as a wall clock, which
+    # can never represent hour>=24 -- those rows became NaT, truncating a real 40h record down
+    # to the ~24h a naive reading would show. A 3-field value with any hour>23 must be read as
+    # an elapsed duration instead (no midnight unwrap -- it's already monotonic by construction).
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"{_fmt_hms(s)},0,100" for s in range(0, 40 * 3600, 60)]
+    p = tmp_path / "clock_elapsed_hms_40h.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == len(td.t_s)
+    np.testing.assert_allclose(td.t_s[-1], (40 * 3600) - 60, rtol=0, atol=1)
+    assert any("elapsed duration" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_elapsed_mmss_past_60min_not_misread_as_hours(tmp_path):
+    # Measured (synthetic) bug: a bare "MM:SS" elapsed-duration column (e.g. "39:59", 39 minutes
+    # 59 seconds) whose first field exceeds 23 at some point can never be a valid 24-hour clock
+    # hour either -- it must be elapsed minutes, not misread as an "H:MM" wall clock (which would
+    # turn a 40-minute record into a bogus ~40-HOUR span).
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"{s // 60:02d}:{s % 60:02d},0,100" for s in range(0, 40 * 60)]
+    p = tmp_path / "clock_elapsed_mmss_40min.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == len(td.t_s)
+    np.testing.assert_allclose(td.t_s[-1], 40 * 60 - 1, rtol=0, atol=0.01)
+    assert any("elapsed duration" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_ambiguous_two_field_raises(tmp_path):
+    # A bare 2-field, no-AM/PM reading whose first field never proves it's an hour (never
+    # reaches 13) AND whose sample cadence looks like a per-second counter (median step well
+    # under 60s), not a per-minute-or-slower clock, is genuinely ambiguous between "H:MM" and
+    # "MM:SS" -- must raise a clear, specific error rather than silently guessing either way.
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"{s // 60:02d}:{s % 60:02d},0,100" for s in range(0, 10 * 60)]
+    p = tmp_path / "clock_ambiguous.csv"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="ambiguous"):
+        io_load.load_csv(str(p))
 
 
 def test_clock_seconds_of_day_excludes_dressler_ambiguous_mm_ss_shape():
@@ -543,18 +680,75 @@ def test_load_csv_trailing_excel_ref_error_rows_do_not_fail_valid_fraction(tmp_p
     # H2b's own fraction check must not punish a file for something that isn't really data at
     # all: a broken Excel formula reference ("#REF!") filling every cell of a large trailing
     # block. Measured case: Crestone Peak's "21011234 raw data.csv" has 233,470 genuinely valid,
-    # contiguous "Date Time" rows followed by ~713,000 trailing "#REF!" rows -- a real, good
-    # DFIT record padded by spreadsheet corruption, not the "mostly nothing ever parsed" shape
-    # the fraction check exists to catch. "#REF!" (and the other common Excel error sentinels)
-    # must be excluded from the non-empty-cell denominator the same way a blank cell is.
+    # contiguous "Date Time" rows followed by ~713,000 trailing "#REF!" rows -- but the real
+    # Pressure/Temp columns keep reading real, continuing values through that trailing block
+    # (this is real data missing a timestamp, not blank padding) -- "#REF!" (and the other
+    # common Excel error sentinels) must be excluded from the non-empty-cell denominator the
+    # same way a blank cell is, and the missing timestamps extrapolated at the good prefix's own
+    # regular step (see the companion extrapolation test below).
     lines = ["Date Time,Pressure(psi)"]
-    lines += [f"1/1/24 00:00:{s:02d},5000" for s in range(20)]
-    lines += ["#REF!,#REF!"] * 200
+    lines += [f"1/1/24 00:00:{s:02d},{5000 - s}" for s in range(20)]
+    lines += [f"#REF!,{4980 - s}" for s in range(200)]
     p = tmp_path / "trailing_ref_error.csv"
     p.write_text("\n".join(lines) + "\n")
     td = io_load.load_csv(str(p))
     assert td.datetime_col == "Date Time"
+    # Extrapolated: all 220 rows end up with a usable timestamp, not just the 20 real ones.
+    assert np.isfinite(td.t_s).sum() == 220
+    np.testing.assert_allclose(td.t_s, np.arange(220, dtype=float))
+    assert any("extrapolated" in w for w in td.load_warnings)
+
+
+def test_load_csv_scattered_error_tokens_still_count_against_fraction(tmp_path):
+    # The other half of the edge-run rule: a "#N/A"/"#REF!" cell SCATTERED through an otherwise-
+    # unparseable column (not confined to one contiguous run at either end) must still count as
+    # a non-empty, INVALID cell -- exempting it unconditionally would let a column that's mostly
+    # error tokens pass the trust-fraction check outright, which is exactly backwards.
+    lines = ["Index,Pressure(psi)"]
+    for i in range(1, 41):
+        if i % 10 == 0:
+            lines.append(f"{32900 + i},{5000 - i}")  # the occasional genuine-looking value
+        elif i % 3 == 0:
+            lines.append(f"#N/A,{5000 - i}")  # scattered, not an edge run
+        else:
+            lines.append(f"{i},{5000 - i}")
+    p = tmp_path / "scattered_na.csv"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError):
+        io_load.load_csv(str(p))
+
+
+def test_load_csv_trailing_blank_time_with_real_data_extrapolates(tmp_path):
+    # The extrapolation rule isn't specific to Excel error tokens -- a genuinely BLANK time cell
+    # sitting in a trailing run that still carries real Pressure data gets the same treatment.
+    lines = ["Date Time,Pressure(psi)"]
+    lines += [f"1/1/24 00:00:{s:02d},{5000 - s}" for s in range(10)]
+    lines += [f",{4990 - s}" for s in range(30)]
+    p = tmp_path / "trailing_blank_time.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == 40
+    np.testing.assert_allclose(td.t_s, np.arange(40, dtype=float))
+
+
+def test_load_csv_trailing_irregular_block_left_nan_with_warning(tmp_path):
+    # When the surviving good run's own spacing is too irregular to trust, the trailing
+    # data-bearing-but-timestamp-less rows are left as NaN (never guessed at a made-up spacing),
+    # and a warning says so.
+    lines = ["Date Time,Pressure(psi)"]
+    # Irregular steps: 1s, 5s, 1s, 5s, ... -- median step exists but >1% of steps deviate from it.
+    t = 0
+    times = []
+    for i in range(20):
+        times.append(t)
+        t += 1 if i % 2 == 0 else 5
+    lines += [f"1/1/24 00:{s // 60:02d}:{s % 60:02d},{5000 - i}" for i, s in enumerate(times)]
+    lines += [f"#REF!,{4980 - s}" for s in range(50)]
+    p = tmp_path / "trailing_irregular.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
     assert np.isfinite(td.t_s).sum() == 20
+    assert any("no usable timestamp" in w for w in td.load_warnings)
 
 
 # --------------------------------------------------------------------------------------------------
