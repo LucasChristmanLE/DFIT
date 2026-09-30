@@ -487,6 +487,44 @@ def test_load_xlsx_picks_sheet_by_real_rows_not_inflated_max_row(tmp_path):
     assert td.n == 20
 
 
+def test_load_xlsx_missing_dimension_does_not_rank_data_sheet_below_notes(tmp_path):
+    # A worksheet's declared <dimension> is missing entirely (openpyxl then falls back to
+    # reporting max_row == 1) -- must not rank a real, larger data sheet below a smaller notes
+    # sheet that still has its own (small) <dimension> intact.
+    import re
+    import zipfile
+
+    wb = openpyxl.Workbook()
+    data = wb.active
+    data.title = "Data"
+    data.append(["Time", "Pressure"])
+    d0 = dt.datetime(2020, 1, 1)
+    for i in range(20):
+        data.append([d0 + dt.timedelta(seconds=i), 100 + i])
+
+    notes = wb.create_sheet("Notes")
+    notes.append(["Comment"])
+    notes.append(["a small notes sheet"])
+    path = _save(wb, tmp_path / "no_dimension.xlsx")
+
+    # Strip the <dimension .../> element from the "Data" sheet's part (sheet1.xml, since it's
+    # the first/active sheet) to simulate a missing dimension.
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        contents = {n: z.read(n) for n in names}
+    sheet1 = contents["xl/worksheets/sheet1.xml"].decode("utf-8")
+    stripped = re.sub(r"<dimension[^/]*/>", "", sheet1)
+    assert stripped != sheet1  # sanity: the substitution actually matched something
+    contents["xl/worksheets/sheet1.xml"] = stripped.encode("utf-8")
+    with zipfile.ZipFile(path, "w") as z:
+        for n, data_bytes in contents.items():
+            z.writestr(n, data_bytes)
+
+    td = io_load.load_xlsx(path)
+    assert td.n == 20
+    assert "Pressure" in "".join(td.columns)
+
+
 def test_xlsx_count_data_rows_stops_after_consecutive_blanks(tmp_path):
     wb = openpyxl.Workbook()
     ws = wb.active
