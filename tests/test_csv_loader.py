@@ -652,6 +652,18 @@ def test_load_csv_clock_two_field_repeated_values_is_clock(tmp_path):
     td = io_load.load_csv(str(p))
     assert not any("elapsed duration" in w for w in td.load_warnings)
     assert np.isfinite(td.t_s).sum() == len(td.t_s)
+    # Run length is a heuristic (a >1 Hz MM:SS log repeats values too), so it is flagged.
+    assert any("low confidence" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_midnight_wrap_is_not_low_confidence(tmp_path):
+    # A midnight wrap is a proof of "clock", so no low-confidence note.
+    mins = list(range(22 * 60, 24 * 60)) + list(range(0, 60))
+    lines = ["Time,Rate,Pressure"] + [f"{m // 60}:{m % 60:02d},0,100" for m in mins]
+    p = tmp_path / "clock_wrap.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert not any("low confidence" in w for w in td.load_warnings)
 
 
 def test_clock_seconds_of_day_excludes_dressler_ambiguous_mm_ss_shape():

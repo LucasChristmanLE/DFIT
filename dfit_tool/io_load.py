@@ -1324,15 +1324,16 @@ def _classify_clock_mode(raw: pd.Series) -> str:
       nothing ever drops) would show.
     - ``"elapsed_mmss"``: a 2-field, no-AM/PM reading where the first field exceeds 23 at some
       point -- too high to be even a 24-hour hour, so it must be elapsed MINUTES. Measured
-      (synthetic): a 20-minute "00:00".."19:59" MM:SS record that a naive "H:MM" wall-clock
-      reading turns into a bogus ~20-HOUR span.
+      (synthetic): a 45-minute "00:00".."45:00" MM:SS record that a naive "H:MM" wall-clock
+      reading turned into a bogus ~23-HOUR span. A record under 24 minutes never proves this.
     - ``"ambiguous"``: a 2-field, no-AM/PM reading that fits none of the proofs below. Never
       guessed -- see ``_find_clock_column``, which raises instead.
 
     A value carrying AM/PM is unambiguous on its own (only a real clock hour takes one), so its
     presence anywhere in the column settles "clock" outright before anything else runs. For a
     2-field, no-AM/PM reading (H:MM vs. MM:SS is otherwise genuinely ambiguous), the remaining
-    checks run in this fixed order, each one a proof, not a preference:
+    checks run in this fixed order (1 and 2 are proofs; 3 is a heuristic, returned as
+    ``"clock_inferred"`` so the caller adds a low-confidence warning):
 
     1. The first field ever exceeding 23 (checked BEFORE anything else below) is conclusive on
        its own -- too high to be even a 24-hour hour, so it must be elapsed MINUTES
@@ -1377,7 +1378,7 @@ def _classify_clock_mode(raw: pd.Series) -> str:
                 return "clock"
         pair_id = first * 100.0 + minute  # collapses (first, minute) into one comparable value
         if _median_run_length(pair_id) >= 2:
-            return "clock"
+            return "clock_inferred"
         return "ambiguous"
     # Mixed 2-field and 3-field shapes in the same column (not seen in the corpus) -- fall back
     # to the ordinary wall-clock reading and let its own per-value range checks sort out what
@@ -1465,6 +1466,9 @@ def _find_clock_column(
         if n_non_empty == 0:
             continue
         mode = _classify_clock_mode(raw)
+        inferred = mode == "clock_inferred"
+        if inferred:
+            mode = "clock"
         if mode == "ambiguous":
             # Try the remaining candidates before giving up on this one -- a later column might
             # still resolve cleanly even though this one can't. Remembered (first one only) so
@@ -1499,6 +1503,8 @@ def _find_clock_column(
                 "Time column has clock times only (no date); elapsed time computed from the "
                 "first sample, midnight rollovers unwrapped."
                 + (" Row order was reversed (newest-first log)." if reversed_ else "")
+                + (" H:MM vs MM:SS was inferred from repeated values only (low confidence); "
+                   "check the Overview duration." if inferred else "")
             )
         else:
             # An elapsed duration is already monotonic by construction (its "hour" or "minutes"

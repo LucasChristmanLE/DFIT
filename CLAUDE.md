@@ -210,7 +210,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
 
   - Contiguity: only rows in an UNBROKEN data-bearing run starting right at the anchor (the last
     valid timestamp, for a trailing block; the first, for a leading one) are reachable at all --
-    a run of fully-empty rows (no value in ANY column) breaks it, and real data sitting past
+    any row with no finite numeric value in another column (fully empty, or text only, e.g. a
+    status note) breaks it, and real data sitting past
     that break stays out of reach even though it's real. Measured case: Great Western's
     "Seltzer Pump - 036HN.csv" -- the row immediately after its last valid timestamp is already
     fully empty, so the file's own real trailing 60 rows (much further out, with real Pressure/
@@ -234,7 +235,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   median step (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
   <step> s spacing."`, N counting only the extrapolated rows); an irregular interval, or a block
   with nothing reachable/blank-or-error at all, instead leaves everything unresolved (`"N
-  data-bearing rows had no usable timestamp"`, N here counting the WHOLE original block) --
+  data-bearing rows had no usable timestamp"`, N here counting the block's data-bearing rows,
+  e.g. 60 of Seltzer's 5,419-row block) --
   never silently dropped either way, and both warnings can appear together when extrapolation
   resolves only part of the block. Measured case for a clean, fully-extrapolated block: Crestone
   Peak's "21011234 raw data.csv" -- 233,470 genuinely valid, contiguous 1 Hz "Date Time" rows,
@@ -253,8 +255,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   value with any hour exceeding 23 is `"elapsed_hms"` (an elapsed DURATION -- h*3600+m*60+s,
   hour unbounded, e.g. `"39:59:00"` forty minutes before hour 40 -- a naive wall-clock reading
   would misread this as stuck at hour 23, truncating a genuine 40h record to ~24h); a 2-field,
-  no-AM/PM value runs through a fixed sequence of proofs, in this order, each one conclusive on
-  its own rather than a preference: (1) the first field EVER exceeding 23 is checked first and
+  no-AM/PM value runs through a fixed sequence of checks, in this order ((1) and (2) are proofs,
+  (3) is a heuristic): (1) the first field EVER exceeding 23 is checked first and
   settles `"elapsed_mmss"` (m*60+s, first field unbounded) outright, regardless of what the
   other checks below would have said -- too high to be even a 24-hour hour, e.g. a 40-minute
   `"00:00"`..`"39:59"` MM:SS record a naive H:MM reading would misread as a bogus ~40-HOUR span;
@@ -265,7 +267,10 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   `_median_run_length`, the median length of each run of consecutive identical (first, second)
   pairs -- settles `"clock"` when it's >=2 (the same reading repeats across multiple rows, i.e.
   the field changes slower than the sample rate, consistent with a real clock sampled faster
-  than once a minute); (4) otherwise `"ambiguous"`. An ambiguous candidate doesn't fail the
+  than once a minute). Rule (3) cannot separate that from an MM:SS log sampled faster than 1 Hz
+  (a 2 Hz 20-minute MM:SS log also repeats each value and reads as ~20 h), so when (3) decides,
+  the clock warning adds "inferred from repeated values only (low confidence)"; (4) otherwise
+  `"ambiguous"`. An ambiguous candidate doesn't fail the
   whole search by itself -- `_find_clock_column` still tries any remaining datetime-name-
   matching candidate before giving up -- but if NOTHING resolves cleanly, it raises
   (`"Column 'Time': H:MM vs MM:SS ambiguous (...)"`, no override mentioned, since none exists)
@@ -273,8 +278,10 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   one known, accepted gap: a plain, non-wrapping, non-repeating no-AM/PM H:MM record sampled
   once per real minute (e.g. 13:00-18:00, one row a minute -- run length 1, no wrap, first field
   never exceeds 23) has no proof either way under rules (1)-(3) and lands on `"ambiguous"`,
-  even though a human reader would call it an obvious clock; this is the boundary the rule as
-  specified draws, not something patched around. Every one of these readings still excludes
+  even though a human reader would call it an obvious clock, and so does a 1 Hz MM:SS log under
+  24 minutes (e.g. `"00:00"`..`"19:59"`), which never proves (1); this is the boundary the rule
+  as specified draws, not something patched around. No corpus file reaches rules (1)-(3): all 14
+  clock-fallback files are 3-field. Every one of these readings still excludes
   Dressler's own ambiguous
   `"MM:SS.f"` shape (exactly two colon-separated fields plus a fraction, no seconds group) --
   Crescent Point's "...1secdata.csv" must keep failing here, not land on a wrong reading through
