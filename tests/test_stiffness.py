@@ -20,7 +20,7 @@ import pytest
 
 from matplotlib.figure import Figure
 
-from dfit_tool import interpret, picks, plots, store, ui
+from dfit_tool import interpret, model, picks, plots, store, ui
 from dfit_tool.model import (
     PickState, compute_all, infer_step_status, porepressure_skipped, stiffness_skipped,
 )
@@ -212,6 +212,67 @@ def test_stiffness_S_is_one_shorter_than_p_eff_and_aligned_with_p_eff_1():
 
 
 # --------------------------------------------------------------------------------------------------
+# model.compute_all: STIFFNESS_MAX_POINTS cap -- bidirectional (keeps-rises-too) resampling can
+# leave far more resampled points than the O(n^2) h_function construction can afford; above the
+# cap, compute_all decimates to an even subset (plus index 0/i_min/last) before building
+# p_eff/h/S, and the new stiffness_G array carries the matching G-time subset. The fixture's
+# default resampled grid is 36 points (see the module docstring's synthetic shape), so patching
+# the cap down to 10 is what actually exercises the cap branch here without needing a huge
+# synthetic record (that case is covered separately by a scratch timing/memory check, not a
+# test -- see the task report).
+# --------------------------------------------------------------------------------------------------
+def test_stiffness_cap_decimates_arrays_and_warns(monkeypatch):
+    monkeypatch.setattr(model, "STIFFNESS_MAX_POINTS", 10)
+    td, st, res = _state_with_pore_pressure()
+    dg = res.diagnostics
+    n = len(dg.G)
+    assert n > 10  # sanity: the fixture's full resampled grid exceeds the patched cap
+
+    assert res.stiffness_p_eff is not None
+    assert res.stiffness_G is not None
+    # <= cap + 2: the evenly spaced subset already includes indices 0 and n-1 (np.linspace's own
+    # endpoints), so only the min-dP/dG pick's own index (i_min) can ever add beyond the cap --
+    # but np.unique also collapses any of the three that coincide with an evenly spaced point, so
+    # this is a loose upper bound, not an exact count.
+    assert len(res.stiffness_p_eff) <= 12
+    assert len(res.stiffness_G) == len(res.stiffness_p_eff)
+    assert len(res.stiffness_S) == len(res.stiffness_p_eff) - 1
+    assert np.all(np.diff(res.stiffness_G) > 0)  # strictly increasing -- a real G-time subset
+
+    i_min = int(np.nanargmin(np.abs(dg.G - st.min_dpdg_G)))
+    assert dg.G[0] in res.stiffness_G
+    assert dg.G[i_min] in res.stiffness_G
+    assert dg.G[-1] in res.stiffness_G
+
+    assert any("decimated to limit memory" in w for w in res.warnings)
+    expected = f"Stiffness plot uses {len(res.stiffness_p_eff)} of {n} resampled points"
+    assert any(expected in w for w in res.warnings)
+
+
+def test_stiffness_uncapped_case_unchanged():
+    """Below the (default 2000) cap, nothing changes: no warning, and stiffness_G is exactly
+    the full diagnostics G-time grid (the fixture's 36-point default resampled grid is nowhere
+    near the cap)."""
+    td, st, res = _state_with_pore_pressure()
+    assert not any("decimated to limit memory" in w for w in res.warnings)
+    np.testing.assert_array_equal(res.stiffness_G, res.diagnostics.G)
+    assert len(res.stiffness_p_eff) == len(res.diagnostics.G)
+
+
+def test_seed_stiffness_pick_lands_in_capped_arrays(monkeypatch):
+    """seed_stiffness must key off stiffness_G (not diagnostics.G) so the seeded pick is always
+    one of the (possibly decimated) stiffness_p_eff samples."""
+    monkeypatch.setattr(model, "STIFFNESS_MAX_POINTS", 10)
+    td, st, res = _state_with_pore_pressure()
+    assert st.stiffness_pick_P is None
+
+    picks.seed_stiffness(st, res)
+
+    assert st.stiffness_pick_P is not None
+    assert st.stiffness_pick_P in res.stiffness_p_eff[1:]
+
+
+# --------------------------------------------------------------------------------------------------
 # model.compute_all gates: every prerequisite must be present, and >= 4 resampled points.
 # --------------------------------------------------------------------------------------------------
 def test_stiffness_arrays_none_without_min_dpdg_pick():
@@ -314,8 +375,11 @@ def test_stale_stiffness_pick_reports_none_when_gate_fails():
 def test_stale_stiffness_pick_beyond_trim_warns():
     """stiffness_pick_P is stored in pressure, not G, so it can't be compared against
     diagnostics.G[-1] like contact/min-dP/dG/closure -- it must instead be compared against
-    the trimmed record's lowest kept pressure (rs.p[-1], since rs.p is strictly decreasing). A
-    trim that raises that low end above the pick means the pick no longer sits on the curve."""
+    the trimmed record's lowest kept pressure (model.compute_all uses np.nanmin(rs.p) for this,
+    since rs.p is no longer guaranteed monotonic once a sustained rise can be kept too -- this
+    fixture's own record is a plain decline with no rise anywhere in it, so rs.p[-1] still equals
+    that minimum here and is used directly below for simplicity). A trim that raises that low end
+    above the pick means the pick no longer sits on the curve."""
     td, st, res = _state_with_pore_pressure()
     dg = res.diagnostics
     rs = res.resampled

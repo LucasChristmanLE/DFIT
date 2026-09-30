@@ -664,11 +664,16 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     elif state.stiffness_pick_P is not None:
         ax.axvline(state.stiffness_pick_P, color="tab:blue", ls="--", lw=1.4,
                    gid="stiffness_pick")
-        # A small non-draggable marker at the curve intersection, for readability only -- p_eff
-        # is non-increasing by construction (rs.p is strictly decreasing), so np.interp (which
-        # needs an ascending x) gets both arrays reversed for this lookup alone.
-        s_at_pick = float(np.interp(state.stiffness_pick_P, p_eff[::-1], S[::-1]))
-        ax.plot(state.stiffness_pick_P, s_at_pick, "o", color="tab:blue", ms=5)
+        # A small non-draggable marker at the curve intersection, for readability only. p_eff is
+        # no longer monotonic (rs.p can rise as well as fall), so np.interp -- which needs an
+        # ascending x -- is no longer valid here; snap to the nearest finite sample's S value
+        # instead (S aligns with p_eff[1:] one for one, so the same index into either array is
+        # correct), same style as picks._nearest.
+        finite_eff = np.isfinite(p_eff)
+        if finite_eff.any():
+            i_near = int(np.argmin(np.abs(p_eff[finite_eff] - state.stiffness_pick_P)))
+            s_at_pick = float(S[finite_eff][i_near])
+            ax.plot(state.stiffness_pick_P, s_at_pick, "o", color="tab:blue", ms=5)
         if res.shmin_stiffness is not None:
             ax.set_title(f"Stiffness   Shmin(stiffness)={res.shmin_stiffness:.0f} psi",
                          fontsize=10)

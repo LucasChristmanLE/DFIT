@@ -94,6 +94,17 @@ def _random_resample_series(rng: np.random.Generator, length: int):
             hold = min(int(rng.integers(1, 4)), length - rise_start)
             p[rise_start:rise_start + hold] = p[rise_start - 1] + delta
 
+    # Bidirectional oscillation: a run of samples that swing back and forth by more than the
+    # largest tested step (30), well under rise_tol/sustain so it never trips the guard on its
+    # own -- exercises the ordinary +-step keep rule in both directions, independent of any
+    # guard/run bookkeeping.
+    if length >= 8 and rng.random() < 0.4:
+        osc_start = int(rng.integers(0, length - 6))
+        osc_len = int(rng.integers(4, min(20, length - osc_start) + 1))
+        swing = float(rng.uniform(RISE_GUARD_PSI * 1.5, RISE_GUARD_PSI * 3.0))
+        signs = np.where(np.arange(osc_len) % 2 == 0, 1.0, -1.0)
+        p[osc_start:osc_start + osc_len] = p[osc_start - 1 if osc_start else 0] + signs * swing
+
     # NaN runs: leading, mid-record, or (occasionally) the whole series.
     r = rng.random()
     if r < 0.1:
@@ -105,6 +116,16 @@ def _random_resample_series(rng: np.random.Generator, length: int):
         nan_len = int(rng.integers(1, min(6, length // 2) + 1))
         nan_start = int(rng.integers(0, length - nan_len))
         p[nan_start:nan_start + nan_len] = np.nan
+
+    # +-inf samples, scattered singly -- non-finite exactly like NaN, but `abs(inf - x)` is
+    # `inf` (not NaN), which is >= any finite step: a search against raw (unmasked) p would
+    # therefore wrongly keep one, unlike a NaN. Placed after the NaN runs above so an inf can
+    # land inside, adjacent to, or clear of one.
+    if length >= 3 and rng.random() < 0.3:
+        n_inf = int(rng.integers(1, min(4, length) + 1))
+        inf_positions = rng.choice(length, size=n_inf, replace=False)
+        signs = rng.choice([np.inf, -np.inf], size=n_inf)
+        p[inf_positions] = signs
 
     if rng.random() < 0.5:
         dt = np.cumsum(rng.uniform(0.5, 5.0, size=length))
@@ -220,6 +241,23 @@ def test_stuck_elevated_tail_never_comes_back():
               stop_at_guard)
 
 
+def test_infinite_samples_never_kept():
+    """Regression: the fast path's kept walk searched raw `p`, where `abs(inf - x)` is `inf`
+    (not NaN) and so satisfies `>= step` -- wrongly keeping a +-inf sample that the reference
+    loop's plain `np.isfinite` guard skips outright, same as a NaN. Exact example from the
+    review that caught it: dt=0..5, p=[1000, 960, inf, 930, -inf, 900] -- both +inf and -inf
+    must be skipped, leaving only the four finite samples, every one a genuine >= 30 psi move
+    off the last kept point."""
+    dt = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    p = np.array([1000.0, 960.0, np.inf, 930.0, -np.inf, 900.0])
+
+    rs = resample_pressure_increment(dt, p, step=30.0)
+
+    np.testing.assert_array_equal(rs.dt, np.array([0.0, 1.0, 3.0, 5.0]))
+    np.testing.assert_array_equal(rs.p, np.array([1000.0, 960.0, 930.0, 900.0]))
+    _check(dt, p, 30.0, None, RISE_GUARD_SUSTAIN_S, RISE_GUARD_SUSTAIN_SAMPLES, True)
+
+
 def test_nan_run_mid_record():
     n = 400
     dt = np.arange(n, dtype=float)
@@ -242,6 +280,22 @@ def test_constant_segment():
     p = np.linspace(4000.0, 2000.0, n)
     p[80:120] = p[79]
     _check(dt, p, 30.0, None, RISE_GUARD_SUSTAIN_S, RISE_GUARD_SUSTAIN_SAMPLES, True)
+
+
+def test_bidirectional_oscillation():
+    """A run of samples that swing up and down by more than ``step``, well under rise_tol/
+    sustain so it never fires the guard -- pins fast-vs-reference agreement on the ordinary
+    +-step keep rule in both directions, with no run bookkeeping involved at all."""
+    n = 200
+    dt = np.arange(n, dtype=float)
+    p = np.linspace(4000.0, 3000.0, n)
+    osc_start = 80
+    swing = 50.0
+    for k in range(20):
+        p[osc_start + k] = p[osc_start - 1] + (swing if k % 2 == 0 else -swing)
+    for stop_at_guard in _STOP_AT_GUARD:
+        _check(dt, p, 30.0, None, RISE_GUARD_SUSTAIN_S, RISE_GUARD_SUSTAIN_SAMPLES,
+              stop_at_guard)
 
 
 def test_irregular_coarse_spacing():

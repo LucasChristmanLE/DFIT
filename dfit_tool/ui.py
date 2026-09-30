@@ -1515,16 +1515,20 @@ class DfitApp:
                         dt = float(raw_dt_post[idx])
                     else:
                         # dt_target is at/before the guard (or there's no guard at all): restrict
-                        # the snap candidates to samples at/before it. dt_full itself can carry
-                        # points PAST guard_dt now (stop_at_guard=False), so snapping against the
-                        # unrestricted array can pick one of those whenever it happens to be
-                        # numerically nearer than any pre-guard sample (a sparse pre-guard decline
-                        # and a denser post-guard one) -- silently crossing into override
-                        # territory even though the analyst never dragged past the guard. Masking
-                        # first reproduces exactly the kept-point set stop_at_guard=True would
-                        # have produced, so this is provably equivalent to the tool's pre-override
+                        # the snap candidates to samples strictly before it. dt_full itself can
+                        # carry points AT OR PAST guard_dt now (stop_at_guard=False, and the
+                        # bidirectional keep rule can keep a sample exactly at guard_dt -- the
+                        # first rising sample of the guarded excursion, if it's a >= step move off
+                        # the last pre-guard kept point), so snapping against the unrestricted
+                        # array can pick one of those whenever it happens to be numerically nearer
+                        # than any pre-guard sample (a sparse pre-guard decline and a denser
+                        # post-guard one) -- silently crossing into override territory even though
+                        # the analyst never dragged past the guard. Masking to strictly-before
+                        # reproduces exactly the kept-point set stop_at_guard=True would have
+                        # produced (resample.resample_pressure_increment truncates to idx <
+                        # s_abs), so this is provably equivalent to the tool's pre-override
                         # behavior for every no-guard/at-or-before-guard case.
-                        candidates = dt_full if guard_dt is None else dt_full[dt_full <= guard_dt]
+                        candidates = dt_full if guard_dt is None else dt_full[dt_full < guard_dt]
                         if len(candidates) == 0:  # should be impossible (dt_full always has the
                             dt = None             # dt=0 reference point), but never index into
                                                    # an empty array -- fall back to clearing.
@@ -1732,7 +1736,8 @@ class DfitApp:
                 def commit_stiffness(x):
                     # DragLineController commits the raw dragged x -- snap it to the nearest
                     # curve sample's pressure first (picks._nearest is a plain argmin over |diff|,
-                    # so it works fine against p_eff's non-increasing order too).
+                    # so it works fine regardless of p_eff's order -- no longer guaranteed
+                    # non-increasing now that rs.p can rise as well as fall).
                     idx = picks._nearest(p_eff, x)
                     picks.commit_stiffness_point(self.state, float(p_eff[idx]))
                     self.refresh()

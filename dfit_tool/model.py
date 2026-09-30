@@ -354,11 +354,15 @@ class DerivedResults:
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
 
-    # Relative-stiffness plot arrays (URTeC-2019-123 A.8/A.9): stiffness_p_eff is full length
-    # (aligned with res.resampled/diagnostics.G), stiffness_S is one shorter (aligned with
-    # stiffness_p_eff[1:]) -- see the stiffness block in compute_all. Not serialized
-    # (DerivedResults never is).
+    # Relative-stiffness plot arrays (URTeC-2019-123 A.8/A.9): stiffness_p_eff and stiffness_G
+    # are aligned with EACH OTHER (same length, same selected samples), and stiffness_S is one
+    # shorter than both (aligned with stiffness_p_eff[1:]/stiffness_G[1:]) -- see the stiffness
+    # block in compute_all. All three equal the full resampled grid (res.resampled.p/
+    # res.diagnostics.G) unless STIFFNESS_MAX_POINTS capped it, in which case they are an evenly
+    # spaced (plus index 0/i_min/last) subset of it, and res.warnings carries a "decimated to
+    # limit memory" line. Not serialized (DerivedResults never is).
     stiffness_p_eff: Optional[np.ndarray] = field(default=None, repr=False)
+    stiffness_G: Optional[np.ndarray] = field(default=None, repr=False)
     stiffness_S: Optional[np.ndarray] = field(default=None, repr=False)
 
     # Compact summary of any non-1.0 unit conversion applied this compute (see
@@ -448,6 +452,15 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
         if src is not None:
             setattr(res, grad_attr, interpret.pressure_gradient(src, tvd))
     return res
+
+
+# Hard cap on the number of points fed into the stiffness construction (interpret.h_function
+# builds dense n x n arrays -- ~1 GB at n=~11k). Bidirectional resampling (keeps rises as well
+# as declines) can leave 10k-40k resampled points on a noisy gauge, well past what h_function
+# can afford; above this cap, compute_all decimates to an even subset before building p_eff/h/S
+# (see the stiffness block below) rather than resampling more coarsely -- that would move every
+# other reported value too, not just this comparison-only plot.
+STIFFNESS_MAX_POINTS = 2000
 
 
 def compute_all(state: PickState, td: TestData) -> DerivedResults:
@@ -616,23 +629,32 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                                                 state.tail_guard_override)
         # override_extends_past_guard: the resolved cutoff sits past the guard at all -- which
         # resolve_tail_cut_dt only ever does when state.tail_guard_override is set (see its
-        # docstring). admitted_new_data: whether the resampler actually found NEW points in
-        # (guard_dt, cutoff] -- False for a permanently-elevated/rising tail that never resumes
-        # a decline, where resampled_full keeps nothing new past guard_dt no matter how far past
-        # it cutoff reaches (a deliberate override still moves the display/masking cut, but there
-        # is nothing there for it to admit). Both feed the guard-warning gate right below and the
-        # low-surface-pressure scan further down.
+        # docstring). admitted_new_data: whether res.resampled actually gains any point it
+        # doesn't already have in the un-overridden default -- i.e. whether the override's mask
+        # (dt <= cutoff) admits anything the default mask (dt < guard_dt) didn't, which is
+        # exactly the range [guard_dt, cutoff], INCLUSIVE of guard_dt itself: the bidirectional
+        # +-step rule can keep a sample AT guard_dt (the excursion's own first sample) in
+        # resampled_full, even though the default mask always excludes it. With the bidirectional
+        # rule this is now usually True whenever the excursion moves >= step off of whatever was
+        # last kept before the guard, so an override past the guard typically does admit at least
+        # that one boundary sample, let alone a rising tail's continued climb. It's False only
+        # when NOTHING in [guard_dt, cutoff] ever moves >= step from the last pre-guard kept
+        # point -- e.g. a rise whose height clears the fixed 30-psi rise_tol (enough to fire the
+        # guard) but not resample_step, when the latter is configured larger than that height.
+        # Both feed the guard-warning gate right below and the low-surface-pressure scan further
+        # down.
         override_extends_past_guard = (rs_full.guard_dt is not None and cutoff is not None
                                         and cutoff > rs_full.guard_dt)
         admitted_new_data = (override_extends_past_guard
-                             and bool(np.any((rs_full.dt > rs_full.guard_dt)
+                             and bool(np.any((rs_full.dt >= rs_full.guard_dt)
                                               & (rs_full.dt <= cutoff))))
         if rs_full.guard_dt is not None:
             # A gray preview of what the guard threw away, in G-time -- built from the raw (not
-            # resampled) samples past guard_dt, since the resampler may keep zero of them there
-            # (stop_at_guard=False still only ever keeps a genuine new low; a tail that never
-            # declines again earns no further points at all) or many, if a genuine further
-            # decline resumes -- either way the raw samples are what the preview needs to show.
+            # resampled) samples past guard_dt, since the resampler may keep only the excursion's
+            # own first sample (a truly flat tail that never moves again after its initial jump)
+            # or many more, if the excursion's own climb, or a later decline, keeps moving >= step
+            # off the last pre-guard kept point -- either way the raw samples are what the preview
+            # needs to show.
             # Non-finite pressures are left in on purpose: matplotlib skips NaN when drawing, so
             # filtering here would just be extra work for the same visual result. Capped at 2x
             # the G-range that was
@@ -659,14 +681,18 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # Only worth reporting in its original form while the guard is still actually
             # binding -- i.e. the resolved cutoff hasn't been overridden past it at all
             # (cutoff <= guard_dt). Once an override DOES extend the cutoff past the guard, one
-            # of two things is true: either it actually admitted the excluded data into the
-            # diagnostics for real (admitted_new_data), in which case this warning would
-            # contradict the separate "Tail trimmed" warning below (which reports that later,
-            # real cutoff) and must be suppressed entirely; or it found nothing new there at all
-            # (a permanently-elevated/rising tail), in which case silently dropping this warning
-            # would leave the analyst thinking the override worked when Shmin/effective ISIP/
-            # pore pressure are still exactly the guard-clamped values -- so it's replaced with an
-            # honest admission-failed warning instead (the elif below) rather than just vanishing.
+            # of two things is true: either it actually admitted at least one new point into the
+            # diagnostics for real (admitted_new_data -- with the bidirectional keep rule this is
+            # now the common case, since even a flat excursion's own jump usually moves >= step
+            # off the last pre-guard kept point, let alone a rising tail's continued climb), in
+            # which case this warning would contradict the separate "Tail trimmed" warning below
+            # (which reports that later, real cutoff) and must be suppressed entirely; or it found
+            # nothing new there at all (only reachable when resample_step is configured larger
+            # than the excursion's own height above the last pre-guard kept point), in which case
+            # silently dropping this warning would leave the analyst thinking the override worked
+            # when Shmin/effective ISIP/pore pressure are still exactly the guard-clamped values
+            # -- so it's replaced with an honest admission-failed warning instead (the elif below)
+            # rather than just vanishing.
             # Inserted at the front (not appended) so this stays the topmost line in warn_lbl's
             # stacked display, ahead of any earlier-queued warning (density/TVD, volume
             # disagreement, ...) -- a firing, still-binding (or falsely-believed-overridden)
@@ -680,11 +706,24 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             elif override_extends_past_guard and not admitted_new_data:
                 res.warnings.insert(0,
                     f"Tail-guard override requested to {cutoff/60:.0f} min, but the resampler "
-                    f"found no further usable data past the guard's original cutoff at "
-                    f"{rs_full.guard_dt/60:.0f} min (the tail never resumes a decline) -- "
-                    "Shmin/effective ISIP/pore pressure are unchanged.")
+                    f"found no further resampled points past the guard's original cutoff at "
+                    f"{rs_full.guard_dt/60:.0f} min -- Shmin/effective ISIP/pore pressure are "
+                    "unchanged.")
         if cutoff is not None:
-            mask = rs_full.dt <= cutoff
+            # cutoff == guard_dt is exactly the "no trim narrower than the guard" case (either
+            # state.tail_trim_dt is None, or an explicit trim got clamped back to guard_dt for
+            # sitting past it with no override -- resolve_tail_cut_dt) -- the bidirectional
+            # resampler can now keep a sample exactly at guard_dt (the first rising sample of
+            # the guarded excursion, if it's a >= step move off the last pre-guard kept point),
+            # so this uses strict < to exclude it, matching the guard's own historic "nothing at
+            # or past guard_dt is consumed" contract. Any other cutoff is an explicit trim value
+            # (whether below the guard or, with an override, past it) and keeps <= as before --
+            # narrowing it to a strict < would wrongly re-admit points between the trim and the
+            # guard.
+            if rs_full.guard_dt is not None and cutoff == rs_full.guard_dt:
+                mask = rs_full.dt < cutoff
+            else:
+                mask = rs_full.dt <= cutoff
             rs = resample.Resampled(dt=rs_full.dt[mask], p=rs_full.p[mask], n_raw=rs_full.n_raw,
                                     guarded_at=rs_full.guarded_at, guard_dt=rs_full.guard_dt)
         else:
@@ -780,15 +819,17 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", state.min_dpdg_G),
                                       ("closure", state.closure_G)) if g is not None and g > edge]
         # stiffness_pick_P is stored in pressure, not G, so it can't be compared against
-        # edge -- compare against the trimmed record's lowest kept pressure instead. rs.p is
-        # strictly decreasing (the 30-psi resampling invariant), so rs.p[-1] is that low end,
-        # and p_eff's tail equals rs.p past the min-dP/dG pick -- a pick below rs.p[-1] no
+        # edge -- compare against the trimmed record's lowest kept pressure instead. rs.p is no
+        # longer monotonic (a sustained rise is kept too, same as a decline), so its lowest kept
+        # value isn't necessarily rs.p[-1] any more -- np.nanmin finds it regardless of where it
+        # sits. p_eff's tail equals rs.p past the min-dP/dG pick, so a pick below that low end no
         # longer sits on the curve.
         # A suppressed pick (stiffness_no_upturn) reports no value at all, so it can't be
         # reported stale -- there's nothing downstream for a clamp to silently corrupt.
         if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
                 and res.resampled is not None
-                and len(res.resampled.p) and state.stiffness_pick_P < res.resampled.p[-1]):
+                and len(res.resampled.p)
+                and state.stiffness_pick_P < np.nanmin(res.resampled.p)):
             stale.append("stiffness")
         # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
         # array (dg.t), not G -- see the pp block below -- so a pp_window affected by the trim
@@ -916,9 +957,24 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         line = anchor_y + slope * (dg.G - anchor_x)
         idx = np.arange(len(rs.p))
         p_eff = np.where(idx < i_min, line, rs.p)
-        h = interpret.h_function(rs.dt, p_eff, res.pore_pressure, res.te_s)
-        res.stiffness_p_eff = p_eff
-        res.stiffness_S = interpret.relative_stiffness(p_eff, h)
+        n = len(p_eff)
+        if n > STIFFNESS_MAX_POINTS:
+            # Decimate to an even subset before the O(n^2) h-function construction -- bidirectional
+            # resampling can leave far more points than this plot can afford. np.unique both sorts
+            # and dedupes, so the always-included 0/i_min/last indices collapsing onto an evenly
+            # spaced one (or each other, on a tiny n) costs nothing extra; the result is <=
+            # STIFFNESS_MAX_POINTS + 2 (the 3 extras, minus whatever the linspace already covered).
+            even = np.linspace(0, n - 1, STIFFNESS_MAX_POINTS).round().astype(int)
+            sel = np.unique(np.concatenate([even, [0, i_min, n - 1]]))
+            res.warnings.append(
+                f"Stiffness plot uses {len(sel)} of {n} resampled points (decimated to limit "
+                "memory)")
+        else:
+            sel = np.arange(n)
+        h = interpret.h_function(rs.dt[sel], p_eff[sel], res.pore_pressure, res.te_s)
+        res.stiffness_p_eff = p_eff[sel]
+        res.stiffness_G = dg.G[sel]
+        res.stiffness_S = interpret.relative_stiffness(res.stiffness_p_eff, h)
         # stiffness_no_upturn is an explicit negative finding ("no slope change apparent") --
         # it blanks only the reported value; the pick itself is left in state so unchecking
         # restores it rather than losing it.

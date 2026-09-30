@@ -222,21 +222,26 @@ def test_stop_at_guard_false_second_excursion_does_not_overwrite_guard_dt():
     assert rs_continue.guarded_at == rs_stop.guarded_at
 
 
-def test_stop_at_guard_false_keeps_nothing_new_when_rise_never_comes_back():
-    """A rise that fires the guard and then never dips back down at all (a stuck sensor or an
-    ongoing leak, not a rebound) has nothing new to resample past guard_dt: a rising excursion
-    never satisfies the ordinary keep rule (pi <= last_kept - step) in the first place, so
-    stop_at_guard=False produces IDENTICAL output to stop_at_guard=True here -- this is
-    mathematically honest (no new information exists past the guard), not a bug. An earlier
-    round tried to paper over this by appending the confirming sample as a fresh anchor, which
-    broke the resampler's monotonicity invariant (every kept point is a genuine new low) without
-    even fixing the real-world case that mattered (the anchor sat at dt_full[-1], so a UI drag
-    there still fell back to clearing the trim). This test pins the reverted, correct behavior;
-    the actual override lives in ui.py's drag-commit, snapping against the raw record instead."""
+def test_stop_at_guard_false_captures_only_the_jump_when_tail_then_stays_flat():
+    """A rise that fires the guard and then holds perfectly flat forever (a stuck sensor, not a
+    ramp) has exactly ONE new thing to offer past guard_dt under the bidirectional (+-step) keep
+    rule: the jump into the elevated level itself, since it's a >= step move off the last
+    pre-guard kept point. Once flat, nothing later ever moves by >= step again, so no further
+    points get kept after that -- this is still mathematically honest (no new INFORMATION exists
+    past the single jump), just no longer "nothing at all" the way the old, decline-only rule
+    made it. stop_at_guard=True still discards even that one point (truncated along with the
+    rest of the run), so the two modes diverge by exactly one point, not zero.
+
+    An earlier round (predating the bidirectional rule) tried to paper over the "never comes
+    back" gap by appending the confirming sample as a fresh anchor, which broke the then-
+    strictly-decreasing resampler's monotonicity invariant without even fixing the real-world
+    case that mattered (the anchor sat at dt_full[-1], so a UI drag there still fell back to
+    clearing the trim); that anchor-insertion approach stays reverted -- the jump captured here
+    is a genuine, non-synthesized sample, not a fake anchor."""
     n = 600
     dt = np.arange(n, dtype=float)
     p = np.linspace(4000.0, 2000.0, n)
-    p[300:] = p[299] + np.linspace(50.0, 300.0, 300)  # keeps climbing, never declines
+    p[300:] = p[299] + 250.0  # jumps once, then holds perfectly flat -- never moves again
 
     rs_stop = resample_pressure_increment(dt, p, step=30.0, stop_at_guard=True)
     rs_continue = resample_pressure_increment(dt, p, step=30.0, stop_at_guard=False)
@@ -245,24 +250,30 @@ def test_stop_at_guard_false_keeps_nothing_new_when_rise_never_comes_back():
     assert rs_continue.guard_dt == rs_stop.guard_dt
     assert rs_continue.guarded_at == rs_stop.guarded_at
 
-    # Identical kept points -- no extra/fake anchor, no divergence between the two modes.
-    assert np.array_equal(rs_continue.dt, rs_stop.dt)
-    assert np.array_equal(rs_continue.p, rs_stop.p)
+    assert len(rs_continue.p) == len(rs_stop.p) + 1
+    assert rs_continue.dt[-1] == pytest.approx(dt[300])
+    assert rs_continue.p[-1] == pytest.approx(p[300])
+    # Everything before that one extra point is identical between the two modes.
+    np.testing.assert_array_equal(rs_continue.dt[:-1], rs_stop.dt)
+    np.testing.assert_array_equal(rs_continue.p[:-1], rs_stop.p)
 
 
 def test_stop_at_guard_false_resamples_past_the_guard():
     """A rise held for a while and then followed by a further decline: with stop_at_guard=True
     (the default) resampling stops dead at the rise and never sees the decline that follows. With
-    stop_at_guard=False the guard still fires (same guard_dt), but the decline afterward keeps
-    getting resampled normally, producing more kept points that reach further in dt -- and every
-    one of them, including the pre-guard points, is still a genuine new low (the invariant round
-    2's re-anchoring broke): no upward blip anywhere in rs_continue.p."""
+    stop_at_guard=False the guard still fires (same guard_dt), but under the bidirectional
+    (+-step) keep rule the rise ITSELF is now captured too (a >= step move off the last pre-guard
+    kept point), not just the decline that resumes afterward -- so rs_continue.p is no longer
+    strictly decreasing throughout: there is exactly one upward step (the held rise being kept),
+    then it holds flat (no more new points while it doesn't move), then the resumed decline is
+    strictly decreasing among itself, same as ever."""
     n = 500
     dt = np.arange(n, dtype=float)
     p = np.linspace(4000.0, 2000.0, n)
     rise_start = 150
     rise_len = 80
-    p[rise_start:rise_start + rise_len] = p[rise_start - 1] + 50.0  # sustained rise, then...
+    delta = 100.0  # comfortably clears `step` (30) off the last pre-guard kept point
+    p[rise_start:rise_start + rise_len] = p[rise_start - 1] + delta  # sustained rise, then...
     resume = rise_start + rise_len
     p[resume:] = np.linspace(p[resume - 1], 500.0, n - resume)      # ...decline resumes
 
@@ -275,9 +286,17 @@ def test_stop_at_guard_false_resamples_past_the_guard():
     assert rs_continue.dt[-1] > rs_stop.dt[-1]
     assert len(rs_continue.dt) > len(rs_stop.dt)
 
-    # Regression check for the invariant round 2 broke: every kept point across the WHOLE
-    # array (pre- and post-guard) is a genuine new low, strictly below the one before it.
-    assert np.all(np.diff(rs_continue.p) < 0)
+    # The held rise's own jump is kept, at exactly guard_dt, and it's a genuine rise (not a new
+    # low) relative to the last pre-guard kept point.
+    at_guard = rs_continue.dt == rs_continue.guard_dt
+    assert at_guard.any()
+    idx = int(np.flatnonzero(at_guard)[0])
+    assert rs_continue.p[idx] > rs_continue.p[idx - 1]
+
+    # The resumed decline (everything from `resume` onward) is still strictly decreasing among
+    # itself -- the bidirectional rule doesn't change how an ordinary decline resamples.
+    post_resume = rs_continue.p[rs_continue.dt >= dt[resume]]
+    assert np.all(np.diff(post_resume) < 0)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -477,8 +496,9 @@ def test_guard_warning_survives_two_earlier_warnings():
 # compute_all (post-review Finding 3, corrected by a later round's Finding 1): the guard-stopped-
 # resampling warning is suppressed only once an override actually admits new resampled data past
 # the guard; the separate "Tail trimmed" warning covers that case instead, with the later, real
-# cutoff. When an override is requested but admits NOTHING (the "never comes back" shape, where
-# resampled_full keeps zero points past guard_dt regardless of how far past it the cutoff
+# cutoff. When an override is requested but admits NOTHING (no sample in [guard_dt, cutoff] clears
+# ±step off the last kept value -- the tests below force this with a large resample_step -- so
+# resampled_full keeps zero points at or past guard_dt regardless of how far past it the cutoff
 # reaches), the original warning is replaced by a distinct, honest one instead of just vanishing
 # -- the earlier round's version of this test asserted the plain-vanishing behavior, which turned
 # out to be misleading (it made an ineffective override look like it had worked); see
@@ -524,18 +544,24 @@ def test_guard_warning_honest_when_override_admits_nothing():
     is ALSO suppressed here (not just the guard one) -- showing it right next to the honest
     warning would read as a confusing, near-contradictory pair about the same cut.
 
-    ``_seeded_with_sustained_rise``'s tail never comes back down, so (post-revert)
-    ``resampled_full`` correctly keeps NOTHING new past ``guard_dt`` -- there's no resampled
-    sample to derive the trim from. That's fine: the override (ui.py's raw-sample snap) sets an
-    explicit cutoff past the guard directly against the raw record, and model.compute_all's
-    masking (``rs_full.dt <= cutoff``) doesn't require the cutoff to land on an existing
-    resampled point, so an arbitrary dt past the guard exercises this exactly the same way."""
-    td, st, res = _seeded_with_sustained_rise()
-    guard_dt = res.resampled_full.guard_dt
-    assert guard_dt is not None
-    assert not np.any(res.resampled_full.dt > guard_dt)  # sanity: the "never comes back" shape
-
+    Under the bidirectional (+-step) keep rule, a fired guard's own excursion is now generally
+    keepable too -- the excursion's first sample is itself a >= step move off the last pre-guard
+    kept point whenever its height clears both the fixed 30-psi rise_tol AND resample_step, which
+    default to the same 30 psi. To get a fixture that genuinely admits NOTHING (not even that one
+    boundary sample), this test bumps resample_step well above the fixture's fixed +100 psi rise
+    -- resample_step doesn't affect guard detection at all (that's still the fixed RISE_GUARD_PSI),
+    so guard_dt is unaffected, but nothing in the record ever again moves >= 300 psi from its last
+    kept point, so (post-revert) ``resampled_full`` correctly keeps NOTHING new past ``guard_dt``.
+    That's fine: the override (ui.py's raw-sample snap) sets an explicit cutoff past the guard
+    directly against the raw record, and model.compute_all's masking (``rs_full.dt <= cutoff``)
+    doesn't require the cutoff to land on an existing resampled point, so an arbitrary dt past the
+    guard exercises this exactly the same way."""
+    td, st, _ = _seeded_with_sustained_rise()
+    st.resample_step = 300.0  # comfortably above the fixture's own +100 psi rise (see docstring)
     baseline = compute_all(st, td)  # no trim/override -- the guard-clamped default
+    guard_dt = baseline.resampled_full.guard_dt
+    assert guard_dt is not None
+    assert not np.any(baseline.resampled_full.dt >= guard_dt)  # sanity: truly nothing admitted
 
     st.tail_trim_dt = guard_dt + 100.0  # a deliberate override cutoff past the guard
     st.tail_guard_override = True

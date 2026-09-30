@@ -567,7 +567,12 @@ Per-test deliverables:
   exactly like porepressure (`model.stiffness_skipped`). Comparison-only, like Shmin Liberty:
   shown as the "Shmin stiffness" panel row and logged to the `Shmin_stiffness`/
   `Shmin_stiffness_gradient` columns only — never drawn into net pressure, the shared reference
-  ISIP, or complexity.
+  ISIP, or complexity. `h_function` is O(n²) in the point count, so above `model.
+  STIFFNESS_MAX_POINTS` (2000) — reachable now that resampling keeps rises too, which can leave
+  a noisy gauge's post-shut-in record at 10k-40k resampled points — the block decimates to an
+  evenly spaced subset (plus the first/last sample and the min-dP/dG pick's own sample, so those
+  three are never lost to rounding) before building `p_eff`/`h`/`S`, and appends a "decimated to
+  limit memory" warning; `DerivedResults.stiffness_G` carries the matching G-time subset.
 - **"No slope change apparent"** (`state.stiffness_no_upturn`, a side-panel checkbox visible
   only on the stiffness step) is the explicit negative finding: some tests show no abrupt
   slope change on the relative-stiffness plot, and this records that as a legitimate outcome
@@ -645,36 +650,46 @@ referenced to the tangent effective ISIP and composes with `shmin_tangent`, not 
 `shmin_rapid` -- there is no `net_pressure_rapid`, so for C-D the complexity participates in
 no reported identity.
 
-**Resampling.** After shut-in, keep one (time, pressure) point each time BHP has dropped
-≥ 30 psi below the last kept point. This collapses ~10⁶ raw rows to a few hundred, dense
-early and sparse late, which stabilizes the numerical derivatives. It replaces time-domain
-smoothing. A tail guard flags a default cutoff once the pressure sustains a rise above its
-running minimum (non-monotonic late data) for long enough, and in enough samples, to rule out
-noise -- see Tail trim below for the exact thresholds and how an explicit override can move
-the cutoff past it.
+**Resampling.** After shut-in, keep one (time, pressure) point each time BHP has moved >= 30 psi
+in EITHER direction from the last kept point -- a decline of >= 30 psi is kept exactly as
+before, and so, now, is a rise of >= 30 psi (a water-hammer rebound, a late tail rise). This
+collapses ~10⁶ raw rows to a few hundred, dense whenever the pressure is moving quickly and
+sparse when it's flat, which stabilizes the numerical derivatives. It replaces time-domain
+smoothing. The resampled record is no longer monotonically decreasing -- a rise shows up in
+`res.resampled.p` too. A tail guard flags a default cutoff once the pressure sustains a rise
+above its running minimum (non-monotonic late data) for long enough, and in enough samples, to
+rule out noise -- see Tail trim below for the exact thresholds and how an explicit override can
+move the cutoff past it; the guard's own detection is unaffected by the keep-rule change (it
+still runs off a plain cumulative min over finite samples, independent of what gets kept).
 
 `resample.resample_pressure_increment` is vectorized the same way `detect_dropouts` is: the
 original per-sample loop is kept, unchanged, as `resample._resample_loop_reference` (a fallback
 for a non-finite/non-positive `step` or a non-finite/negative `rise_tol`, and the thing
-`tests/test_resample_vectorized.py` fuzzes the fast path against), while the public function
-instead walks only the OUTPUT kept points -- a few hundred, not the ~10^6 raw rows. This is
-exact, not approximate, for two reasons. The loop's `running_min` is provably a plain cumulative
-min over the finite samples (`np.minimum.accumulate`, non-finite mapped to `+inf` so it never
-lowers it): an above-tolerance ("run") sample skips the update, but such a sample is by
-construction already above `running_min`, so it could never have lowered it anyway. And a run
-sample can never satisfy the keep rule (`pi <= last_kept - step`) either, for the same reason --
-so which samples get kept doesn't depend on the guard's run bookkeeping at all, only on
-truncation at the moment a guard fire would have broken the loop. A kept sample's value is
-therefore always exactly the running min at that instant (it's the same sample that just pushed
-the running min down to it), so the kept points can be found by walking the cumulative-min array
-forward with `np.searchsorted`, one step per OUTPUT point. The tail-guard runs are found the
-same way any run-length problem vectorizes: label each above-tolerance run's start position,
-forward-fill it across the run with `np.maximum.accumulate`, and check the sustain conditions at
-every above-tolerance sample in one pass; the earliest sample anywhere that satisfies both wins,
-matching the loop's fixed-once `guard_dt`/`guarded_at`, and `stop_at_guard=True` then just drops
-any kept index past that firing sample (none can fall inside the firing run itself, since a run
-sample is never kept). On a synthetic 1.5M-sample decline this drops the function from ~2.3 s to
-~0.05 s.
+`tests/test_resample_vectorized.py` fuzzes the fast path against). Tail-guard detection vectorizes
+exactly as it always did: the loop's `running_min` is provably a plain cumulative min over the
+finite samples (`np.minimum.accumulate`, non-finite mapped to `+inf` so it never lowers it), and
+the tail-guard runs are found the same way any run-length problem vectorizes -- label each
+above-tolerance run's start position, forward-fill it across the run with
+`np.maximum.accumulate`, and check the sustain conditions at every above-tolerance sample in one
+pass; the earliest sample anywhere that satisfies both wins, matching the loop's fixed-once
+`guard_dt`/`guarded_at`. The kept walk itself has no such shortcut any more: the old version
+exploited the fact that a kept sample's value was always exactly the running min at that instant,
+so it could search a monotone array with a single `np.searchsorted`; a bidirectional (either
+direction) keep rule has no monotone structure to search, since a run sample can now be kept too
+(it just can't lower the guard's own `running_min`). Instead, from the current kept sample the
+next one is the first later sample with `abs(p - last_kept) >= step` (a NaN comparison is always
+False, so a non-finite sample is skipped exactly like the loop's `continue`), found with a
+doubling window (`p[c+1 : c+1+w]`, `w` starting at `max(64, 2 * previous_gap)` and doubling until
+it hits or runs off the end) rather than one vectorized pass over the whole record: most gaps
+between kept points are small, so the window usually hits on the first try, and the total numpy
+work across all windows is O(n) amortized while the Python-level loop still runs once per OUTPUT
+point (a few hundred), not once per raw row -- except on a pathological input where nearly every
+sample swings >= step, which degrades toward one Python iteration per raw row.
+`stop_at_guard=True` then drops any kept index at or past the run's first sample (`s_abs`) --
+unlike before, a run sample CAN be kept under the new rule as the excursion climbs, so this is a
+real discard, not a no-op, and it's what keeps the historic guarantee that nothing at or past
+`guard_dt` is ever consumed. On a synthetic 1.5M-sample noisy decline this keeps the function well
+under 1 s (previously ~0.05 s for the old, strictly-decreasing walk).
 
 **No-rate fallback.** When a dataset has no rate channel (or a dead one that never exceeds
 the detection threshold), `picks.seed_injection` seeds the start/shut-in vlines from the
@@ -760,23 +775,23 @@ trim where it was. `compute_all` resamples the full post-shut-in record via
 tests and any other caller that still wants the old "guard ends the record" behavior) still
 detects `guard_dt`/`guarded_at` from the FIRST run that satisfies both sustain conditions, pinned
 there for good (see above) regardless of which mode is active. What `False` changes is what
-happens at the moment of firing: instead of breaking, the run simply resets (exactly like an
-ordinary run that dips back below tolerance on its own) and resampling continues, still relative
-to the ORIGINAL running minimum -- never reset, never frozen at a fresh anchor. This needs no
-special re-anchoring logic, because a rising excursion never satisfies the ordinary keep rule
-(`pi <= last_kept - step`) in the first place: rejecting it as part of a guard run and rejecting
-it via the ordinary rule are the same outcome. If a genuine further decline resumes later
-(relative to the TRUE historical minimum), it gets picked up completely normally, with no
-monotonicity issue -- every kept point, before and after the guard, is still by construction a
-genuine new low. If the rise never comes back down at all (a stuck sensor or an ongoing leak, the
-common real shape), `resampled_full` correctly keeps ZERO additional points past `guard_dt` --
-mathematically honest, since there is no new information to resample there, not a bug to paper
-over with a fake anchor point. (An earlier version of this feature tried exactly that -- appending
-the confirming sample as a fresh anchor and resetting `running_min`/`last_kept` to it -- but that
-both failed to fix the "never comes back" case in the one place that mattered, the anchor still
-sat at `dt_full[-1]` in the UI's drag-commit closure, and broke the resampler's monotonicity
-invariant for every OTHER caller by admitting a point that was, by definition, above the running
-minimum. It was reverted.) `compute_all` then masks to the cutoff returned by
+happens at the moment of firing: instead of truncating and stopping, the run simply resets
+(exactly like an ordinary run that dips back below tolerance on its own) and resampling
+continues, still relative to the ORIGINAL running minimum -- never reset, never frozen at a
+fresh anchor. Under the bidirectional keep rule this is no longer a no-op for the excursion
+itself: the run's own samples are evaluated by the same `abs(pi - last_kept) >= step` rule as
+any other sample, so the excursion's climb is captured as it happens, right through the region
+the guard flagged -- this is the actual point of `stop_at_guard=False`. A later genuine decline
+below the true historical minimum is still picked up completely normally on top of that. There
+is no monotonicity invariant left to reason about -- kept points can go up or down -- so unlike
+the old strictly-decreasing rule, a permanently elevated tail (a stuck sensor or an ongoing leak)
+is no longer resampled down to nothing: its climb gets captured, and it only stops producing new
+kept points once it flattens out -- though a flat jump still typically earns exactly ONE kept
+point of its own (the jump into the elevated level, if it clears >= step off the last pre-guard
+kept point; with the default `resample_step` equal to the guard's fixed 30-psi `rise_tol`, an
+excursion large enough to fire the guard almost always clears this too), and nothing further
+once it's genuinely flat -- there's no new information to resample there after that. `compute_all` then masks to the cutoff
+returned by
 `interpret.resolve_tail_cut_dt(state.tail_trim_dt, guard_dt, state.tail_guard_override)` before
 computing diagnostics (see below) -- so the trim propagates to every downstream value (effective
 ISIP, Shmin, log-log, pore pressure) with no other plumbing. Whenever `tail_trim_dt` is set, `compute_all` also emits an
@@ -810,31 +825,37 @@ touches -- otherwise it clears the stale pick and re-runs `seed_tail_trim` again
 which correctly sets no trim at all if the new window turns out to have no crash.
 
 **Overriding the guard (`PickState.tail_guard_override`, `interpret.resolve_tail_cut_dt`).**
-`resampled_full` spans the whole record (`stop_at_guard=False`, above) whenever a genuine further
-decline resumes after the guard fires, but on the shape that actually matters most -- a tail that
-never comes back down at all -- it correctly keeps nothing new past `guard_dt`, so there may be no
-resampled sample there to snap to at all. The override therefore lives in `ui.py`'s Overview
+`resampled_full` spans the whole record (`stop_at_guard=False`, above) whenever the excursion's
+own climb, or a genuine further decline, moves >= step off the last pre-guard kept point, but
+resampled_full correctly keeps NOTHING at or past `guard_dt` only when no sample anywhere past
+the guard -- not even the excursion's own first sample -- ever clears that +-step move off the
+last pre-guard kept value (reachable when `resample_step` is configured larger than the
+excursion's height above it), so there may be no resampled sample there to snap to at all. The override therefore lives in `ui.py`'s Overview
 drag-commit closure (`_attach_controllers`), not in the resampler: when the drag target is at or
 before `guard_dt` (or there's no guard), it snaps to the nearest full-resample sample among only
-those at/before `guard_dt` (`picks._nearest` against `DerivedResults.resampled_full.dt` masked to
-`<= guard_dt` when a guard exists) -- restricted, not the bare unmasked array, because
-`resampled_full` can now carry points PAST `guard_dt` too (`stop_at_guard=False`), and an
-unmasked nearest search can pick one of those whenever it happens to sit numerically closer to
-the drag target than any pre-guard sample (a sparse pre-guard decline next to a denser post-guard
-one), silently setting `tail_guard_override` even though the analyst never dragged past the
-guard. Masking first reproduces exactly the kept-point set `stop_at_guard=True` would have
-produced, so this branch is provably equivalent to the tool's pre-override behavior. When the drag
-target is PAST `guard_dt`, it instead snaps against the RAW post-shut-in samples
-(`self.td.t_s` from shut-in onward) -- resolvable unconditionally regardless of whether the
-resampler found any new points past the guard, since a raw sample always exists to snap to even
-when `resampled_full` doesn't. That said, "resolvable" is not "meaningful": the override always
-changes the DISPLAY (the gray-out boundary, and which of the two guard-related warnings shows,
-below) but only changes the actual `res.resampled`/`res.diagnostics` numbers -- and therefore
-Shmin/effective ISIP/pore pressure -- when the resampler genuinely had something new to offer
-past the guard, i.e. the tail later resumes a decline below its pre-guard historical minimum. On
-a permanently-elevated or still-rising tail (the "never comes back" shape below), dragging past
-the guard moves the line and the gray-out but leaves every reported number exactly as the
-guard-clamped default, and `compute_all` says so explicitly (see the warning-suppression
+those strictly before `guard_dt` (`picks._nearest` against `DerivedResults.resampled_full.dt`
+masked to `< guard_dt` when a guard exists) -- restricted, not the bare unmasked array, because
+`resampled_full` can now carry points AT OR PAST `guard_dt` too (`stop_at_guard=False`, and the
+bidirectional keep rule can keep a sample exactly at `guard_dt`), and an unmasked nearest search
+can pick one of those whenever it happens to sit numerically closer to the drag target than any
+pre-guard sample (a sparse pre-guard decline next to a denser post-guard one), silently setting
+`tail_guard_override` even though the analyst never dragged past the guard. Masking to strictly
+before `guard_dt` reproduces exactly the kept-point set `stop_at_guard=True` would have produced
+(it truncates to `idx < s_abs`), so this branch is provably equivalent to the tool's pre-override
+behavior. When the drag target is PAST `guard_dt`, it instead snaps against the RAW post-shut-in
+samples (`self.td.t_s` from shut-in onward) -- resolvable unconditionally regardless of whether
+the resampler found any new points past the guard, since a raw sample always exists to snap to
+even when `resampled_full` doesn't. That said, "resolvable" is not "meaningful": the override
+always changes the DISPLAY (the gray-out boundary, and which of the two guard-related warnings
+shows, below) but only changes the actual `res.resampled`/`res.diagnostics` numbers -- and
+therefore Shmin/effective ISIP/pore pressure -- when the resampler genuinely had something new to
+offer past the guard. With the bidirectional keep rule this is now the common case for a real
+tail rise (the excursion's own climb usually moves >= step off the last pre-guard kept point,
+same as a later decline below the pre-guard historical minimum would). Only when no sample
+anywhere in the overridden range clears that +-step move off the last pre-guard kept value does
+dragging past the guard move the line and the gray-out while leaving every reported number
+exactly as the guard-clamped default, and `compute_all` says so explicitly (see the
+warning-suppression
 paragraph further down). Critically, the raw-snap branch never clears the trim to `None`, even when the drag lands
 on the raw record's very last sample -- it always sets an explicit `tail_trim_dt` there instead
 (functionally "include everything," since nothing exists past it to exclude), because clearing to
@@ -859,26 +880,40 @@ trim past the guard -> the trim, unchanged, only when `override` is `True`, else
 `guard_dt`. `store.LOG_COLUMNS`/`build_log_row` log the flag too, as `tail_guard_override`,
 tail-appended at the very end of `LOG_COLUMNS` (not adjacent to `tail_trim_s`/`tail_trim_reason`,
 which sit earlier in the column order, per the append-only convention).
-`compute_all` resolves this cutoff once and reuses it for the masking above and for one more
-thing: the "Tail guard stopped resampling ... later data excluded" warning fires in its original
-form only while the guard is still actually binding, i.e. the resolved cutoff is `<= guard_dt`
-(the no-override default, and a stale trim that got clamped back). Once an override lets the
-trim stick past `guard_dt`, `compute_all` checks whether that override actually admitted new
-resampled points there (`np.any((rs_full.dt > guard_dt) & (rs_full.dt <= cutoff))`) before
-deciding what to say instead of this warning -- it is never just silently dropped:
-  - **Data genuinely admitted** (a real further decline resumes past the guard): the original
-    warning is suppressed outright. The separate "Tail trimmed ... " warning (from the
-    `tail_trim_dt is not None` block below) already reports the real, later cutoff, and showing
-    both at once would contradict each other.
-  - **Nothing admitted** (the "never comes back" shape -- `resampled_full` keeps zero points past
-    `guard_dt` no matter how far past it the override reaches): the original warning is replaced
-    with a distinct, honest one -- `"Tail-guard override requested past N min, but the resampler
-    found no further usable data there (the tail never resumes a decline) -- Shmin/effective
-    ISIP/pore pressure still reflect the guard's original cutoff at M min."` The ordinary "Tail
-    trimmed ... (0 raw samples excluded)" message is also suppressed in this specific case (it
-    would otherwise sit right next to the honest warning and read as a confusing, near-
-    contradictory pair claiming both "nothing changed" and "0 excluded" about the same cut) --
-    everything the plain message would have said is already covered by the honest one.
+`compute_all` resolves this cutoff once and reuses it for the masking above -- when the resolved
+cutoff equals `guard_dt` exactly (no trim narrower than the guard, or an explicit trim that got
+clamped back to it for sitting past the guard with no override), the mask is `rs_full.dt <
+cutoff`, not `<=`: the bidirectional resampler can now keep a sample exactly at `guard_dt` (the
+first rising sample of the guarded excursion, if it moved >= step off the last pre-guard kept
+point), and that sample must stay excluded to preserve the guard's historic "nothing at or past
+`guard_dt` is consumed" contract. Any other cutoff (an explicit trim, whether below the guard or,
+with an override, past it) keeps `<=` as before. `compute_all` reuses the same resolved cutoff
+for one more thing: the "Tail guard stopped resampling ... later data excluded" warning fires in
+its original form only while the guard is still actually binding, i.e. the resolved cutoff is
+`<= guard_dt` (the no-override default, and a stale trim that got clamped back). Once an override
+lets the trim stick past `guard_dt`, `compute_all` checks whether that override actually admitted
+new resampled points there (`np.any((rs_full.dt >= guard_dt) & (rs_full.dt <= cutoff))` --
+INCLUSIVE of `guard_dt` itself, since the bidirectional resampler can keep a sample exactly there
+that the default mask above always excludes) before deciding what to say instead of this warning
+-- it is never just silently dropped:
+  - **Data genuinely admitted**: the original warning is suppressed outright. With the
+    bidirectional keep rule this is now the common case for a real tail rise -- the excursion's
+    own first sample usually clears >= step off the last pre-guard kept point on its own (default
+    `resample_step` equals the guard's fixed 30-psi `rise_tol`), let alone a continued climb or a
+    later decline. The separate "Tail trimmed ... " warning (from the `tail_trim_dt is not None`
+    block below) already reports the real, later cutoff, and showing both at once would
+    contradict each other.
+  - **Nothing admitted** (reachable only when NO sample in `[guard_dt, cutoff]` ever clears that
+    +-step move off the last pre-guard kept value -- e.g. a rise whose height clears the fixed
+    30-psi `rise_tol` enough to fire the guard but not `resample_step`, when the latter is
+    configured larger than that height): the original warning is replaced with a distinct, honest
+    one -- `"Tail-guard override requested to N min, but the resampler found no further resampled
+    points past the guard's original cutoff at M min -- Shmin/effective ISIP/pore pressure are
+    unchanged."` The ordinary "Tail trimmed ... (0 raw samples excluded)" message is also
+    suppressed in this specific case (it would otherwise sit right next to the honest warning and
+    read as a confusing, near-contradictory pair claiming both "nothing changed" and "0 excluded"
+    about the same cut) -- everything the plain message would have said is already covered by the
+    honest one.
 
 `plots.render_overview`'s `show_trim` kwarg is now `interactive` (default `True`, meaning "this is
 the live canvas, not an export" rather than "the analyst toggled the tool on"); `render_step_figure`
@@ -1292,10 +1327,12 @@ ambiguity, not fixed.
 - A second, unrelated excursion occurring AFTER the first guard fire (while `stop_at_guard=False`
   keeps resampling) is never separately detected or warned about -- only the first excursion gets
   `guard_dt`/`guarded_at` and a warning; `resample_pressure_increment` never re-arms the fire check
-  once `guard_dt` is set. Accepted as a low-severity gap, not a correctness issue: the second
-  excursion's own samples still correctly never get kept, by the ordinary resampling rule (a
-  rising sample never satisfies `pi <= last_kept - step`), they just get no dedicated
-  metadata/warning of their own.
+  once `guard_dt` is set. Under the bidirectional (±step) keep rule this is no longer a pure
+  metadata gap: the second excursion's own samples are evaluated by the same ordinary
+  `abs(pi - last_kept) >= step` rule as anything else, so a genuine second rise generally DOES get
+  resampled (and can move Shmin/effective ISIP/pore pressure) with no warning pointing at it --
+  only the first excursion's `guard_dt` is ever reported. Accepted as a low-severity gap, not
+  fixed here.
 - The apparent-ISIP tangent fit (`interpret.tangent_from_index`, ±5 samples) and the ISIP anchor
   snapping still read raw `res.bhp_all` -- neither one consults `dropout_mask`. An anchor placed
   within 5 samples of a masked dropout gets a corrupted fit.

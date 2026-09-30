@@ -351,15 +351,22 @@ def test_overview_wiring_drag_past_guard_sets_override_and_admits_data():
 
 def _seeded_with_guard_fire_rise_never_comes_back():
     """The actual reported bug shape, pinned precisely this time: the rise fires the guard and
-    then never declines again for the rest of the record (a stuck sensor or an ongoing leak, not
-    a rebound). A prior round's fixture of the same intent (``..._rise_stays_elevated_then_
+    then never moves again for the rest of the record (a stuck sensor, not a rebound and not a
+    continuing ramp). A prior round's fixture of the same intent (``..._rise_stays_elevated_then_
     declines``) was found by review to actually decline again afterward, so it wasn't really
-    testing this shape at all. Here, resample_pressure_increment's resampled_full keeps ZERO
-    points past guard_dt -- correctly so, per the reverted resample.py: a rising excursion never
-    satisfies the ordinary keep rule, so there's no new low to find, and stop_at_guard=False and
-    stop_at_guard=True produce identical resampled_full past this point. The override this test
-    proves out therefore has to work purely off the raw record (ui.py's commit_trim raw-sample
-    snap), with nothing already-resampled past the guard to land on."""
+    testing this shape at all.
+
+    Under the bidirectional (+-step) keep rule, resample_pressure_increment's resampled_full now
+    generally keeps the excursion's OWN first sample too (a >= step move off the last pre-guard
+    kept point) -- so a fixture meant to test "genuinely nothing past guard_dt to land on" has to
+    make sure even that one boundary sample isn't keepable. ``resample_step`` (unlike the fixed,
+    guard-detecting ``rise_tol``) is caller-configurable and doesn't affect guard detection at
+    all, so setting it well above the fixed +100 psi rise here (300 vs 100) guarantees nothing --
+    not even the excursion's own jump -- ever moves far enough to get kept: resampled_full keeps
+    ZERO points at or past guard_dt, and stop_at_guard=False/True produce identical resampled_full
+    past this point. The override this test proves out therefore has to work purely off the raw
+    record (ui.py's commit_trim raw-sample snap), with nothing already-resampled past the guard to
+    land on."""
     start_idx, shutin_idx = 50, 100
     decline_len = 300
     rise_len = 300
@@ -372,14 +379,14 @@ def _seeded_with_guard_fire_rise_never_comes_back():
     pressure[start_idx:shutin_idx] = np.linspace(2000.0, 5000.0, shutin_idx - start_idx)
     pressure[shutin_idx:shutin_idx + decline_len] = np.linspace(5000.0, 3000.0, decline_len)
     rise_idx = shutin_idx + decline_len
-    # Keeps climbing all the way to the record's end -- never dips back down.
-    pressure[rise_idx:] = pressure[rise_idx - 1] + np.linspace(50.0, 300.0, rise_len)
+    # Jumps once, then holds perfectly flat forever -- never moves again.
+    pressure[rise_idx:] = pressure[rise_idx - 1] + 100.0
 
     df = pd.DataFrame({"PRESSURE": pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
     st = PickState(pressure_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
-                   shutin_idx=shutin_idx)
+                   shutin_idx=shutin_idx, resample_step=300.0)
     res = compute_all(st, td)
     return td, st, res
 
@@ -394,8 +401,8 @@ def test_overview_wiring_drag_past_guard_works_when_rise_never_comes_back():
     guard_dt = res.resampled_full.guard_dt
     assert guard_dt is not None  # sanity: the guard actually fired
     # Confirms this really is the "never comes back" shape: resampled_full has nothing new
-    # past the guard at all.
-    assert not np.any(res.resampled_full.dt > guard_dt)
+    # at or past the guard at all.
+    assert not np.any(res.resampled_full.dt >= guard_dt)
     assert any("Tail guard stopped resampling" in w for w in res.warnings)
 
     stub, commit = _trim_commit(td, st, res)

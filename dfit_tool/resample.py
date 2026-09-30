@@ -1,9 +1,10 @@
 """Pressure-increment resampling and diagnostic derivatives.
 
-After shut-in the pressure declines monotonically. Sampling at a fixed *pressure* step (default
-30 psi) instead of a fixed time step collapses ~10^5 raw rows to a few hundred that are dense early
-and sparse late, which is exactly what makes the numerical derivatives (dP/dG, t*dP/dt) stable. This
-replaces time-domain rolling-mean smoothing.
+After shut-in the pressure normally declines, but a water-hammer rebound or a late tail rise can
+push it back up too. Sampling at a fixed *pressure* step (default 30 psi) in either direction,
+instead of a fixed time step, collapses ~10^5 raw rows to a few hundred that are dense whenever
+the pressure is moving quickly and sparse when it's flat, which is exactly what makes the
+numerical derivatives (dP/dG, t*dP/dt) stable. This replaces time-domain rolling-mean smoothing.
 
 Sign convention for the diagnostic curves: pressure declines after shut-in, so d(BHP)/dG < 0. Every
 derivative curve here is reported **positive-up for a declining pressure** (i.e. negated), matching
@@ -32,7 +33,8 @@ RISE_GUARD_SUSTAIN_SAMPLES = 5
 @dataclass
 class Resampled:
     dt: np.ndarray   # elapsed seconds since shut-in (>= 0), pressure-increment spaced
-    p: np.ndarray    # BHP at those points (psi), monotonically decreasing
+    p: np.ndarray    # BHP at those points (psi), +-step pressure-increment spaced -- not
+                      # monotonic; a sustained rise of >= step is kept too, same as a decline
     n_raw: int       # number of raw post-shut-in samples considered
     guarded_at: int | None = None  # resampled index where the tail guard stopped, if it did
     # dt of the FIRST sample of the sustained run that tripped the rise guard -- not the
@@ -53,7 +55,8 @@ def resample_pressure_increment(
     sustain_samples: int = RISE_GUARD_SUSTAIN_SAMPLES,
     stop_at_guard: bool = True,
 ) -> Resampled:
-    """Keep a point each time BHP has dropped >= ``step`` psi below the last kept point.
+    """Keep a point each time BHP has moved >= ``step`` psi, in EITHER direction, from the last
+    kept point.
 
     ``dt`` and ``p`` are the post-shut-in samples (dt >= 0, increasing). ``rise_tol`` (default =
     ``RISE_GUARD_PSI``, independent of ``step``) is the tail guard's tolerance above the running
@@ -67,53 +70,58 @@ def resample_pressure_increment(
     across a dropout, so two excursions separated by missing data must not bridge into one fire.
     On fire, ``guard_dt`` is the dt of the FIRST sample of the run (not the confirming sample) and
     ``guarded_at`` is the count of points already kept at that moment -- both stay ``None`` unless
-    a run actually satisfies both conditions before the record ends. Samples inside a candidate
-    run are neither kept nor allowed to lower ``running_min``.
+    a run actually satisfies both conditions before the record ends. A sample inside a candidate
+    run is never allowed to lower ``running_min`` (the guard's own bookkeeping, tracking the
+    lowest finite sample seen so far, used only to detect a *sustained* rise) -- but, unlike
+    before, it can still be KEPT by the ordinary +-step rule below, since that rule no longer
+    cares whether a sample belongs to a run.
 
-    ``stop_at_guard`` (default True) is what a fired guard does next: True stops resampling
-    outright (the historic behavior -- everything past ``guard_dt`` is simply never consumed).
-    False keeps going instead, exactly like an ordinary run that dips back below tolerance on
-    its own: the run resets and every later sample is evaluated by the same plain
-    running_min/step rule, still relative to the ORIGINAL (never reset, never frozen)
-    running_min. This needs no special re-anchoring, because a rising excursion never satisfies
-    the ordinary keep rule (``pi <= last_kept - step``) in the first place -- rejecting it as
-    part of a guard run and rejecting it via the ordinary rule are the same outcome. If the
-    excursion is later followed by a genuine further decline below the true historical minimum,
-    that decline is picked up completely normally, with no monotonicity issue, since only
-    genuinely new lows are ever kept. If the excursion never comes back down, no further points
-    are kept past ``guard_dt`` in either mode -- mathematically honest, since there is no new
-    information to resample there, not a gap to paper over with a fake point. In either mode,
-    ``guard_dt``/``guarded_at`` are recorded once, from the FIRST run that satisfies both sustain
-    conditions -- a later qualifying excursion (evaluated only when ``stop_at_guard=False``)
-    never overwrites them. Callers that want the guard-excluded region masked out of the
-    *result* (rather than never resampled at all) pass False here and mask afterward -- see
-    ``model.compute_all``'s ``resampled_full`` and ``interpret.resolve_tail_cut_dt``.
+    ``stop_at_guard`` (default True) is what a fired guard does next: True discards every kept
+    index at or after the run's first sample (``s_abs`` below) -- the run's own samples might
+    otherwise have been kept under the +-step rule as the excursion climbed, so this is what
+    keeps the historic guarantee that nothing at or past ``guard_dt`` is ever consumed. False
+    keeps resampling instead, exactly like an ordinary run that dips back below tolerance on its
+    own: the run resets and every later sample -- including the rest of the excursion itself --
+    is evaluated by the same +-step rule as any other sample, so a genuine rise of >= step is now
+    kept right through the guarded region; a later decline below the true historical minimum is
+    still picked up completely normally too. There is no monotonicity invariant left to reason
+    about either way -- kept points can go up or down -- so unlike the old rule, a permanently
+    elevated tail is not resampled down to nothing: its climb gets captured, and it only stops
+    producing new kept points once it flattens out. In either mode, ``guard_dt``/``guarded_at``
+    are recorded once, from the FIRST run that satisfies both sustain conditions -- a later
+    qualifying excursion (evaluated only when ``stop_at_guard=False``) never overwrites them.
+    Callers that want the guard-excluded region masked out of the *result* (rather than never
+    resampled at all) pass False here and mask afterward -- see ``model.compute_all``'s
+    ``resampled_full`` and ``interpret.resolve_tail_cut_dt``.
 
     This is a vectorized replacement for a per-sample Python loop (kept, unchanged, as
     ``_resample_loop_reference`` -- see its docstring, and ``tests/test_resample_vectorized.py``
-    for the fuzz test that pins agreement between the two). It's exact, not approximate, for two
-    reasons. First, ``running_min`` in the loop is provably a plain cumulative min over the
-    finite samples (``np.minimum.accumulate`` on ``p`` with non-finite samples mapped to
-    ``+inf`` so they never lower it): the loop skips updating it on an above-tolerance ("run")
-    sample, but such a sample is by construction already above ``running_min``, so it could
-    never have lowered it anyway -- the skip changes nothing. Second, a run sample can never
-    satisfy the keep rule (``pi <= last_kept - step``) either, since the running min always
-    stays above ``last_kept - step`` (any sample that pushes it to or below that threshold is kept
-    on the spot) and a run sample is above the running min -- so which samples get kept
-    doesn't depend on the guard's run bookkeeping at all, only on truncation at the moment a
-    guard fire actually breaks the loop. This means the kept points can be found by walking the
-    cumulative-min array forward from one kept point to the next with ``np.searchsorted`` --
-    since a kept sample's value is always exactly the running min at that instant (it's the same
-    sample that just pushed the running min down to it), this takes as many steps as there are
-    OUTPUT points (a few hundred), not one per raw row. The tail-guard runs are found the same
-    way any run-length problem vectorizes: label each above-tolerance run's start position and
-    forward-fill it across the run with ``np.maximum.accumulate``, then check the sustain
-    conditions at every above-tolerance sample in one pass; the earliest sample anywhere that
-    satisfies both is the loop's fire point, and ``stop_at_guard=True`` drops any kept index past
-    it (none can fall inside the firing run itself, since a run sample is never kept). The
-    vectorized path handles every input except a non-finite/non-positive ``step`` or a
-    non-finite/negative ``rise_tol``, where the equivalence argument doesn't obviously extend and
-    it defers to ``_resample_loop_reference`` outright.
+    for the fuzz test that pins agreement between the two). Tail-guard detection is unchanged
+    from the strictly-decreasing version of this function: ``running_min`` is still provably a
+    plain cumulative min over the finite samples (``np.minimum.accumulate`` on ``p`` with
+    non-finite samples mapped to ``+inf`` so they never lower it), and the tail-guard runs are
+    found the same way any run-length problem vectorizes: label each above-tolerance run's start
+    position and forward-fill it across the run with ``np.maximum.accumulate``, then check the
+    sustain conditions at every above-tolerance sample in one pass; the earliest sample anywhere
+    that satisfies both is the loop's fire point (``s_abs``), and ``stop_at_guard=True`` drops
+    any kept index at or past it.
+
+    The kept walk itself has no equivalent shortcut any more -- the old version exploited the
+    fact that a kept sample's value was always exactly the running min at that instant, so it
+    could search a monotone array with ``np.searchsorted``; a bidirectional rule has no such
+    monotone structure to search. Instead, from the current kept sample (value ``v``, absolute
+    index ``c``) the next kept sample is the first later one with ``abs(p - v) >= step`` -- a NaN
+    comparison is always False, so a non-finite sample is skipped exactly like the loop's
+    ``continue``. This is found with a doubling window (``p[c+1 : c+1+w]``, ``w`` starting at
+    ``max(64, 2 * previous_gap)`` and doubling until it hits or runs off the end) rather than a
+    single vectorized pass over the whole record: most gaps between kept points are small, so the
+    window usually hits on the first try, and the total numpy work across all windows is O(n)
+    amortized (standard doubling-search accounting) while the Python-level loop runs once per
+    OUTPUT point (a few hundred to a few thousand), not once per raw row -- except on a
+    pathological input where nearly every sample is kept (see the module-level notes on a very
+    noisy channel), where it degrades toward one Python iteration per raw row. The vectorized path
+    handles every input except a non-finite/non-positive ``step`` or a non-finite/negative
+    ``rise_tol``, where it defers to ``_resample_loop_reference`` outright.
     """
     dt = np.asarray(dt, dtype=float)
     p = np.asarray(p, dtype=float)
@@ -146,7 +154,6 @@ def resample_pressure_increment(
     guard_dt: float | None = None
     guarded_at: int | None = None
     s_abs: int | None = None
-    j_abs: int | None = None
     if above.any():
         starts = above.copy()
         starts[1:] &= ~above[:-1]
@@ -162,44 +169,59 @@ def resample_pressure_increment(
                 & (dt_seg[rel_positions] - dt_seg[rs] >= sustain_s))
         fire = np.flatnonzero(cond)
         if fire.size:
-            first = fire[0]  # earliest (s, j) pair in time order -- matches "first fire overall"
+            first = fire[0]  # earliest run in time order -- matches "first fire overall"
             s_rel = int(rs[first])
-            j_rel = int(rel_positions[first])
             s_abs = i0 + s_rel
-            j_abs = i0 + j_rel
             guard_dt = float(dt_seg[s_rel])
 
-    # Kept indices: walk the cumulative min forward from one kept point to the next. `cm` is
-    # non-increasing, so searching `-cm` (non-decreasing) with searchsorted finds the first
-    # position, after the current kept index, where cm has dropped to <= threshold -- which is
-    # necessarily the sample that caused that drop (a run sample never lowers cm), i.e. exactly
-    # the next kept sample. `step > 0` guarantees the threshold strictly decreases each time, so
-    # this always makes progress.
-    neg_cm = -cm
+    # Kept indices: from the current kept sample (value `last_val`, absolute index `cur_abs`),
+    # the next kept sample is the first later one with abs(p - last_val) >= step -- see the
+    # docstring for why this needs a doubling window rather than a single vectorized pass.
+    # Searched against `p_masked` (non-finite -> NaN), not raw `p`: `abs(nan - x) >= step` is
+    # already False (a NaN comparison is always False), which is what makes an ordinary NaN
+    # sample skip correctly, but `abs(inf - x)` or `abs(-inf - x)` is `inf`, which IS >= step --
+    # raw +-inf would therefore be wrongly kept here even though it's non-finite and the
+    # reference loop's `np.isfinite` guard skips it outright. Mapping every non-finite value
+    # (inf, -inf, and nan alike) to nan first closes that gap.
+    p_masked = np.where(finite, p, np.nan)
     kept_idx: list[int] = [i0]
-    cur_rel = 0
+    cur_abs = i0
     # Kept as np.float64, not a Python float, so a numpy float32 ``step`` promotes to float64 in
-    # ``last_val - step`` exactly as it does in the loop (NEP 50).
+    # ``abs(win - last_val)`` exactly as it does in the loop (NEP 50).
     last_val = p[i0]
+    prev_gap = 1
     while True:
-        start = cur_rel + 1
-        if start >= m:
+        start = cur_abs + 1
+        if start >= n:
             break
-        pos = np.searchsorted(neg_cm[start:], -(last_val - step), side="left")
-        if pos == m - start:
+        w = max(64, 2 * prev_gap)
+        hit_rel: int | None = None
+        while True:
+            end = min(start + w, n)
+            window = p_masked[start:end]
+            hit = np.flatnonzero(np.abs(window - last_val) >= step)
+            if hit.size:
+                hit_rel = int(hit[0])
+                break
+            if end >= n:
+                break
+            w *= 2
+        if hit_rel is None:
             break
-        rel = start + pos
-        abs_i = i0 + rel
+        abs_i = start + hit_rel
         kept_idx.append(abs_i)
+        prev_gap = abs_i - cur_abs
+        cur_abs = abs_i
         last_val = p[abs_i]
-        cur_rel = rel
 
     if s_abs is not None:
         guarded_at = sum(1 for idx in kept_idx if idx < s_abs)
-    if j_abs is not None and stop_at_guard:
-        # None of the dropped indices can sit inside [s, j] -- that whole span is the firing
-        # run, and a run sample is never kept.
-        kept_idx = [idx for idx in kept_idx if idx <= j_abs]
+        if stop_at_guard:
+            # None of the samples at or after the run's first sample survive -- the run's own
+            # samples might have been kept under the +-step rule above as the excursion climbed,
+            # but a fired guard with stop_at_guard=True discards all of them, same as the loop's
+            # truncate-and-break.
+            kept_idx = [idx for idx in kept_idx if idx < s_abs]
 
     kept_arr = np.array(kept_idx, dtype=int)
     return Resampled(
@@ -258,10 +280,11 @@ def _resample_loop_reference(
             last_kept = pi
             running_min = pi
             continue
+        fired = False
         if pi > running_min + rise_tol:
-            # Above tolerance: extend the current run, or start a new one. Either way this
-            # sample is excluded from keep_p/running_min -- it can't satisfy either condition,
-            # the same as the ordinary keep rule would reject it anyway.
+            # Above tolerance: extend the current run, or start a new one. This no longer
+            # excludes the sample from the keep rule below -- only from updating running_min,
+            # which is the guard's own bookkeeping.
             if run_start_dt is None:
                 run_start_dt = float(dt[i])
                 run_start_guarded_at = len(keep_p)
@@ -275,21 +298,30 @@ def _resample_loop_reference(
                     guard_dt = run_start_dt
                     guarded_at = run_start_guarded_at
                     if stop_at_guard:
-                        break
-                    # Reset the run and keep going exactly like an ordinary run that dips back
-                    # below tolerance on its own -- running_min/last_kept are left untouched
-                    # (never reset, never frozen), so a genuine further decline below the true
-                    # historical minimum is still picked up by the ordinary rule below, and a
-                    # rise that never comes back down correctly earns no further kept points.
-                    run_start_dt = None
-                    run_count = 0
-            continue
-        # At or below tolerance: reset any in-progress run and fall through to normal
-        # processing.
-        run_start_dt = None
-        run_count = 0
-        running_min = min(running_min, pi)
-        if pi <= last_kept - step:
+                        # Discard every sample kept since the run started (it might have been
+                        # kept under the +-step rule below as the excursion climbed) and stop
+                        # outright -- nothing at or past run_start_dt is ever consumed.
+                        keep_dt = keep_dt[:run_start_guarded_at]
+                        keep_p = keep_p[:run_start_guarded_at]
+                        fired = True
+                    else:
+                        # Reset the run and keep going exactly like an ordinary run that dips
+                        # back below tolerance on its own -- running_min/last_kept are left
+                        # untouched (never reset, never frozen), so a genuine further decline
+                        # below the true historical minimum is still picked up by the rule below,
+                        # and the excursion's own further climb is now picked up by it too.
+                        run_start_dt = None
+                        run_count = 0
+        else:
+            # At or below tolerance: reset any in-progress run and update running_min.
+            run_start_dt = None
+            run_count = 0
+            running_min = min(running_min, pi)
+        if fired:
+            break
+        # Bidirectional keep rule, applied to every finite sample (run or not) that wasn't just
+        # truncated away above.
+        if abs(pi - last_kept) >= step:
             keep_dt.append(dt[i])
             keep_p.append(pi)
             last_kept = pi
