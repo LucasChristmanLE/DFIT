@@ -129,7 +129,7 @@ class PickState:
     # far its steps got. "done" is never a manual choice; it is always derived from step_status.
     # Old saves lack both keys and take these defaults via _decode's known-field filter, no
     # migration needed (a legacy "done" value is normalized to None in _decode below). ---
-    active_source: str = "csv"  # "csv" or "dbs"
+    active_source: str = "csv"  # "csv", "dbs", or "xlsx"
     explicit_status: Optional[str] = None  # "skipped"/None
 
     def channel_config(self) -> ChannelConfig:

@@ -17,6 +17,7 @@ Two formats are handled: CSV (``load_csv``) and Fracpro's binary ``.DBS`` format
 from __future__ import annotations
 
 import csv
+import datetime as _dt
 import itertools
 import re
 import struct
@@ -737,8 +738,11 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
     ``datetime`` before parsing (measured case: Strathcona's separate ``Date`` + ``Time``
     columns, where ``Date`` alone collapses ~11-second samples down to daily granularity). It is
     only ever set when ``datetime`` is date-like-but-not-time-like (its name contains "date" and
-    not "time" -- so "Date/Time", "DateTime", and "Timestamp (MST)" never trigger it) and there
-    is a separate column whose bare name is exactly "time".
+    not "time" -- so "Date/Time", "DateTime", and "Timestamp (MST)" never trigger it); see
+    ``_companion_time_col`` (called directly, so the two stay in lockstep) for which column wins
+    when more than one is "time"-shaped -- an exact bare "Time" always wins first, in column
+    order, else a multi-token "...Time"-named column (e.g. an XLSX header folded to "Real Time
+    (HH:MM:SS)"), also in column order.
 
     ``pressure`` is chosen from ranked candidates rather than the first substring match in
     column order: a column explicitly named as BHP (a token starting with "bhp" or "bottom")
@@ -771,12 +775,7 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
     if datetime_col and any(x in lc[datetime_col] for x in _DATETIME_NAME_AVOID):
         datetime_col = None
 
-    time_col = None
-    if datetime_col and "date" in lc[datetime_col] and "time" not in lc[datetime_col]:
-        for c in columns:
-            if c != datetime_col and _bare_name(c) == "time":
-                time_col = c
-                break
+    time_col = _companion_time_col(datetime_col, columns) if datetime_col else None
 
     pressure_candidates = [c for c in columns if _is_pressure_candidate(c)]
     if column is not None and pressure_candidates:
@@ -1929,24 +1928,49 @@ def _best_datetime_column(candidates: list[str], df: pd.DataFrame, default: str)
 
 
 def _companion_time_col(datetime_col: str, columns: list[str]) -> Optional[str]:
-    """The FIX A companion time-of-day column for ``datetime_col``, replicating
-    ``suggest_channels``' own rule: only when ``datetime_col`` is date-like-but-not-time-like
-    (its name contains "date" and not "time"), and there is a separate column whose bare name is
-    exactly "time". Re-derived here (rather than trusted from ``suggest_channels``' ``guess``)
-    because ``load_csv`` can swap in a different winning ``datetime_col`` -- see
-    ``_best_datetime_column`` -- for which the original guess's companion, if any, no longer
-    applies.
+    """The FIX A companion time-of-day column for ``datetime_col``: only when ``datetime_col``
+    is date-like-but-not-time-like (its name contains "date" and not "time"), and there is a
+    separate column whose bare name ends in the "time" token. Re-derived here (rather than
+    trusted from ``suggest_channels``' ``guess``) because ``load_csv`` can swap in a different
+    winning ``datetime_col`` -- see ``_best_datetime_column`` -- for which the original guess's
+    companion, if any, no longer applies. ``suggest_channels`` calls this directly rather than
+    duplicating the rule, so the two stay in lockstep.
+
+    A bare-"time" column (e.g. plain ``"Time"``) always wins outright when one exists, in column
+    order -- the original, narrower rule, kept exactly as before for every existing caller. Only
+    when no such exact match exists does a multi-token "...Time"-named column (e.g. an XLSX
+    header folded to ``"Real Time (HH:MM:SS)"``, bare-named "Real Time") get picked instead, also
+    in column order -- this is what pairs Southern Ute's downhole-gauge "Real Date"/"Real Time"
+    split correctly, ahead of that same sheet's unrelated "Test Time" (elapsed minutes) column
+    sitting right after it, since "Real Time" comes first in column order. Restricting the
+    broader match to a fallback (rather than treating both matches as equally eligible from the
+    start) means no existing bare-"Time" corpus file's companion choice can ever change.
     """
     name = datetime_col.lower()
-    if "date" in name and "time" not in name:
-        for c in columns:
-            if c != datetime_col and _bare_name(c) == "time":
-                return c
-    return None
+    if "date" not in name or "time" in name:
+        return None
+    exact: Optional[str] = None
+    prefixed: Optional[str] = None
+    for c in columns:
+        if c == datetime_col:
+            continue
+        tokens = _tokens(_bare_name(c))
+        if not tokens or tokens[-1] != "time":
+            continue
+        if len(tokens) == 1:
+            if exact is None:
+                exact = c
+        elif prefixed is None:
+            prefixed = c
+    return exact if exact is not None else prefixed
 
 
-def load_csv(path: str) -> TestData:
-    """Load a DFIT CSV and attach an elapsed-seconds time base."""
+def _read_csv_frame(path: str) -> pd.DataFrame:
+    """Read a DFIT CSV into a raw DataFrame: ``pd.read_csv`` (with the preamble-skiprows retry
+    on ``ParserError``, see ``_detect_header_skiprows``) plus the column-name strip. Everything
+    after this -- datetime choice, elapsed/clock fallbacks, extrapolation, the outlier guard --
+    lives in ``_finish_frame`` so ``load_xlsx`` can share it against a frame built its own way.
+    """
     try:
         df = pd.read_csv(path, encoding="utf-8-sig")
     except pd.errors.ParserError:
@@ -1956,7 +1980,17 @@ def load_csv(path: str) -> TestData:
         df = pd.read_csv(path, encoding="utf-8-sig", skiprows=skiprows)
 
     df.columns = [c.strip() for c in df.columns]
+    return df
 
+
+def _finish_frame(df: pd.DataFrame, path: str) -> TestData:
+    """Turn a raw, column-stripped frame into a ``TestData``: datetime-column choice (including
+    the multi-candidate scoring and FIX-A companion join), the reverse-chronological flip, the
+    isolated-outlier guard, the elapsed/clock-only fallbacks (FIX B), and the edge-NaT-block
+    extrapolation. Shared, unchanged, by ``load_csv`` and ``load_xlsx`` -- everything upstream of
+    this (turning a CSV or an XLSX sheet into a raw frame) is format-specific and lives in
+    ``_read_csv_frame``/``load_xlsx`` instead.
+    """
     guess = suggest_channels(list(df.columns))
     dt_col = guess["datetime"] or df.columns[0]
     time_col = guess["time"]
@@ -2124,6 +2158,12 @@ def load_csv(path: str) -> TestData:
     )
 
 
+def load_csv(path: str) -> TestData:
+    """Load a DFIT CSV and attach an elapsed-seconds time base."""
+    df = _read_csv_frame(path)
+    return _finish_frame(df, path)
+
+
 # --------------------------------------------------------------------------------------------------
 # Fracpro .DBS binary format
 # --------------------------------------------------------------------------------------------------
@@ -2287,8 +2327,365 @@ def load_dbs(path: str) -> TestData:
                      load_warnings=load_warnings)
 
 
+# --------------------------------------------------------------------------------------------------
+# XLSX time-series workbooks
+# --------------------------------------------------------------------------------------------------
+# A header row must sit within the first N rows of a sheet (a preamble -- "Company Name: ...",
+# "Well Name: ...", blank rows -- otherwise pushes it further down); a units row, if present,
+# always sits directly below the header, and real data directly below THAT (or directly below the
+# header, if there's no units row) -- so the numeric-data lookahead only needs 2 rows: "the next
+# row is data" or "the next row is a units row, and the one after that is data". Deliberately
+# NOT a wider window: a real corpus preamble row can itself contain both a "Date"-named cell and
+# a couple of real datetime values in adjacent cells of the SAME multi-field preamble line (e.g.
+# Southern Ute's downhole-gauge file, row 1: "Well Name: SOUTHERN UTE 32-8 NO. <date> Date of
+# Test: <date>") -- with several blank rows before the REAL header. A wide lookahead would reach
+# straight past those blank rows into the real header/units/data block a few rows further down
+# and false-positive on the preamble line instead.
+_XLSX_HEADER_SCAN_ROWS = 60
+_XLSX_DATA_LOOKAHEAD_ROWS = 2
+
+# Units-row token vocabulary (see _xlsx_looks_like_unit_token): recognized bare unit words, and a
+# date/time-FORMAT token (e.g. "MM/DD/YY", "HH:MM:SS") made only of the letters M/D/Y/H/S plus
+# '/', ':', '.', and spaces. Anything parenthesized (e.g. "(psi)") is accepted outright, matching
+# the CLAUDE.md rule ("for example parenthesized tokens") without needing its contents to be a
+# recognized word at all.
+_XLSX_UNIT_WORDS = frozenset({
+    "psi", "psig", "psia", "kpa", "kpag", "mpa", "bar",
+    "bpm", "gpm", "gal", "gals", "gallon", "gallons",
+    "bbl", "bbls", "barrel", "barrels", "m3", "m3/min",
+    "ft", "feet", "min", "mins", "minute", "minutes",
+    "sec", "secs", "second", "seconds", "hr", "hrs", "hour", "hours",
+    "deg f", "degf", "deg c", "degc", "f", "c", "deltap", "delta p",
+})
+_XLSX_UNIT_FORMAT_RE = re.compile(r"^[mdyhs/:. ]+$", re.IGNORECASE)
+
+
+def _xlsx_is_number(cell: object) -> bool:
+    """True for a real, finite numeric cell -- ``bool`` is excluded (openpyxl can hand back a
+    literal ``True``/``False`` for a checkbox-shaped cell, which is never DFIT sample data)."""
+    return isinstance(cell, (int, float)) and not isinstance(cell, bool) and np.isfinite(cell)
+
+
+def _xlsx_is_datetimeish(cell: object) -> bool:
+    return isinstance(cell, (_dt.datetime, _dt.date, _dt.time))
+
+
+def _xlsx_looks_like_unit_token(text: str) -> bool:
+    """True if the already-stripped, non-empty string `text` looks like one units-row cell --
+    see the module comment above ``_XLSX_UNIT_WORDS`` for the three accepted shapes."""
+    if text.startswith("(") and text.endswith(")"):
+        return True
+    low = text.lower().rstrip(".")
+    if low in _XLSX_UNIT_WORDS:
+        return True
+    if _XLSX_UNIT_FORMAT_RE.match(text) and any(ch in "mdyhs" for ch in low):
+        return True
+    return False
+
+
+def _xlsx_row_is_units_row(cells: tuple) -> bool:
+    """True if `cells` (one raw openpyxl row) is a units-declaration row: at least one non-blank
+    cell, every non-blank cell is a string that looks like a unit token (see
+    ``_xlsx_looks_like_unit_token``), and none is a real number or a datetime/date/time value --
+    a genuine data row always has at least one of those, a units row never does.
+    """
+    non_empty = [c for c in cells
+                 if c is not None and not (isinstance(c, str) and c.strip() == "")]
+    if not non_empty:
+        return False
+    for c in non_empty:
+        if _xlsx_is_number(c) or _xlsx_is_datetimeish(c):
+            return False
+        if not isinstance(c, str) or not _xlsx_looks_like_unit_token(c.strip()):
+            return False
+    return True
+
+
+def _xlsx_has_numeric_data(rows: list) -> bool:
+    """True if any cell in `rows` is a real number or a datetime/date/time value -- used to
+    confirm a header candidate actually has data below it (see ``_xlsx_find_header``), skipping
+    harmlessly over an intervening units row (an all-string row never trips this)."""
+    return any(_xlsx_is_number(c) or _xlsx_is_datetimeish(c) for row in rows for c in row)
+
+
+def _xlsx_find_header(rows: list) -> Optional[tuple]:
+    """The header row of an XLSX time-series sheet: the first row (within the first
+    ``_XLSX_HEADER_SCAN_ROWS`` of `rows`) with at least 2 non-empty string cells, at least one of
+    which matches a datetime/time name needle (``_DATETIME_NAME_NEEDLES`` -- the same ones
+    ``suggest_channels`` uses), and with real numeric or datetime data somewhere in the next
+    ``_XLSX_DATA_LOOKAHEAD_ROWS`` rows (which skips harmlessly over an intervening units row).
+    Returns ``(row_index, row_cells)`` (0-based within `rows`), or ``None``.
+    """
+    scan_limit = min(len(rows), _XLSX_HEADER_SCAN_ROWS)
+    for i in range(scan_limit):
+        row = rows[i]
+        str_cells = [c.strip() for c in row if isinstance(c, str) and c.strip()]
+        if len(str_cells) < 2:
+            continue
+        if not any(any(n in c.lower() for n in _DATETIME_NAME_NEEDLES) for c in str_cells):
+            continue
+        window = rows[i + 1: i + 1 + _XLSX_DATA_LOOKAHEAD_ROWS]
+        if not _xlsx_has_numeric_data(window):
+            continue
+        return i, row
+    return None
+
+
+def _xlsx_open(path: str):
+    import openpyxl  # lazy: costs ~0.4s to import and this path isn't hit on every app start.
+    return openpyxl.load_workbook(path, read_only=True, data_only=True)
+
+
+def _xlsx_scan_sheet(ws) -> Optional[dict]:
+    """Peek at `ws`'s first rows (see ``_xlsx_find_header``) and decide whether it qualifies as
+    an XLSX data sheet. Returns a dict with ``header_cells``, ``units_cells`` (or ``None``), and
+    ``data_start_row`` (0-based, the first row past the header and any units row) on a qualifying
+    sheet, else ``None``.
+    """
+    peek_n = _XLSX_HEADER_SCAN_ROWS + _XLSX_DATA_LOOKAHEAD_ROWS + 1
+    rows = list(ws.iter_rows(min_row=1, max_row=peek_n, values_only=True))
+    found = _xlsx_find_header(rows)
+    if found is None:
+        return None
+    header_idx, header_cells = found
+    units_cells = None
+    data_start = header_idx + 1
+    if data_start < len(rows) and _xlsx_row_is_units_row(rows[data_start]):
+        units_cells = rows[data_start]
+        data_start += 1
+    return {"header_cells": header_cells, "units_cells": units_cells,
+            "data_start_row": data_start}
+
+
+def sniff_xlsx_data(path: str) -> bool:
+    """Cheap check: True iff some worksheet in `path` (chart sheets are never iterated --
+    ``openpyxl``'s own ``Workbook.worksheets`` already excludes them) has a header row within its
+    first ``_XLSX_HEADER_SCAN_ROWS`` rows naming a datetime/date/time/timestamp column, with
+    numeric or datetime data in the rows just below it (see ``_xlsx_scan_sheet``) -- i.e. it
+    looks like time-series data, not a summary/tally/schedule workbook. Never raises: a corrupt,
+    password-protected, or otherwise unreadable workbook returns False, same as any other
+    unreadable sheet. Stops at the first qualifying sheet -- ``load_xlsx`` is what picks the
+    winning sheet by row count when there's more than one.
+    """
+    try:
+        wb = _xlsx_open(path)
+    except Exception:
+        return False
+    try:
+        for ws in wb.worksheets:
+            try:
+                if _xlsx_scan_sheet(ws) is not None:
+                    return True
+            except Exception:
+                continue
+        return False
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def _xlsx_fold_unit(header: str, unit_cell: object) -> str:
+    """Fold one units-row cell into its column's header name as ``"Name (unit)"``, stripping any
+    existing parenthesized suffix from `header` first (so a header that already carries one
+    isn't doubled up). `unit_cell` wrapped in its own parens (e.g. ``"(psi)"``) has them stripped
+    before folding, so the result is always a single, clean ``"(unit)"`` suffix -- e.g.
+    ``"Time"`` + ``"(hh:mm:ss)"`` -> ``"Time (hh:mm:ss)"``; ``"Tubing Pressure"`` + ``"psi"`` ->
+    ``"Tubing Pressure (psi)"``. Returns `header` unchanged when `unit_cell` is blank or missing
+    (no units row, or a blank cell in that column of it).
+    """
+    if unit_cell is None:
+        return header
+    text = str(unit_cell).strip()
+    if not text:
+        return header
+    inner = _unit_of(text)
+    unit_str = inner if inner is not None else text
+    base = _UNIT_RE.sub("", header).strip()
+    # A blank header cell with only a units-row label (e.g. Southern Ute's unnamed "DeltaP"
+    # column -- a real data column, just missing its own header text) gets that label AS its
+    # name outright, unparenthesized -- "(unit)" folded onto an empty base would otherwise read
+    # as a bare, meaningless "(DeltaP)" column name.
+    if not base:
+        return unit_str
+    return f"{base} ({unit_str})"
+
+
+def _xlsx_dedupe_headers(names: list) -> list:
+    """Make header cells unique the same way ``pd.read_csv`` does: a blank cell becomes
+    ``"Unnamed: N"`` (0-based by position), and a name that repeats later gets ``".1"``, ``".2"``,
+    ... appended.
+    """
+    filled = []
+    for i, name in enumerate(names):
+        text = "" if name is None else str(name).strip()
+        filled.append(text if text else f"Unnamed: {i}")
+    counts: dict = {}
+    out = []
+    for name in filled:
+        if name not in counts:
+            counts[name] = 0
+            out.append(name)
+            continue
+        counts[name] += 1
+        candidate = f"{name}.{counts[name]}"
+        while candidate in counts:
+            counts[name] += 1
+            candidate = f"{name}.{counts[name]}"
+        counts[candidate] = 0
+        out.append(candidate)
+    return out
+
+
+def _xlsx_trim_trailing_empty(rows: list, header: list) -> tuple:
+    """Drop trailing all-blank columns (an auto-generated ``"Unnamed: N"`` header AND blank in
+    every data row) and trailing all-blank data rows -- a real Excel "used range" routinely
+    over-reports its own extent by a stray formatted-but-empty cell or row. Only ever trims from
+    the tail; a blank column or row sitting in the middle of real data is left alone.
+    """
+    def _blank(v: object) -> bool:
+        return v is None or (isinstance(v, str) and v.strip() == "")
+
+    def _col_all_blank(j: int) -> bool:
+        if not header[j].startswith("Unnamed: "):
+            return False
+        return all(_blank(row[j]) if j < len(row) else True for row in rows)
+
+    end = len(header)
+    while end > 0 and _col_all_blank(end - 1):
+        end -= 1
+    header = header[:end]
+    rows = [row[:end] for row in rows]
+
+    def _row_all_blank(row: tuple) -> bool:
+        return all(_blank(v) for v in row)
+
+    trimmed = list(rows)
+    while trimmed and _row_all_blank(trimmed[-1]):
+        trimmed.pop()
+    return trimmed, header
+
+
+def _xlsx_cell_to_value(cell: object, date_only: bool) -> object:
+    """Convert one openpyxl cell into what ``_finish_frame`` (shared with the CSV loader)
+    expects: a ``datetime`` cell becomes a string in the primary fast-path format
+    ``parse_datetime`` recognizes (``_PRIMARY_DT_FORMAT``, which carries no fractional seconds,
+    so none are ever added here); a ``datetime.time`` cell becomes an ``"HH:MM:SS"`` string; a
+    bare ``datetime.date`` becomes a date-only string; and, when `date_only` is set (this
+    column's cells are exactly midnight and paired with a separate time column -- see
+    ``load_xlsx``), a midnight ``datetime`` cell is formatted date-only too, exactly like a CSV's
+    own date-only companion column, so the FIX-A join in ``_finish_frame`` sees the same shape
+    either way. A number or blank cell passes through unchanged.
+    """
+    if isinstance(cell, _dt.datetime):
+        if date_only and (cell.hour, cell.minute, cell.second, cell.microsecond) == (0, 0, 0, 0):
+            return cell.strftime("%m/%d/%Y")
+        return cell.strftime(_PRIMARY_DT_FORMAT)
+    if isinstance(cell, _dt.time):
+        return cell.strftime("%H:%M:%S")
+    if isinstance(cell, _dt.date):
+        return cell.strftime("%m/%d/%Y")
+    return cell
+
+
+def load_xlsx(path: str) -> TestData:
+    """Load a DFIT time-series XLSX workbook and attach an elapsed-seconds time base.
+
+    Opened read-only (``openpyxl.load_workbook(read_only=True, data_only=True)``); chart sheets
+    are skipped automatically (``Workbook.worksheets`` never includes them). Each remaining
+    worksheet is scanned for a header row within its first 60 rows (``_xlsx_find_header``): the
+    first row with >=2 non-empty string cells, one matching a datetime/date/time/timestamp name
+    needle, with real numeric or datetime data in the next few rows below it. A units row
+    directly below the header (``_xlsx_row_is_units_row`` -- mostly non-numeric short strings:
+    parenthesized tokens, or unit/format tokens like "psi"/"bpm"/"gal"/"deg F"/"minutes"/
+    "MM/DD/YY"/"HH:MM:SS") is detected and folded into the header names as ``"Name (unit)"``
+    (``_xlsx_fold_unit``) before being dropped, so the existing header-suffix unit detection
+    (``_unit_of``) sees it exactly as it would from a CSV -- e.g. a bare "Time" header paired
+    with a "(hh:mm:ss)" units cell folds to ``"Time (hh:mm:ss)"``. When more than one worksheet
+    qualifies, the one with the most data rows (by worksheet dimensions, not a full read) wins.
+
+    Data cells are converted so ``_finish_frame`` (shared, unchanged, with ``load_csv``) sees
+    exactly what a CSV would give it (``_xlsx_cell_to_value``): a ``datetime`` cell becomes a
+    ``_PRIMARY_DT_FORMAT`` string; a ``datetime.time`` cell becomes an ``"HH:MM:SS"`` string; and
+    -- the one XLSX-specific wrinkle -- a datetime column that is exactly midnight in every row
+    AND has a separate companion time column (the same pairing ``suggest_channels``/
+    ``_companion_time_col`` would find, checked here against the final, folded/deduped column
+    names before any row is converted) is formatted date-only, matching a CSV's own split
+    Date + Time columns and so exercising the exact same FIX-A join in ``_finish_frame``.
+    Trailing fully-empty rows and columns are dropped (``_xlsx_trim_trailing_empty``); duplicate
+    or blank header cells are made unique the same way ``pd.read_csv`` does
+    (``_xlsx_dedupe_headers``).
+    """
+    wb = _xlsx_open(path)
+    try:
+        candidates = []
+        for ws in wb.worksheets:
+            try:
+                scan = _xlsx_scan_sheet(ws)
+            except Exception:
+                scan = None
+            if scan is None:
+                continue
+            approx_rows = max(int(ws.max_row or 0) - scan["data_start_row"], 0)
+            candidates.append((approx_rows, ws.title, scan))
+        if not candidates:
+            raise ValueError(
+                f"{path!r}: no worksheet looks like DFIT time-series data (no header row with "
+                f"a date/time column and numeric data below it, in the first "
+                f"{_XLSX_HEADER_SCAN_ROWS} rows of any sheet)"
+            )
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        _, sheet_title, scan = candidates[0]
+        ws = wb[sheet_title]
+
+        header_cells = list(scan["header_cells"])
+        units_cells = scan["units_cells"]
+        folded = [
+            _xlsx_fold_unit(
+                "" if h is None else str(h).strip(),
+                units_cells[j] if units_cells is not None and j < len(units_cells) else None,
+            )
+            for j, h in enumerate(header_cells)
+        ]
+        columns = _xlsx_dedupe_headers(folded)
+
+        data_start_1based = scan["data_start_row"] + 1
+        data_rows = list(ws.iter_rows(
+            min_row=data_start_1based, max_row=ws.max_row, max_col=len(header_cells),
+            values_only=True,
+        ))
+    finally:
+        wb.close()
+
+    data_rows, columns = _xlsx_trim_trailing_empty(data_rows, columns)
+    if not data_rows:
+        raise ValueError(f"{path!r}: sheet {sheet_title!r} has a header row but no data rows")
+
+    # A date-with-midnight-only column paired with a separate time column (see this function's
+    # docstring) is formatted date-only -- the same date-with-companion pairing
+    # suggest_channels/_companion_time_col would find, checked against the FINAL column names so
+    # it matches whatever _finish_frame will actually see.
+    guess = suggest_channels(columns)
+    date_only_col = guess["datetime"] if guess["datetime"] and guess["time"] else None
+
+    cols_out: dict = {c: [] for c in columns}
+    ncols = len(columns)
+    for row in data_rows:
+        for j in range(ncols):
+            c = columns[j]
+            cell = row[j] if j < len(row) else None
+            cols_out[c].append(_xlsx_cell_to_value(cell, date_only=(c == date_only_col)))
+    df = pd.DataFrame(cols_out)
+
+    return _finish_frame(df, path)
+
+
 def load(path: str) -> TestData:
-    """Dispatch to ``load_dbs`` or ``load_csv`` based on the file extension."""
-    if path.lower().endswith(".dbs"):
+    """Dispatch to ``load_dbs``, ``load_csv``, or ``load_xlsx`` based on the file extension."""
+    low = path.lower()
+    if low.endswith(".dbs"):
         return load_dbs(path)
+    if low.endswith(".xlsx"):
+        return load_xlsx(path)
     return load_csv(path)

@@ -18,9 +18,9 @@ from typing import Optional
 
 import pandas as pd
 
-from . import model
+from . import io_load, model
 from .model import PickState
-from .questionnaire import find_questionnaire
+from .questionnaire import find_questionnaire, is_questionnaire_filename
 
 LOG_FILENAME = "dfit_log.csv"      # lives at <opened_root>/dfit_log.csv
 PICKS_SUFFIX = ".dfit_picks.json"  # <test_folder>/<test_id>.dfit_picks.json
@@ -96,6 +96,7 @@ class TestEntry:
     folder: str                  # dir containing the data files
     csv_path: Optional[str] = None
     dbs_path: Optional[str] = None
+    xlsx_path: Optional[str] = None
     questionnaire_path: Optional[str] = None
     scan_warnings: list[str] = field(default_factory=list)
     status: str = "new"          # recomputed from picks JSON, never trusted from the log CSV
@@ -117,6 +118,8 @@ class TestEntry:
             sources.append("CSV")
         if self.dbs_path:
             sources.append("DBS")
+        if self.xlsx_path:
+            sources.append("XLSX")
         return sources
 
     def data_path(self, source: str) -> str:
@@ -129,7 +132,11 @@ class TestEntry:
             if not self.dbs_path:
                 raise ValueError(f"no DBS available for test {self.test_id!r}")
             return self.dbs_path
-        raise ValueError(f"unknown source {source!r} (expected 'CSV' or 'DBS')")
+        if s == "XLSX":
+            if not self.xlsx_path:
+                raise ValueError(f"no XLSX available for test {self.test_id!r}")
+            return self.xlsx_path
+        raise ValueError(f"unknown source {source!r} (expected 'CSV', 'DBS', or 'XLSX')")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -137,11 +144,22 @@ class TestEntry:
 # root itself) that holds data files becomes one or more tests, keyed by a path-qualified,
 # forward-slash-separated test_id unique within the root.
 # --------------------------------------------------------------------------------------------------
-def _group_data_files(filenames: list[str]) -> dict[str, dict[str, str]]:
-    """Group one directory's filenames by stem: `{stem: {"csv": name, "dbs": name}}`. Files that
-    are not `.csv`/`.dbs` (case-insensitive) are skipped, as is `LOG_FILENAME` (case-insensitive,
-    it is our own log, not a test). Filenames within one directory are unique, so each
-    (stem, ext) maps to exactly one name -- no "pick first" ambiguity to warn about."""
+def _group_data_files(filenames: list[str], dirpath: str) -> dict[str, dict[str, str]]:
+    """Group one directory's filenames by stem: `{stem: {"csv": name, "dbs": name, "xlsx":
+    name}}`. Files that are not `.csv`/`.dbs`/`.xlsx` (case-insensitive) are skipped, as is
+    `LOG_FILENAME` (case-insensitive, it is our own log, not a test).
+
+    An `.xlsx` file has two more gates before it counts as a data file at all: it must not be a
+    questionnaire or an Excel lock file (`is_questionnaire_filename` covers both -- see its own
+    docstring), and it must actually sniff as time-series data (`io_load.sniff_xlsx_data`,
+    which opens and peeks the workbook, hence `dirpath` being needed here at all). The corpus has
+    roughly 640 non-questionnaire `.xlsx` files that are summaries, casing tallies, completion
+    calcs, pump schedules, or production tallies rather than DFIT records; the sniff is what
+    keeps those out of the queue. `.csv`/`.dbs` need no such gate -- every file of either
+    extension in the corpus is a data file.
+
+    Filenames within one directory are unique, so each (stem, ext) maps to exactly one name --
+    no "pick first" ambiguity to warn about."""
     by_stem: dict[str, dict[str, str]] = {}
     for name in filenames:
         if name.lower() == LOG_FILENAME.lower():
@@ -151,6 +169,12 @@ def _group_data_files(filenames: list[str]) -> dict[str, dict[str, str]]:
             ext = "csv"
         elif low.endswith(".dbs"):
             ext = "dbs"
+        elif low.endswith(".xlsx"):
+            if is_questionnaire_filename(name):
+                continue
+            if not io_load.sniff_xlsx_data(os.path.join(dirpath, name)):
+                continue
+            ext = "xlsx"
         else:
             continue
         stem = os.path.splitext(name)[0]
@@ -164,7 +188,7 @@ def _entries_for_dir(root: str, dirpath: str, filenames: list[str]) -> list[Test
     `test_id = rel`; a non-root dir with multiple stem groups gets `test_id = rel + "/" + stem`.
     `picks_basename` is always the local stem, so the picks file stays unique within its folder
     regardless of how test_id is qualified."""
-    by_stem = _group_data_files(filenames)
+    by_stem = _group_data_files(filenames, dirpath)
     if not by_stem:
         return []
     rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
@@ -181,6 +205,8 @@ def _entries_for_dir(root: str, dirpath: str, filenames: list[str]) -> list[Test
             entry.csv_path = os.path.join(dirpath, by_ext["csv"])
         if "dbs" in by_ext:
             entry.dbs_path = os.path.join(dirpath, by_ext["dbs"])
+        if "xlsx" in by_ext:
+            entry.xlsx_path = os.path.join(dirpath, by_ext["xlsx"])
         entries.append(entry)
     return entries
 
@@ -221,14 +247,15 @@ def scan_root(root: str, progress=None) -> list[TestEntry]:
         # Same test_id from two different folders: the deeper one wins.
         shallow, deep = sorted((existing, entry), key=lambda e: e.folder.count(os.sep))
         deep.scan_warnings.append(
-            f"loose file {os.path.basename(shallow.csv_path or shallow.dbs_path)!r} in "
-            f"{shallow.folder!r} ignored: test folder {entry.test_id!r} has the same name"
+            f"loose file "
+            f"{os.path.basename(shallow.csv_path or shallow.dbs_path or shallow.xlsx_path)!r} "
+            f"in {shallow.folder!r} ignored: test folder {entry.test_id!r} has the same name"
         )
         by_id[entry.test_id] = deep
 
     entries = list(by_id.values())
     for entry in entries:
-        data_path = entry.csv_path or entry.dbs_path
+        data_path = entry.csv_path or entry.dbs_path or entry.xlsx_path
         entry.questionnaire_path, warns = find_questionnaire(data_path)
         entry.scan_warnings.extend(warns)
 

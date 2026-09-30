@@ -714,6 +714,8 @@ def scan_folders(
                 paths.append(e.csv_path)
             if e.dbs_path:
                 paths.append(e.dbs_path)
+            if e.xlsx_path:
+                paths.append(e.xlsx_path)
         group_files[g] = paths
 
     # Signature every file up front (cheap; see `signature`'s docstring). An unreadable file gets

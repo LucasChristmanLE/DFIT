@@ -6,15 +6,15 @@ Guidance for working in this repository.
 
 An interactive tool for interpreting a single diagnostic fracture injection test (DFIT)
 by the compliance method. A Tkinter/ttk shell hosts an embedded matplotlib canvas. The
-interpreter opens one data file (CSV or Fracpro `.DBS`), maps its channels, and walks eight
-workflow steps, making draggable picks on each plot. Every reported number is derived from
-one pure function, `model.compute_all`.
+interpreter opens one data file (CSV, Fracpro `.DBS`, or an XLSX time-series workbook), maps
+its channels, and walks eight workflow steps, making draggable picks on each plot. Every
+reported number is derived from one pure function, `model.compute_all`.
 
-Interpretation is one well at a time. Two ways to get there: single-file mode (open one CSV
-or `.DBS` directly, today's original flow) or folder mode ("Open Folder…"), which scans a
-root folder into a queue of tests, shows that queue in a left sidebar, and rolls every test's
-results up into a per-root `dfit_log.csv` master log. The sidebar and the log exist only in
-folder mode; single-file mode is otherwise unchanged. There is still no cross-test
+Interpretation is one well at a time. Two ways to get there: single-file mode (open one CSV,
+`.DBS`, or `.xlsx` directly, today's original flow) or folder mode ("Open Folder…"), which
+scans a root folder into a queue of tests, shows that queue in a left sidebar, and rolls every
+test's results up into a per-root `dfit_log.csv` master log. The sidebar and the log exist only
+in folder mode; single-file mode is otherwise unchanged. There is still no cross-test
 aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
 The eight steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
@@ -68,8 +68,15 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   tail guard. `model.py` holds `PickState` (the serializable set of interpreter choices),
   `DerivedResults`, and `compute_all(state, td)`. `compute_all` is the single source of
   truth: it produces every reported value and every array the plots need.
-- **IO.** `io_load.py` loads CSV and the reverse-engineered Fracpro `.DBS` binary format
-  (`load()` dispatches on extension). `parse_datetime` tries two exact, vectorized fast paths
+- **IO.** `io_load.py` loads CSV, an XLSX time-series workbook, and the reverse-engineered
+  Fracpro `.DBS` binary format (`load()` dispatches on extension, case-insensitively). CSV and
+  XLSX share everything downstream of "turn the file into a raw DataFrame": `load_csv` is
+  `_read_csv_frame` (the `pd.read_csv` call, including the preamble-skiprows retry) followed by
+  `_finish_frame`, and `load_xlsx` builds its own DataFrame (below) then calls that same
+  `_finish_frame` -- so every CSV-side fix described in this bullet (datetime-column choice, the
+  FIX-A companion join, FIX B's elapsed/clock fallbacks, FIX D's reversal, the outlier guard, the
+  edge-NaT-block extrapolation) applies to an XLSX load unchanged. `parse_datetime` tries two
+  exact, vectorized fast paths
   (24-hour, then 12-hour AM/PM), each immediately re-filtered to the plausible 1990-2100 window
   (`_PLAUSIBLE_DT_MIN/MAX`) too -- an exact-format strptime match has no range check of its own
   (a 4-digit year field accepts ANY 4 digits), so a corrupted-but-well-shaped date, e.g. a
@@ -337,6 +344,47 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   per-channel units via `units.py` (see Unit detection and conversion below). `questionnaire.py`
   parses a `*questionnaire*.xlsx` next to the data file for fluid density and TVD, also using
   `units.py` for meter/kg-m3 conversions.
+
+  **XLSX time-series workbooks.** `load_xlsx` opens with openpyxl (`read_only=True,
+  data_only=True`); chart sheets are never iterated (`Workbook.worksheets` already excludes
+  them, so there's nothing to skip explicitly). Each remaining worksheet is peeked (its first
+  ~60 rows, plus a couple more to look past a units row) for a header row (`_xlsx_find_header`):
+  the first row with >=2 non-empty string cells, at least one matching the same datetime/date/
+  time/timestamp name needles `suggest_channels` uses, with real numeric or datetime data in the
+  next couple of rows below it (deliberately a short lookahead, not a wide one -- a real
+  corpus preamble line can itself hold a "Date"-named cell next to real datetime values, several
+  blank rows above the real header, and a wide lookahead reaches straight past the blanks into
+  that real header/data block and false-positives on the preamble line instead). A units row
+  directly below the header (`_xlsx_row_is_units_row` -- every non-blank cell short and
+  non-numeric: a parenthesized token, a recognized unit word like "psi"/"bpm"/"gal"/"deg F"/
+  "minutes", or a bare date/time-format token like "MM/DD/YY"/"HH:MM:SS") is folded into the
+  header names as `"Name (unit)"` (`_xlsx_fold_unit`, stripping any parens the header already
+  had) before being dropped, so the existing header-suffix unit detection (`_unit_of`) sees it
+  exactly as it would from a CSV -- e.g. a bare "Time" header over a "(hh:mm:ss)" units cell
+  folds to `"Time (hh:mm:ss)"`; a blank header cell with only a units-row label (Southern Ute's
+  unnamed "DeltaP" column) takes that label as its name outright, unparenthesized. When more
+  than one worksheet qualifies, the one with the most data rows (by worksheet dimensions, not a
+  full read) wins. Data cells are converted so `_finish_frame` sees exactly what a CSV would
+  give it (`_xlsx_cell_to_value`): a `datetime` cell becomes a `_PRIMARY_DT_FORMAT` string, a
+  `datetime.time` cell becomes an `"HH:MM:SS"` string, and -- the one XLSX-specific wrinkle -- a
+  datetime column that is exactly midnight in every row AND has a separate companion time column
+  (the same pairing `suggest_channels`/`_companion_time_col` would find, checked against the
+  final folded/deduped column names before any row is converted) is formatted date-only,
+  matching a CSV's own split Date + Time columns and so exercising the exact same FIX-A join.
+  `_companion_time_col` itself was widened for this: a companion match no longer has to be an
+  exact bare `"Time"` column (still tried first, in column order, for every existing CSV shape)
+  -- failing that, a multi-token "...Time"-named column (e.g. bare-named "Real Time" off a
+  folded `"Real Time (HH:MM:SS)"` header) is accepted too, also in column order, which is what
+  pairs Southern Ute's downhole-gauge "Real Date"/"Real Time" split correctly ahead of that same
+  sheet's unrelated "Test Time" (elapsed-minutes) column sitting right after it. Trailing
+  fully-empty rows and columns are dropped (`_xlsx_trim_trailing_empty`); duplicate or blank
+  header cells are made unique the way `pd.read_csv` does (`_xlsx_dedupe_headers`).
+  `sniff_xlsx_data(path) -> bool` is the cheap version of the same header/units-row rule, used
+  by folder mode and `scripts/triage` to tell an actual DFIT time-series workbook apart from the
+  hundreds of non-data `.xlsx` files (summaries, casing tallies, completion calcs, pump
+  schedules, production tallies) a real corpus root also contains: it stops at the first
+  qualifying sheet and never raises -- a corrupt or password-protected workbook just reads as
+  "not data".
 - **Interaction (matplotlib only, no Tkinter).** `picks.py` has the event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`,
   `SpanController`, `ModifierSpanController`, `HoverCursorController`, and the
@@ -347,9 +395,19 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
 - **Folder-mode persistence.** `store.py` is Tk-free, like `model.py`, so it is unit-testable
   headless. `scan_root` does the depth-1 scan of an opened root: one `TestEntry` per immediate
   subdirectory holding data files (folder layout), plus one per loose data file or same-stem
-  csv+dbs pair directly in the root (flat layout); a loose-file entry whose test_id collides
-  with a subfolder entry is dropped in favor of the subfolder (with a warning attached) rather
-  than crashing the queue on a duplicate iid. Picks persist to a per-test
+  csv+dbs+xlsx group directly in the root (flat layout); a loose-file entry whose test_id
+  collides with a subfolder entry is dropped in favor of the subfolder (with a warning attached)
+  rather than crashing the queue on a duplicate iid. `TestEntry` gains an `xlsx_path` alongside
+  `csv_path`/`dbs_path`; `_group_data_files` groups `.csv`/`.dbs` files by stem unconditionally
+  but gates a `.xlsx` file through two more checks before it counts as a data file at all -- it
+  must not be a questionnaire or Excel lock file (`questionnaire.is_questionnaire_filename`) and
+  it must actually sniff as time-series data (`io_load.sniff_xlsx_data`, which opens and peeks
+  the workbook) -- since the corpus has roughly 640 non-questionnaire `.xlsx` files that are
+  summaries/tallies/schedules, not DFIT records. This makes opening a folder with many
+  candidate `.xlsx` files noticeably slower than one with none (measured: ~0.18s -> ~32s
+  scanning `aa_DJ Basin`, 113 candidate `.xlsx` files, each opened once to sniff) -- an accepted
+  cost of the gate, not a bug. `available_sources`/`data_path` add `"XLSX"` after `"CSV"`/
+  `"DBS"`. Picks persist to a per-test
   `<folder>/<test_id>.dfit_picks.json`, written atomically (temp file + `os.replace`), same
   contract as `PickState.to_json`/`from_json`. `status_for` derives a test's queue status
   ("new"/"in_progress"/"done"/"skipped") from its saved `PickState`: `"done"` and
@@ -423,7 +481,8 @@ too -- completing a test un-parks it -- but it preserves a per-step `"skipped"` 
 "Skip >" on the step it is invoked from (reachable on the last step, where `next_step` clamps,
 and on `loglog` under PC-F), so a test finished with a skipped step still reports `"skipped"`.
 The Source dropdown
-(CSV/DBS) is enabled only when a test has both files available; switching sources is treated
+(CSV/DBS/XLSX, `TestEntry.available_sources` in that order, among whichever of the three exist)
+is enabled only when a test has more than one file available; switching sources is treated
 as a different data file, so it resets that test's picks after a confirm dialog
 (`ui._on_source_change`).
 

@@ -143,7 +143,7 @@ def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> 
     """Which of ``entry.available_sources`` ``_load_test`` should open, absent an explicit
     ``source=`` override: the saved picks' ``active_source`` when there is a saved PickState
     naming a source that's actually available for this entry, else the first available source
-    (``TestEntry.available_sources`` orders CSV before DBS when both exist)."""
+    (``TestEntry.available_sources`` orders CSV, then DBS, then XLSX, among whichever exist)."""
     if saved is not None:
         for candidate in entry.available_sources:
             if candidate.lower() == saved.active_source:
@@ -550,9 +550,10 @@ class DfitApp:
     def _open(self):
         path = filedialog.askopenfilename(
             filetypes=[
-                ("DFIT data", "*.csv *.dbs"),
+                ("DFIT data", "*.csv *.dbs *.xlsx"),
                 ("CSV", "*.csv"),
                 ("Fracpro DBS", "*.dbs"),
+                ("Excel", "*.xlsx"),
                 ("All", "*.*"),
             ]
         )
@@ -784,8 +785,8 @@ class DfitApp:
         self._update_skip_test_btn()
 
     def _on_source_change(self):
-        """The Source combobox: switching CSV<->DBS resets all picks for this test (a fresh
-        _load_test, not a resume), so confirm first -- reverting the combobox on decline."""
+        """The Source combobox: switching between CSV/DBS/XLSX resets all picks for this test (a
+        fresh _load_test, not a resume), so confirm first -- reverting the combobox on decline."""
         new = self.var_source.get()
         current = self.state.active_source.upper()
         if new == current:
