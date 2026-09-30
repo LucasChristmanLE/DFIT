@@ -2412,9 +2412,14 @@ def _xlsx_find_header(rows: list) -> Optional[tuple]:
     """The header row of an XLSX time-series sheet: the first row (within the first
     ``_XLSX_HEADER_SCAN_ROWS`` of `rows`) with at least 2 non-empty string cells, at least one of
     which matches a datetime/time name needle (``_DATETIME_NAME_NEEDLES`` -- the same ones
-    ``suggest_channels`` uses), and with real numeric or datetime data somewhere in the next
-    ``_XLSX_DATA_LOOKAHEAD_ROWS`` rows (which skips harmlessly over an intervening units row).
-    Returns ``(row_index, row_cells)`` (0-based within `rows`), or ``None``.
+    ``suggest_channels`` uses), no real number or datetime/date/time value anywhere in the row
+    ITSELF (a genuine header is text-only; a numeric tally/schedule row that happens to carry an
+    incidental "time"-ish label in one cell is not a header -- measured corpus false positives:
+    a casing-tally row naming a component "RESOURCE TIME DELAY SLEEVE" among a run of real
+    joint-length numbers, and a completion-notes row pairing a "Start pump time:" label with a
+    real logged `datetime` two cells over), and with real numeric or datetime data somewhere in
+    the next ``_XLSX_DATA_LOOKAHEAD_ROWS`` rows (which skips harmlessly over an intervening units
+    row). Returns ``(row_index, row_cells)`` (0-based within `rows`), or ``None``.
     """
     scan_limit = min(len(rows), _XLSX_HEADER_SCAN_ROWS)
     for i in range(scan_limit):
@@ -2423,6 +2428,8 @@ def _xlsx_find_header(rows: list) -> Optional[tuple]:
         if len(str_cells) < 2:
             continue
         if not any(any(n in c.lower() for n in _DATETIME_NAME_NEEDLES) for c in str_cells):
+            continue
+        if any(_xlsx_is_number(c) or _xlsx_is_datetimeish(c) for c in row):
             continue
         window = rows[i + 1: i + 1 + _XLSX_DATA_LOOKAHEAD_ROWS]
         if not _xlsx_has_numeric_data(window):
