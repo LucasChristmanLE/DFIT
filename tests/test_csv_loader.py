@@ -145,6 +145,122 @@ def test_load_csv_multi_candidate_recomputes_companion_time_col(tmp_path):
     assert dt.iloc[-1] == pd.Timestamp("2022-08-09 08:23:29")
 
 
+def test_companion_time_col_excludes_elapsed_prefers_real(tmp_path):
+    # FIX 6: "Date, Elapsed Time, Real Time" must pair Date with Real Time, not the
+    # elapsed-minutes column column order alone would otherwise pick first.
+    cols = ["Date", "Elapsed Time", "Real Time", "Pressure"]
+    assert io_load._companion_time_col("Date", cols) == "Real Time"
+
+
+def test_companion_time_col_excludes_test_delta_duration_tokens():
+    assert io_load._companion_time_col("Date", ["Date", "Test Time", "Pressure"]) is None
+    assert io_load._companion_time_col("Date", ["Date", "Delta Time", "Pressure"]) is None
+    assert io_load._companion_time_col("Date", ["Date", "Duration Time", "Pressure"]) is None
+
+
+def test_companion_time_col_preferred_wins_over_plain_order():
+    # "Clock Time" sits AFTER "Job Time" in column order but must still win as the preferred
+    # wall-clock-shaped name.
+    cols = ["Date", "Job Time", "Clock Time", "Pressure"]
+    assert io_load._companion_time_col("Date", cols) == "Clock Time"
+
+
+def test_companion_time_col_exact_bare_time_still_wins_outright():
+    # The narrower, original rule is unaffected by the exclude/preferred logic: an exact bare
+    # "Time" column always wins, even over a "Real Time" that would otherwise be preferred.
+    cols = ["Date", "Real Time", "Time", "Pressure"]
+    assert io_load._companion_time_col("Date", cols) == "Time"
+
+
+def test_load_csv_date_elapsed_real_time_end_to_end(tmp_path):
+    # Full end-to-end regression for the "Date, Elapsed Time, Real Time" shape: the join must use
+    # Real Time (full sub-second resolution), not Elapsed Time.
+    rows = [
+        "04/10/2016,0.0,12:00:00,5000.0",
+        "04/10/2016,0.08333333333333333,12:00:05,4999.0",
+        "04/10/2016,0.16666666666666666,12:00:10,4998.0",
+    ]
+    p = tmp_path / "date_elapsed_real.csv"
+    p.write_text("Date,Elapsed Time,Real Time,Pressure\n" + "\n".join(rows) + "\n")
+
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Date"
+    span_s = td.t_s[-1] - td.t_s[0]
+    assert span_s == pytest.approx(10.0)
+
+
+def test_load_csv_job_time_full_datetime_kept_when_it_leads(tmp_path):
+    # FIX 6 regression: a "Job Time" column of full datetimes, sitting BEFORE a bare "Date"
+    # column, must stay the datetime column at full resolution -- not get reserved away as
+    # "Date"'s (bogus) time-of-day companion, which would force the wrong column and collapse
+    # every sample onto one midnight timestamp.
+    rows = [
+        "04/10/2016 12:00:00,04/10/2016,5000.0",
+        "04/10/2016 12:00:05,04/10/2016,4999.0",
+        "04/10/2016 12:00:10,04/10/2016,4998.0",
+    ]
+    p = tmp_path / "jobtime_leads.csv"
+    p.write_text("Job Time,Date,Pressure\n" + "\n".join(rows) + "\n")
+
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col == "Job Time"
+    span_s = td.t_s[-1] - td.t_s[0]
+    assert span_s == pytest.approx(10.0)
+
+
+def test_companion_is_time_of_day_vetoes_full_datetime_companion(tmp_path):
+    # A "Job Time" column matches "Date"'s companion NAME rule, but its own VALUES are full
+    # datetimes, not bare time-of-day -- _companion_is_time_of_day must veto it.
+    df = pd.DataFrame({
+        "Date": ["04/10/2016", "04/10/2016"],
+        "Job Time": ["04/10/2016 12:00:00", "04/10/2016 12:00:05"],
+    })
+    assert io_load._companion_is_time_of_day("Job Time", df) is False
+
+
+def test_companion_is_time_of_day_tolerates_leading_units_row():
+    # A real corpus companion column routinely carries one leading units-declaration row (e.g.
+    # "(hh:mm:ss)") among thousands of genuine time-of-day rows -- that must not veto it.
+    values = ["(hh:mm:ss)"] + [f"14:0{i}:00" for i in range(9)]
+    df = pd.DataFrame({"Real Time": values})
+    assert io_load._companion_is_time_of_day("Real Time", df) is True
+
+
+def test_companion_is_time_of_day_normalizes_ms_colon():
+    df = pd.DataFrame({"Time": ["15:58:17:647", "15:58:17:897"]})
+    assert io_load._companion_is_time_of_day("Time", df) is True
+
+
+# --------------------------------------------------------------------------------------------------
+# Caprito "%m-%d-%Y_%H:%M:%S" fast path (FIX 9) and sub-second fast path (FIX 7)
+# --------------------------------------------------------------------------------------------------
+def test_parse_datetime_caprito_underscore_format():
+    s = pd.Series(["03-26-2018_16:44:05", "03-26-2018_16:44:06"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2018-03-26 16:44:05")
+    assert result.iloc[1] == pd.Timestamp("2018-03-26 16:44:06")
+
+
+def test_load_csv_caprito_timestamp_shape_end_to_end(tmp_path):
+    rows = [
+        "03-26-2018_16:44:05,0.95",
+        "03-26-2018_16:44:06,5.85",
+        "03-26-2018_16:44:07,3.95",
+    ]
+    p = tmp_path / "caprito_shape.csv"
+    p.write_text("Time Stamp,DischPress\n" + "\n".join(rows) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.n == 3
+    assert td.t_s[-1] - td.t_s[0] == pytest.approx(2.0)
+
+
+def test_parse_datetime_fractional_seconds_fast_path():
+    s = pd.Series(["01/02/2020 03:04:05.123456", "01/02/2020 03:04:06.654321"], dtype="string")
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2020-01-02 03:04:05.123456")
+    assert result.iloc[1] == pd.Timestamp("2020-01-02 03:04:06.654321")
+
+
 # --------------------------------------------------------------------------------------------------
 # parse_datetime -- Excel serial fallback plausible-range guard
 #
