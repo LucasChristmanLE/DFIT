@@ -70,8 +70,18 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   truth: it produces every reported value and every array the plots need.
 - **IO.** `io_load.py` loads CSV and the reverse-engineered Fracpro `.DBS` binary format
   (`load()` dispatches on extension). `parse_datetime` tries two exact, vectorized fast paths
-  (24-hour, then 12-hour AM/PM) before falling back to a bare Excel-serial parse -- accepted only
-  within a plausible 1990-2100 range (`_EXCEL_SERIAL_MIN/MAX`; a small bare number like an
+  (24-hour, then 12-hour AM/PM), each immediately re-filtered to the plausible 1990-2100 window
+  (`_PLAUSIBLE_DT_MIN/MAX`) too -- an exact-format strptime match has no range check of its own
+  (a 4-digit year field accepts ANY 4 digits), so a corrupted-but-well-shaped date, e.g. a
+  typo'd year, otherwise sails through untouched by any guard at all. Measured case: Civitas
+  Allred's "6 - 21011210.DTF.csv" has several implausible years (1941, 4221, 7127) that match
+  the exact format perfectly and previously poisoned the reported span by billions of seconds;
+  guarded (combined with the isolated-outlier guard further down, which cleans up the one
+  remaining corrupted-but-plausible-range cell), it reports its real ~370.66h. The same class of
+  bug, with a whole BLOCK of consecutive corrupted samples rather than a single one, still
+  affects at least one other file (Arkansas 1BH's own DTF export) -- see "Not built / notes".
+  Then a bare Excel-serial parse -- accepted only
+  within the same plausible range (`_EXCEL_SERIAL_MIN/MAX`; a small bare number like an
   elapsed-minutes value is otherwise misread as an implausible 1900-ish date) -- and then a
   generic dateutil parse over whatever's still unparsed. That last, generic parse runs at FULL
   LENGTH (never reindexed to just the still-unparsed rows): pandas' own format-inference reads a
@@ -185,16 +195,53 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   pass the trust-fraction check outright. Whenever such an edge run (blank OR error-token) still
   carries real data in some OTHER column -- real rows that just happen to have no usable
   timestamp, not genuine padding -- `_extrapolate_or_warn_edge_block` runs (regardless of
-  whether the fraction check above even fired) right before `load_csv` returns: if the
-  surviving good run's own sample interval is regular (>=99% of consecutive steps within 1% of
-  the median), the missing timestamps are extrapolated at that median step
-  (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at <step> s
-  spacing."`); otherwise they're left as NaT with a warning that N data-bearing rows had no
-  usable timestamp -- never silently dropped either way. Measured case: Crestone Peak's
-  "21011234 raw data.csv" -- 233,470 genuinely valid, contiguous 1 Hz "Date Time" rows, then
-  ~713,000 trailing `"#REF!"` rows whose Pressure/Temp columns keep reading real, continuing
-  values (a real, good record whose reported span goes from ~64.85h, the trustworthy prefix
-  alone, to the full ~262.88h once the trailing block is extrapolated).
+  whether the fraction check above even fired) right before `load_csv` returns. "Carries real
+  data" itself means at least one other column holds a finite NUMERIC value
+  (`_numeric_data_bearing_mask`, `pd.to_numeric(..., errors="coerce")`), not merely a non-null
+  cell -- a units-declaration row right after the header (e.g. Ballard's "Dilts 31-24 TH DFIT
+  CSV Data.csv", row 2: `"(min) ,(date time), (psi), (bpm), (psi), (bbls)"`) or a blank-cells-
+  plus-bare-unit-string row (e.g. Black Hills' "Cope 107 -108 16HS BHP Fracpro.CSV":
+  `"                 ,               psi "`) is non-null text in every column but none of it
+  numeric, so it is correctly treated as no-data padding rather than either warned about as a
+  data-bearing row with no usable timestamp or extrapolated a fabricated timestamp one median
+  step before the first real sample -- a plain `notna()` check (an earlier version of this
+  feature) got both of those wrong. Subject to two further restrictions that can each leave
+  some of the block unresolved:
+
+  - Contiguity: only rows in an UNBROKEN data-bearing run starting right at the anchor (the last
+    valid timestamp, for a trailing block; the first, for a leading one) are reachable at all --
+    a run of fully-empty rows (no value in ANY column) breaks it, and real data sitting past
+    that break stays out of reach even though it's real. Measured case: Great Western's
+    "Seltzer Pump - 036HN.csv" -- the row immediately after its last valid timestamp is already
+    fully empty, so the file's own real trailing 60 rows (much further out, with real Pressure/
+    Rate data) are never reachable and get `"60 data-bearing rows had no usable timestamp"`
+    instead; the file's reported span goes back to its true ~0.283h (just the trustworthy
+    prefix), not the ~1.79h a blanket "extrapolate the whole block" reading gave in an earlier
+    version of this feature.
+  - Readable cells: within whatever IS reachable, only a row whose own datetime cell (and
+    companion Time cell, for a FIX-A join) is genuinely blank or an error token
+    (`_blank_or_error_mask`) gets a manufactured value -- a cell with real, readable text that
+    simply failed to PARSE (e.g. an implausible-year date the plausible-range guard below
+    correctly rejects) is a real reading, not a gap, and is never overwritten. Measured case:
+    Extraction Oil & Gas's "Wake 33-20-13-...PRESSURE.csv" opens with 63 rows dated `"7/25/1987"`
+    (a stuck default clock before the gauge was synced) ahead of its real 1990-2100-range data
+    -- readable, not blank, so none of them get a value extrapolated backward from the first
+    good sample; they're reported as `"63 data-bearing rows had no usable timestamp"` and the
+    file's span comes from the good data alone (~1,199.7h).
+
+  If the surviving good run's own sample interval is regular (>=99% of consecutive steps within
+  1% of the median), whatever's both reachable and blank/error-token gets extrapolated at that
+  median step (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
+  <step> s spacing."`, N counting only the extrapolated rows); an irregular interval, or a block
+  with nothing reachable/blank-or-error at all, instead leaves everything unresolved (`"N
+  data-bearing rows had no usable timestamp"`, N here counting the WHOLE original block) --
+  never silently dropped either way, and both warnings can appear together when extrapolation
+  resolves only part of the block. Measured case for a clean, fully-extrapolated block: Crestone
+  Peak's "21011234 raw data.csv" -- 233,470 genuinely valid, contiguous 1 Hz "Date Time" rows,
+  then ~713,000 trailing `"#REF!"` rows whose Pressure/Temp columns keep reading real, continuing
+  values, ALL of them reachable and all of them the error token itself (a real, good record
+  whose reported span goes from ~64.85h, the trustworthy prefix alone, to the full ~262.88h once
+  the trailing block is extrapolated in full).
 
   `_find_clock_column` looks for a column whose non-empty values are PREDOMINANTLY (same
   `_MIN_VALID_DT_FRACTION`) bare clock/time-of-day strings and nothing else, the file's only
@@ -206,22 +253,29 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   value with any hour exceeding 23 is `"elapsed_hms"` (an elapsed DURATION -- h*3600+m*60+s,
   hour unbounded, e.g. `"39:59:00"` forty minutes before hour 40 -- a naive wall-clock reading
   would misread this as stuck at hour 23, truncating a genuine 40h record to ~24h); a 2-field,
-  no-AM/PM value is read as `"clock"` (H:MM) only if its first field ever reaches >=13 AND the
-  sample cadence (a naive `first*60+second` proxy) runs >=60s/step -- consistent with an
-  hour ticking over roughly once a minute -- else `"elapsed_mmss"` (m*60+s, first field
-  unbounded) if the first field ever exceeds 23 (too high to be even a 24-hour hour, e.g. a
-  40-minute `"00:00"`..`"39:59"` MM:SS record a naive H:MM reading would misread as a bogus
-  ~40-HOUR span), else `"ambiguous"`. An ambiguous candidate doesn't fail the whole search by
-  itself -- `_find_clock_column` still tries any remaining datetime-name-matching candidate
-  before giving up -- but if NOTHING resolves cleanly, it raises a specific `ValueError` naming
-  the first ambiguous candidate, rather than guessing either way. This decision rule has one
-  known, accepted gap: a SHORT
-  no-AM/PM MM:SS record whose first field never reaches either threshold (e.g. a 20-minute
-  `"00:00"`..`"19:59"` record -- never >=13's companion cadence proof, since its own ~1
-  Hz cadence reads as MM:SS not H:MM, but also never >23) lands on `"ambiguous"` and raises,
-  rather than resolving to the 20 minutes a human reader would call obvious; this is exactly
-  the boundary the rule as specified draws, not something patched around. Every one of these
-  readings still excludes Dressler's own ambiguous
+  no-AM/PM value runs through a fixed sequence of proofs, in this order, each one conclusive on
+  its own rather than a preference: (1) the first field EVER exceeding 23 is checked first and
+  settles `"elapsed_mmss"` (m*60+s, first field unbounded) outright, regardless of what the
+  other checks below would have said -- too high to be even a 24-hour hour, e.g. a 40-minute
+  `"00:00"`..`"39:59"` MM:SS record a naive H:MM reading would misread as a bogus ~40-HOUR span;
+  (2) failing that, a midnight WRAP -- a backward step from a first field >=23 down to a first
+  field of 0 -- settles `"clock"`: elapsed minutes never reset to 0 after climbing past 23, they
+  just keep counting, so a genuine drop back to 0 right at the top of the hour range is proof of
+  a real hour rolling over; (3) failing that, the column's own resolution vs. its sample rate --
+  `_median_run_length`, the median length of each run of consecutive identical (first, second)
+  pairs -- settles `"clock"` when it's >=2 (the same reading repeats across multiple rows, i.e.
+  the field changes slower than the sample rate, consistent with a real clock sampled faster
+  than once a minute); (4) otherwise `"ambiguous"`. An ambiguous candidate doesn't fail the
+  whole search by itself -- `_find_clock_column` still tries any remaining datetime-name-
+  matching candidate before giving up -- but if NOTHING resolves cleanly, it raises
+  (`"Column 'Time': H:MM vs MM:SS ambiguous (...)"`, no override mentioned, since none exists)
+  naming the first ambiguous candidate, rather than guessing either way. This decision rule has
+  one known, accepted gap: a plain, non-wrapping, non-repeating no-AM/PM H:MM record sampled
+  once per real minute (e.g. 13:00-18:00, one row a minute -- run length 1, no wrap, first field
+  never exceeds 23) has no proof either way under rules (1)-(3) and lands on `"ambiguous"`,
+  even though a human reader would call it an obvious clock; this is the boundary the rule as
+  specified draws, not something patched around. Every one of these readings still excludes
+  Dressler's own ambiguous
   `"MM:SS.f"` shape (exactly two colon-separated fields plus a fraction, no seconds group) --
   Crescent Point's "...1secdata.csv" must keep failing here, not land on a wrong reading through
   any of them. Only the `"clock"` reading gets midnight-rollover unwrapping and reversal
@@ -249,9 +303,10 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   close to the sample that caused the jump, not back near where the record started. Measured
   case: Strathcona's `100-09-14-062-04W6-rt.csv`, one row whose Date cell reads `"8/10/2022"`
   where every neighbor reads `"28/10/2022"` (a dropped leading digit) -- unmasked, that one
-  sample lands ~20 days before its neighbors and the very next sample jumps back ~20 days to
-  rejoin them, inflating the reported span from the record's real ~99h to a bogus, deeply
-  negative one.
+  sample's own elapsed time sits around -480h (~20 days before its neighbors, since the file's
+  `t=0` reference is early in the record) and the very next sample jumps back to rejoin them,
+  turning the reported OVERALL span (`max - min`) into a bogus ~571h (real max ~91h, minus the
+  outlier's own ~-480h minimum) instead of the record's real ~99h.
 
   If NONE of the three FIX-B fallbacks finds anything, `load_csv` raises -- unconditionally,
   regardless of how many "valid" timestamps the untrustworthy column happens to have in
@@ -1214,3 +1269,27 @@ ambiguity, not fixed.
   column is actually SECONDS (no other hint anywhere resolves the unit), reporting a duration
   60x too long. There is no way to tell the two apart from the column alone; the warning is the
   only mitigation.
+- L1: `parse_datetime`'s `_FAST_PATH_SKIP_FRACTION` gate (skip the generic dateutil parse once
+  the two exact fast paths already own >=90% of a column) can silently drop a genuine SECOND
+  valid date format if that format's rows happen to sit in the >=90% majority resolved by the
+  fast paths and the OTHER format is the minority left for Fallback 2 -- the gate has no way to
+  tell "the remainder is genuinely a second format" apart from "the remainder is units/header
+  lines or corrupt cells," which is exactly the ambiguity it accepts trading away for speed (see
+  the Emma Owner measured case above). Synthetic-only so far, not seen forcing a wrong answer on
+  any real corpus file: a file mixing two real formats where the RARER one appears first in file
+  order poses no risk (still resolved, since Fallback 2 only skips based on the FRACTION, not
+  position), but one where the format split happens to land close to the 90% line could go
+  either way depending on which format has the numerical majority.
+- Civitas Allred's `"6 - 21011210.DTF.csv"` (and its `aa_DJ Basin\Allred Fed...` copy) is the
+  measured case for BOTH the fast-path plausible-year guard and the isolated-timestamp-outlier
+  guard, and combining them resolves it to its real ~370.66h. A different file, `aa_DJ Basin\
+  Arkansas 1BH\1BH - 21011204.DTF.csv` (same instrument export family), has the same underlying
+  problem in a shape neither guard reaches: a BLOCK of ~40 consecutive samples jumps to an
+  implausible-but-still-1990-2100-range date range and back (a ~3,700h round-trip), rather than
+  a single isolated cell -- every sample WITHIN that block is consistent with its immediate
+  neighbor (also inside the block), so `_mask_isolated_timestamp_outliers`'s "differs from BOTH
+  neighbors" test never fires on any of them, only the two boundary transitions would even look
+  anomalous, and neither boundary alone satisfies "differs from BOTH neighbors" (one side of
+  each is consistent with its own, good-or-bad, region). The file currently reports a reasonable-
+  looking but wrong ~3,850h; a genuine fix would need a block-aware version of the outlier guard,
+  out of scope here.

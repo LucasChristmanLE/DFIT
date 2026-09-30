@@ -259,6 +259,21 @@ def test_parse_datetime_fallback2_rejects_implausible_dateutil_guess():
     assert pd.isna(result.iloc[2])
 
 
+def test_parse_datetime_fast_path_rejects_implausible_year():
+    # M2 (round 3): an exact-format strptime match has no range check of its own -- a 4-digit
+    # year field accepts ANY 4 digits -- so a corrupted-but-well-shaped date (e.g. a typo'd
+    # year) previously sailed through the fast path untouched by any guard at all. Measured
+    # case: Civitas Allred's "6 - 21011210.DTF.csv" has several implausible years (1941, 4221,
+    # 7127) that match "%m/%d/%Y %H:%M:%S" perfectly.
+    s = pd.Series(
+        ["04/11/2023 14:33:12", "02/04/7127 22:00:00", "04/16/4221 22:00:00"], dtype="string"
+    )
+    result = io_load.parse_datetime(s)
+    assert result.iloc[0] == pd.Timestamp("2023-04-11 14:33:12")
+    assert pd.isna(result.iloc[1])
+    assert pd.isna(result.iloc[2])
+
+
 def test_load_csv_tz_aware_sibling_column_does_not_crash(tmp_path):
     # End-to-end version of the above: a good, primary-format "Datetime" column (no tz) alongside
     # a tz-aware "Datetime(UTC)" sibling -- both are datetime-name-matching candidates, and the
@@ -430,6 +445,28 @@ def test_load_csv_isolated_timestamp_outlier_masked(tmp_path):
     assert any("outlier" in w for w in td.load_warnings)
 
 
+def test_load_csv_outlier_warning_not_attached_when_column_abandoned(tmp_path):
+    # L3: an outlier gets masked on dt_col's own parse, but the column is BELOW the trust
+    # fraction overall and load_csv falls back to a separate elapsed-time column instead --
+    # dt_col is not the column actually used, so the outlier warning (which describes ITS
+    # parse) must not appear in the final load_warnings.
+    lines = ["Date,Delta (sec),Pressure(psi)"]
+    for i in range(20):
+        # Only every third row has a real date (8 of 20 -- below the 50% trust threshold), one
+        # of which (i == 9) is an isolated outlier surrounded by otherwise-consistent neighbors.
+        if i % 3 == 0:
+            day = 8 if i == 9 else 28
+            date_s = f"{day}/10/2022"
+        else:
+            date_s = "not-a-date"
+        lines.append(f"{date_s},{i},{5000 - i}")
+    p = tmp_path / "outlier_then_abandoned.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert td.datetime_col != "Date"
+    assert not any("outlier" in w for w in td.load_warnings)
+
+
 def test_load_csv_genuine_large_gap_not_masked_as_outlier(tmp_path):
     # A REAL discontinuity -- a genuine gap in logging -- must not be masked: unlike a corrupted
     # single cell, the samples on either side of a real gap are close to EACH OTHER (both near
@@ -570,16 +607,51 @@ def test_load_csv_clock_elapsed_mmss_past_60min_not_misread_as_hours(tmp_path):
 
 
 def test_load_csv_clock_ambiguous_two_field_raises(tmp_path):
-    # A bare 2-field, no-AM/PM reading whose first field never proves it's an hour (never
-    # reaches 13) AND whose sample cadence looks like a per-second counter (median step well
-    # under 60s), not a per-minute-or-slower clock, is genuinely ambiguous between "H:MM" and
-    # "MM:SS" -- must raise a clear, specific error rather than silently guessing either way.
+    # A bare 2-field, no-AM/PM reading that fits none of _classify_clock_mode's proofs -- the
+    # first field never exceeds 23 (not elapsed_mmss), never wraps from >=23 down to 0 (not a
+    # proven clock), and a fresh (first, second) pair shows up almost every row (median run
+    # length < 2, so its own resolution isn't coarser than the sample rate either) -- is
+    # genuinely ambiguous between "H:MM" and "MM:SS" and must raise a clear, specific error
+    # naming that ambiguity, not silently guess either way.
     lines = ["Time,Rate,Pressure"]
     lines += [f"{s // 60:02d}:{s % 60:02d},0,100" for s in range(0, 10 * 60)]
     p = tmp_path / "clock_ambiguous.csv"
     p.write_text("\n".join(lines) + "\n")
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(ValueError, match="H:MM vs MM:SS ambiguous"):
         io_load.load_csv(str(p))
+    with pytest.raises(ValueError) as exc_info:
+        io_load.load_csv(str(p))
+    assert "override" not in str(exc_info.value)
+
+
+def test_load_csv_clock_two_field_midnight_wrap_is_clock(tmp_path):
+    # A backward step in the first field from >=23 down to 0 is conclusive proof of a real
+    # wall-clock hour rolling over -- elapsed minutes never reset to 0 after climbing past 23,
+    # they just keep counting. H:MM, one sample per minute, crossing midnight: 20:00 -> 03:59
+    # the next "day" is a real ~8h span.
+    lines = ["Time,Rate,Pressure"]
+    lines += [f"{(m // 60) % 24}:{m % 60:02d},0,100" for m in range(20 * 60, 28 * 60)]
+    p = tmp_path / "clock_two_field_midnight_wrap.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    np.testing.assert_allclose(td.t_s[-1] / 3600, 7.983, atol=0.01)
+    assert not any("elapsed duration" in w for w in td.load_warnings)
+
+
+def test_load_csv_clock_two_field_repeated_values_is_clock(tmp_path):
+    # A first, second pair that repeats across multiple consecutive rows (median run length
+    # >= 2) means the field's own resolution is coarser than the sample rate -- consistent with
+    # a real hour:minute clock sampled faster than once a minute (here, once every 10s, so each
+    # minute value repeats ~6 times) -- proof of "clock" even with no AM/PM and no wrap.
+    lines = ["Time,Rate,Pressure"]
+    lines += [
+        f"{s // 3600}:{(s % 3600) // 60:02d},0,100" for s in range(14 * 3600, 16 * 3600, 10)
+    ]
+    p = tmp_path / "clock_two_field_repeated_minute.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert not any("elapsed duration" in w for w in td.load_warnings)
+    assert np.isfinite(td.t_s).sum() == len(td.t_s)
 
 
 def test_clock_seconds_of_day_excludes_dressler_ambiguous_mm_ss_shape():
@@ -749,6 +821,78 @@ def test_load_csv_trailing_irregular_block_left_nan_with_warning(tmp_path):
     td = io_load.load_csv(str(p))
     assert np.isfinite(td.t_s).sum() == 20
     assert any("no usable timestamp" in w for w in td.load_warnings)
+
+
+def test_load_csv_trailing_gap_breaks_extrapolation_contiguity(tmp_path):
+    # M3(a): a run of fully-empty rows (no value in ANY column, not just the timestamp) between
+    # the last valid timestamp and a LATER stretch of real, data-bearing-but-timestamp-less rows
+    # breaks contiguity -- only rows in an unbroken data-bearing run starting right at the last
+    # valid timestamp are extrapolatable. Measured case: Great Western's "Seltzer Pump -
+    # 036HN.csv" -- the row immediately after its last valid timestamp is already fully empty,
+    # so its own real trailing data (60 rows, much later) is never reachable.
+    lines = ["Time Stamp,Pressure(psi)"]
+    lines += [f"1/1/24 00:00:{s:02d},{5000 - s}" for s in range(10)]
+    lines += [",", ",", ","]  # a fully-empty gap: no value in ANY column
+    lines += [f",{4990 - s}" for s in range(5)]  # real data, but past the gap
+    p = tmp_path / "trailing_gap_breaks_contiguity.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == 10
+    np.testing.assert_allclose(td.t_s[:10], np.arange(10, dtype=float))
+    assert any("5 data-bearing rows had no usable timestamp" in w for w in td.load_warnings)
+
+
+def test_load_csv_edge_block_never_overwrites_a_readable_unparsed_cell(tmp_path):
+    # M3(b): a cell that has real, readable (if wrong) text and simply failed to parse must
+    # never be overwritten with a fabricated extrapolated value -- only a genuinely blank or
+    # error-token cell is. Measured case: Extraction Oil & Gas's "Wake 33-20-13-...PRESSURE.csv"
+    # opens with rows dated 1987 (a stuck default clock before the gauge was synced, now
+    # rejected by the plausible-range guard) ahead of its real data -- readable, not blank, so
+    # they must stay NaT with a "no usable timestamp" warning, not get a fabricated timestamp
+    # extrapolated backward from the first good sample.
+    lines = ["Date Time,Pressure(psi)"]
+    lines += [f"7/25/1987 10:14:{s:02d},{14.0 + s * 0.01:.2f}" for s in range(5)]
+    lines += [f"1/1/2024 00:00:{s:02d},{5000 - s}" for s in range(10)]
+    p = tmp_path / "leading_readable_unparsed.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == 10
+    assert any("5 data-bearing rows had no usable timestamp" in w for w in td.load_warnings)
+    assert not any("extrapolated" in w for w in td.load_warnings)
+
+
+def test_load_csv_leading_units_declaration_row_not_data_bearing(tmp_path):
+    # Bug fix: a units-declaration row right after the header (non-null text in every column,
+    # but none of it numeric) must not be counted as "data-bearing" -- a plain notna() check
+    # would wrongly count it and warn "1 data-bearing rows had no usable timestamp." Measured
+    # case: Ballard's "Dilts 31-24 TH DFIT CSV Data.csv", row 2:
+    # "(min) ,(date time), (psi), (bpm), (psi), (bbls)".
+    lines = ["Elapsed (min),Date Time,Pressure (psi),Rate (bpm)"]
+    lines.append("(min) ,(date time), (psi), (bpm)")
+    lines += [f"{s},1/1/24 00:00:{s:02d},{5000 - s},2.0" for s in range(10)]
+    p = tmp_path / "leading_units_row.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == 10
+    assert not any("no usable timestamp" in w for w in td.load_warnings)
+    assert not any("extrapolated" in w for w in td.load_warnings)
+
+
+def test_load_csv_leading_bare_unit_string_row_not_extrapolated(tmp_path):
+    # Bug fix, the other shape: a units row that's blank cells plus a single bare unit string
+    # (non-null in that one column, but not numeric) must not get a fabricated timestamp
+    # extrapolated one median step before the first real sample. Measured case: Black Hills'
+    # "Cope 107 -108 16HS BHP Fracpro.CSV", whose units row is
+    # "                 ,               psi ".
+    lines = ["Date Time,Pressure(psi)"]
+    lines.append("           ,          psi ")
+    lines += [f"1/1/24 00:00:{s:02d},{5000 - s}" for s in range(10)]
+    p = tmp_path / "leading_bare_unit_string_row.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == 10
+    assert not any("extrapolated" in w for w in td.load_warnings)
+    assert not any("no usable timestamp" in w for w in td.load_warnings)
 
 
 # --------------------------------------------------------------------------------------------------
