@@ -194,22 +194,22 @@ def test_update_panel_blanks_warnings_label_when_clean():
 
 
 # --------------------------------------------------------------------------------------------------
-# Gradient rows: "apparent ISIP grad", "Shmin compliance grad", "pore pressure grad" -- each
+# Gradient rows: "apparent ISIP grad (psi/ft)", "Shmin compliance grad (psi/ft)", "pore pressure grad (psi/ft)" -- each
 # inline directly under its parent row.
 # --------------------------------------------------------------------------------------------------
 def test_gradient_rows_present_directly_under_their_parents():
-    for parent, grad in (("apparent ISIP", "apparent ISIP grad"),
-                         ("Shmin compliance", "Shmin compliance grad"),
-                         ("pore pressure", "pore pressure grad")):
+    for parent, grad in (("apparent ISIP", "apparent ISIP grad (psi/ft)"),
+                         ("Shmin compliance", "Shmin compliance grad (psi/ft)"),
+                         ("pore pressure", "pore pressure grad (psi/ft)")):
         assert grad in ui.PANEL_FIELDS
         assert ui.PANEL_FIELDS.index(grad) == ui.PANEL_FIELDS.index(parent) + 1
 
 
 def test_gradient_rows_owned_by_same_step_as_their_parent():
-    assert ui.FIELD_STEP["apparent ISIP grad"] == ui.FIELD_STEP["apparent ISIP"] == "isip"
-    assert (ui.FIELD_STEP["Shmin compliance grad"] == ui.FIELD_STEP["Shmin compliance"]
+    assert ui.FIELD_STEP["apparent ISIP grad (psi/ft)"] == ui.FIELD_STEP["apparent ISIP"] == "isip"
+    assert (ui.FIELD_STEP["Shmin compliance grad (psi/ft)"] == ui.FIELD_STEP["Shmin compliance"]
             == "gfunction")
-    assert (ui.FIELD_STEP["pore pressure grad"] == ui.FIELD_STEP["pore pressure"]
+    assert (ui.FIELD_STEP["pore pressure grad (psi/ft)"] == ui.FIELD_STEP["pore pressure"]
             == "porepressure")
 
 
@@ -227,9 +227,9 @@ def test_update_panel_gradient_rows_render_3_decimals():
                                    "porepressure": "done"})
     stub = _panel_stub(res, state)
     stub._update_panel()
-    assert stub.value_lbls["apparent ISIP grad"].text == "0.654"
-    assert stub.value_lbls["Shmin compliance grad"].text == "0.599"
-    assert stub.value_lbls["pore pressure grad"].text == "0.432"
+    assert stub.value_lbls["apparent ISIP grad (psi/ft)"].text == "0.654"
+    assert stub.value_lbls["Shmin compliance grad (psi/ft)"].text == "0.599"
+    assert stub.value_lbls["pore pressure grad (psi/ft)"].text == "0.432"
 
 
 def test_update_panel_gradient_rows_blank_when_not_visited():
@@ -238,9 +238,9 @@ def test_update_panel_gradient_rows_blank_when_not_visited():
     state = PickState(step_status={})
     stub = _panel_stub(res, state)
     stub._update_panel()
-    assert stub.value_lbls["apparent ISIP grad"].text == "-"
-    assert stub.value_lbls["Shmin compliance grad"].text == "-"
-    assert stub.value_lbls["pore pressure grad"].text == "-"
+    assert stub.value_lbls["apparent ISIP grad (psi/ft)"].text == "-"
+    assert stub.value_lbls["Shmin compliance grad (psi/ft)"].text == "-"
+    assert stub.value_lbls["pore pressure grad (psi/ft)"].text == "-"
 
 
 def test_update_panel_cd_rapid_marks_shmin_compliance_grad_row_too():
@@ -251,8 +251,8 @@ def test_update_panel_cd_rapid_marks_shmin_compliance_grad_row_too():
     state = PickState(step_status={"gfunction": "done"})
     stub = _panel_stub(res, state)
     stub._update_panel()
-    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad*"
-    assert stub.value_lbls["Shmin compliance grad"].text == "0.932"
+    assert stub.name_lbls["Shmin compliance grad (psi/ft)"].text == "Shmin compliance grad* (psi/ft)"
+    assert stub.value_lbls["Shmin compliance grad (psi/ft)"].text == "0.932"
 
 
 def test_update_panel_non_rapid_shmin_compliance_grad_row_plain():
@@ -261,8 +261,8 @@ def test_update_panel_non_rapid_shmin_compliance_grad_row_plain():
     state = PickState(step_status={"gfunction": "done"})
     stub = _panel_stub(res, state)
     stub._update_panel()
-    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
-    assert stub.value_lbls["Shmin compliance grad"].text == "0.920"
+    assert stub.name_lbls["Shmin compliance grad (psi/ft)"].text == "Shmin compliance grad (psi/ft)"
+    assert stub.value_lbls["Shmin compliance grad (psi/ft)"].text == "0.920"
 
 
 def test_update_panel_cd_rapid_no_tvd_leaves_grad_row_plain():
@@ -276,8 +276,8 @@ def test_update_panel_cd_rapid_no_tvd_leaves_grad_row_plain():
     state = PickState(step_status={"gfunction": "done"})
     stub = _panel_stub(res, state)
     stub._update_panel()
-    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
-    assert stub.value_lbls["Shmin compliance grad"].text == "-"
+    assert stub.name_lbls["Shmin compliance grad (psi/ft)"].text == "Shmin compliance grad (psi/ft)"
+    assert stub.value_lbls["Shmin compliance grad (psi/ft)"].text == "-"
 
 
 def test_update_panel_shmin_compliance_grad_asterisk_clears_on_second_refresh():
@@ -286,12 +286,12 @@ def test_update_panel_shmin_compliance_grad_asterisk_clears_on_second_refresh():
                                       shmin_compliance_gradient=None,
                                       shmin_rapid_gradient=0.9325), state)
     stub._update_panel()
-    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad*"
+    assert stub.name_lbls["Shmin compliance grad (psi/ft)"].text == "Shmin compliance grad* (psi/ft)"
 
     stub.res = DerivedResults(shmin_compliance=9200.0, shmin_rapid=None,
                               shmin_compliance_gradient=0.92, shmin_rapid_gradient=None)
     stub._update_panel()
-    assert stub.name_lbls["Shmin compliance grad"].text == "Shmin compliance grad"
+    assert stub.name_lbls["Shmin compliance grad (psi/ft)"].text == "Shmin compliance grad (psi/ft)"
 
 
 def test_format_warnings_text_empty():

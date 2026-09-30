@@ -1089,7 +1089,7 @@ them came from a fallback rather than the primary construction. All three are di
 `ui._update_panel` by mutating `self.name_lbls[...]`. The actual rule is that the gate matches
 whatever makes the value column render a real number instead of `"-"`, so an asterisk can never
 sit next to a `"-"`: two of the three rows blank only on the same `not_visited` check the value
-column uses, but `"Shmin compliance grad*"` has a second blanking path the value column also
+column uses, but `"Shmin compliance grad* (psi/ft)"` has a second blanking path the value column also
 respects (see below) and so needs a second clause in its gate. All reset to plain text on the
 else branch, since the label widgets persist across refreshes. None is explained in the panel
 itself.
@@ -1101,7 +1101,7 @@ itself.
   (C-D clears the contact, and `compute_all` only sets `shmin_rapid` for C-D), so the fallback is
   unambiguous. The G-function title separately carries the verbose
   `Shmin(rapid)=9325 ±75 (ISIP − 100–250)` whenever this is showing.
-- `"Shmin compliance grad*"` -- shadows the `"Shmin compliance*"` row directly above it, same
+- `"Shmin compliance grad* (psi/ft)"` -- shadows the `"Shmin compliance*"` row directly above it, same
   `use_rapid` gate, selecting `shmin_rapid_gradient` instead of `shmin_compliance_gradient` for
   the value. Unlike the parent row there is no `±75` half-range in a gradient value (not worth
   rendering), so the label asterisk is the only marker here. `shmin_rapid_gradient` itself gets

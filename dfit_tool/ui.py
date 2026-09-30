@@ -63,13 +63,13 @@ _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 # The 23 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
-    "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP", "apparent ISIP grad",
+    "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP", "apparent ISIP grad (psi/ft)",
     "eff ISIP (compliance)", "NWB complexity",
-    "contact P", "Shmin compliance", "Shmin compliance grad",
+    "contact P", "Shmin compliance", "Shmin compliance grad (psi/ft)",
     "Shmin tangent", "Shmin variable", "Shmin Liberty",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
-    "delta closure", "pore pressure", "pore pressure grad",
+    "delta closure", "pore pressure", "pore pressure grad (psi/ft)",
     "Shmin stiffness",
 ]
 
@@ -84,14 +84,14 @@ FIELD_STEP = {
     "Vinj (bbl)": "injection",
     "qmax (bpm)": "injection",
     "apparent ISIP": "isip",
-    "apparent ISIP grad": "isip",
+    "apparent ISIP grad (psi/ft)": "isip",
     "eff ISIP (compliance)": "gfunction",
     # Needs the isip pick (apparent ISIP) and the gfunction pick (the reference eff ISIP);
     # gfunction is the later of the two, same precedent as "net (compliance)".
     "NWB complexity": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
-    "Shmin compliance grad": "gfunction",
+    "Shmin compliance grad (psi/ft)": "gfunction",
     "tc compliance (min)": "gfunction",
     "net (compliance)": "gfunction",
     "Shmin tangent": "tangent",
@@ -103,7 +103,7 @@ FIELD_STEP = {
     "tc variable (min)": "tangent",
     "net (variable)": "tangent",
     "pore pressure": "porepressure",
-    "pore pressure grad": "porepressure",
+    "pore pressure grad (psi/ft)": "porepressure",
     # Comparison-only fourth Shmin estimate (URTeC-2019-123 A.8/A.9 relative stiffness) -- no
     # panel gradient row, same precedent as "Shmin Liberty" (gradient is CSV-only).
     "Shmin stiffness": "stiffness",
@@ -427,7 +427,6 @@ class DfitApp:
         panel.bind("<Configure>", _on_panel_configure)
 
         ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
-        ttk.Label(panel, text="grad rows: psi/ft", foreground="gray").pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
         self.name_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
@@ -1770,7 +1769,7 @@ class DfitApp:
             "Vinj (bbl)": s(r.vinj, "{:.1f}"),
             "qmax (bpm)": s(r.qmax_bpm, "{:.2f}"),
             "apparent ISIP": s(r.apparent_isip),
-            "apparent ISIP grad": s(r.apparent_isip_gradient, "{:.3f}"),
+            "apparent ISIP grad (psi/ft)": s(r.apparent_isip_gradient, "{:.3f}"),
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
             "NWB complexity": s(r.near_wellbore_complexity),
             "contact P": s(r.contact_pressure),
@@ -1778,8 +1777,8 @@ class DfitApp:
                                   else s(r.shmin_compliance)),
             # No "±75" half-range here unlike the parent row -- a gradient of a ±75 psi band
             # isn't worth rendering -- so the label asterisk below is the only rapid-fallback marker.
-            "Shmin compliance grad": s(r.shmin_rapid_gradient if use_rapid
-                                        else r.shmin_compliance_gradient, "{:.3f}"),
+            "Shmin compliance grad (psi/ft)": s(r.shmin_rapid_gradient if use_rapid
+                                                 else r.shmin_compliance_gradient, "{:.3f}"),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
             "Shmin Liberty": s(r.shmin_liberty),
@@ -1794,7 +1793,7 @@ class DfitApp:
             "net (variable)": s(r.net_pressure_variable),
             "delta closure": s(r.delta_closure),
             "pore pressure": s(r.pore_pressure),
-            "pore pressure grad": s(r.pore_pressure_gradient, "{:.3f}"),
+            "pore pressure grad (psi/ft)": s(r.pore_pressure_gradient, "{:.3f}"),
             "Shmin stiffness": s(r.shmin_stiffness),
         }
         for k, v in vals.items():
@@ -1809,10 +1808,10 @@ class DfitApp:
         # tvd_ft > 0 guard. Without the extra clause, a C-D-rapid test with no TVD (e.g. a
         # pressure_is_bhp downhole-gauge record, where TVD is never entered because it's never
         # needed) would render this label with its asterisk over a "-" value.
-        self.name_lbls["Shmin compliance grad"].config(
-            text=("Shmin compliance grad*"
+        self.name_lbls["Shmin compliance grad (psi/ft)"].config(
+            text=("Shmin compliance grad* (psi/ft)"
                   if (use_rapid and gf_visited and r.shmin_rapid_gradient is not None)
-                  else "Shmin compliance grad"))
+                  else "Shmin compliance grad (psi/ft)"))
         # Complexity is referenced to the shared eff ISIP; mark it when that fell back to the tangent
         # one (C-C/C-D clear the contact, so there is no compliance eff ISIP to reference). Same
         # not_visited gate as the value, so the asterisk can never sit next to a "-".
