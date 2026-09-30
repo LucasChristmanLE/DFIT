@@ -348,43 +348,102 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   **XLSX time-series workbooks.** `load_xlsx` opens with openpyxl (`read_only=True,
   data_only=True`); chart sheets are never iterated (`Workbook.worksheets` already excludes
   them, so there's nothing to skip explicitly). Each remaining worksheet is peeked (its first
-  ~60 rows, plus a couple more to look past a units row) for a header row (`_xlsx_find_header`):
-  the first row with >=2 non-empty string cells, at least one matching the same datetime/date/
-  time/timestamp name needles `suggest_channels` uses, with real numeric or datetime data in the
-  next couple of rows below it (deliberately a short lookahead, not a wide one -- a real
-  corpus preamble line can itself hold a "Date"-named cell next to real datetime values, several
-  blank rows above the real header, and a wide lookahead reaches straight past the blanks into
-  that real header/data block and false-positives on the preamble line instead). A units row
-  directly below the header (`_xlsx_row_is_units_row` -- every non-blank cell short and
-  non-numeric: a parenthesized token, a recognized unit word like "psi"/"bpm"/"gal"/"deg F"/
-  "minutes", or a bare date/time-format token like "MM/DD/YY"/"HH:MM:SS") is folded into the
-  header names as `"Name (unit)"` (`_xlsx_fold_unit`, stripping any parens the header already
-  had) before being dropped, so the existing header-suffix unit detection (`_unit_of`) sees it
-  exactly as it would from a CSV -- e.g. a bare "Time" header over a "(hh:mm:ss)" units cell
-  folds to `"Time (hh:mm:ss)"`; a blank header cell with only a units-row label (Southern Ute's
-  unnamed "DeltaP" column) takes that label as its name outright, unparenthesized. When more
-  than one worksheet qualifies, the one with the most data rows (by worksheet dimensions, not a
-  full read) wins. Data cells are converted so `_finish_frame` sees exactly what a CSV would
-  give it (`_xlsx_cell_to_value`): a `datetime` cell becomes a `_PRIMARY_DT_FORMAT` string, a
-  `datetime.time` cell becomes an `"HH:MM:SS"` string, and -- the one XLSX-specific wrinkle -- a
-  datetime column that is exactly midnight in every row AND has a separate companion time column
-  (the same pairing `suggest_channels`/`_companion_time_col` would find, checked against the
-  final folded/deduped column names before any row is converted) is formatted date-only,
-  matching a CSV's own split Date + Time columns and so exercising the exact same FIX-A join.
-  `_companion_time_col` itself was widened for this: a companion match no longer has to be an
-  exact bare `"Time"` column (still tried first, in column order, for every existing CSV shape)
-  -- failing that, a multi-token "...Time"-named column (e.g. bare-named "Real Time" off a
-  folded `"Real Time (HH:MM:SS)"` header) is accepted too, also in column order, which is what
-  pairs Southern Ute's downhole-gauge "Real Date"/"Real Time" split correctly ahead of that same
-  sheet's unrelated "Test Time" (elapsed-minutes) column sitting right after it. Trailing
-  fully-empty rows and columns are dropped (`_xlsx_trim_trailing_empty`); duplicate or blank
-  header cells are made unique the way `pd.read_csv` does (`_xlsx_dedupe_headers`).
-  `sniff_xlsx_data(path) -> bool` is the cheap version of the same header/units-row rule, used
-  by folder mode and `scripts/triage` to tell an actual DFIT time-series workbook apart from the
-  hundreds of non-data `.xlsx` files (summaries, casing tallies, completion calcs, pump
-  schedules, production tallies) a real corpus root also contains: it stops at the first
-  qualifying sheet and never raises -- a corrupt or password-protected workbook just reads as
-  "not data".
+  ~60 rows, plus a couple more to look past any leading label/units rows) for a header row
+  (`_xlsx_find_header`): the first row with >=2 non-empty string cells, at least one matching the
+  same datetime/date/time/timestamp name needles `suggest_channels` uses, no real number or
+  datetime/date/time value anywhere in the row ITSELF, and real, DATA-SHAPED numeric or datetime
+  content in the next couple of rows below it (`_xlsx_data_window`/`_xlsx_looks_like_data_rows`):
+  pooled across those rows, at least half the non-empty cells must be numeric/datetime AND that
+  data must span >= 2 distinct columns -- a plain "any cell numeric" rule (the original one) lets
+  a key/value preamble line ("Label:", one number or date next to it) through, since a pooled
+  50%-numeric key/value pair can still land at exactly 50% while never spanning more than one
+  "value" column; requiring >=2 columns is what tells a genuine multi-channel data row apart from
+  that shape even when the fraction alone would pass. The lookahead window itself skips past up
+  to a few consecutive PURELY textual rows first (every non-blank cell a string, none a number or
+  date) -- a units-declaration row is always one of these, but so is any other all-text row a
+  real file inserts between the header and its data (a descriptive label line, or a second units
+  row using a unit word this tool doesn't otherwise recognize, e.g. a bare "%") -- since real DFIT
+  data never legitimately starts with a run of cells that are ALL text, even a key/value
+  preamble's own one real value stops the skip immediately. A blank header cell that has real text
+  directly ABOVE it is filled from that row (`_xlsx_merge_two_row_header`) before anything else
+  runs, which is what recovers a genuine two-row header (channel names split across the row above
+  "Date, Time, ..., FluidIdx, StageIdx") without ever overwriting a header cell that already has
+  its own text. A units row directly below the header (`_xlsx_row_is_units_row` -- every non-blank
+  cell short and non-numeric: a parenthesized token, a recognized unit word like "psi"/"bpm"/
+  "gal"/"deg F"/"minutes", or a bare date/time-format token like "MM/DD/YY"/"HH:MM:SS") is folded
+  into the header names as `"Name (unit)"` (`_xlsx_fold_unit`, stripping any parens the header
+  already had) before being dropped, so the existing header-suffix unit detection (`_unit_of`)
+  sees it exactly as it would from a CSV -- e.g. a bare "Time" header over a "(hh:mm:ss)" units
+  cell folds to `"Time (hh:mm:ss)"`; a blank header cell with only a units-row label (Southern
+  Ute's unnamed "DeltaP" column) takes that label as its name outright, unparenthesized. When more
+  than one worksheet qualifies, the one with the most REAL data rows wins (`_xlsx_count_data_rows`,
+  a cheap row walk that stops after 1000 consecutive blank rows) -- never `ws.max_row`/
+  `ws.dimensions`, which a worksheet's declared `<dimension>` can badly over-report (a sheet with
+  669 real rows reporting `max_row == 1,047,735`, an inflated "used range" from stray formatting
+  far past the last real row) or under-report (a missing `<dimension>` falls back to whatever
+  openpyxl defaults to, often 1, which would otherwise rank a real data sheet below a notes sheet).
+  Data cells are converted so `_finish_frame` sees exactly what a CSV would give it
+  (`_xlsx_cell_to_value`): a `datetime` cell becomes a `_PRIMARY_DT_FORMAT` string, or, when it
+  carries a nonzero microsecond, the fractional-seconds fast-path format instead (so a
+  millisecond-stamped gauge workbook isn't truncated to whole seconds); a `datetime.time` cell
+  becomes an `"HH:MM:SS"` string (likewise `"HH:MM:SS.%f"` under a nonzero microsecond); and --
+  the one XLSX-specific wrinkle -- a datetime CELL that is exactly midnight, in a column that also
+  has a separate companion time column (the same pairing `suggest_channels`/`_companion_time_col`
+  would find, checked against the final folded/deduped column names before any row is converted),
+  is formatted date-only -- this is a per-CELL check, not a whole-column one: a non-midnight cell
+  in that same column still gets the full datetime format, exactly like a CSV's own split Date +
+  Time columns and so exercising the same FIX-A join either way. `parse_datetime` also carries a
+  fast path for `"03-26-2018_16:44:05"`-shaped stamps (dashes, an underscore separator, no AM/PM --
+  a real Caprito Petroleum corpus shape), shared with the CSV loader since both funnel through
+  this one function. Trailing fully-empty rows and columns are dropped (`_xlsx_trim_trailing_empty`,
+  which does not know about merged cells: a merged header cell's non-anchor columns still read as
+  blank and become `"Unnamed: N"`); duplicate or blank header cells are made unique the way
+  `pd.read_csv` does (`_xlsx_dedupe_headers`).
+
+  `_companion_time_col`'s own rule (shared with the CSV loader) additionally excludes a multi-token "...Time"
+  name that reads as elapsed/relative rather than a wall-clock ("Elapsed Time", "Test Time", "Delta
+  Time", "Duration Time" are never eligible at all, regardless of column order) and prefers a name
+  that reads as a genuine time-of-day ("Real Time", "Clock Time") over any other multi-token
+  "...Time" column when more than one is otherwise eligible -- an exact bare `"Time"` column still
+  always wins outright, in column order, unaffected by either rule. A name match alone is still not
+  enough: `_finish_frame` (shared by both loaders) also vets the companion's own sampled VALUES
+  (`_companion_is_time_of_day`) and refuses to join it unless they are themselves predominantly
+  bare time-of-day, not a second full datetime -- e.g. a "Job Time" column holding
+  `"04/10/2016 12:00:00"`-shaped values beside a bare "Date" column is a real, independent
+  datetime candidate in its own right, never a time-of-day pair to join with "Date".
+
+  `sniff_xlsx_data(path) -> bool` is the cheap version of the same header rule, used by folder mode
+  and `scripts/triage` to tell an actual DFIT time-series workbook apart from the hundreds of
+  non-data `.xlsx` files (summaries, casing tallies, completion calcs, pump schedules, production
+  tallies) a real corpus root also contains: it stops at the first qualifying sheet and never
+  raises -- a corrupt or password-protected workbook just reads as "not data". It is implemented
+  as a direct zip/XML peek (`_xlsx_worksheet_parts`, `_xlsx_zip_peek_rows`,
+  `_xlsx_zip_shared_strings`), not by opening the workbook with openpyxl: only the first ~63 rows
+  of each worksheet part's raw XML are ever stream-parsed (`iterparse`, not a full-DOM read), and
+  `sharedStrings.xml` is read only up to the largest string index any peeked cell actually
+  references. `_xlsx_worksheet_parts` resolves the real worksheet zip members via
+  `xl/workbook.xml`'s own `<sheets>` list and `xl/_rels/workbook.xml.rels` (falling back to the
+  plain `xl/worksheets/sheetN.xml` naming convention if those parts are missing or malformed),
+  which is what excludes chart/dialog/macro sheets without ever opening them; each raw cell's
+  type (`t="s"` shared-string, `"str"`/`"inlineStr"` inline string, `"b"` boolean, `"n"`/untyped
+  number -- a date/time cell is ALSO just a plain number in the raw XML, with no style lookup
+  needed since the header rule treats a number and a date identically) is converted to the same
+  shape openpyxl's `values_only` rows would give `_xlsx_find_header`. Both cell gaps (a blank cell
+  is usually omitted from a row's XML, not written out empty) AND ROW gaps (a fully-blank row is
+  routinely omitted from the XML too) are padded back in from each cell's/row's own `r` attribute
+  -- the row-gap padding matters just as much as the column one: without it, a real row's text is
+  unchanged but its INDEX silently shifts earlier than its true worksheet row number by however
+  many blank rows preceded it, which can land `_xlsx_find_header`'s scan on (or reject) entirely
+  the wrong row purely by coincidence of how many blank rows happened to sit above it. Measured:
+  ~0.18s -> ~32s scanning a real corpus folder once the openpyxl-based sniff was gated into
+  `store._group_data_files`, ~10s for the same ~640-file check with this zip-peek version -- most
+  of the openpyxl cost was its own per-file open, which pays for the whole worksheet part's XML
+  structure regardless of how many rows are asked for. Checked against openpyxl's own
+  `_xlsx_find_header`-based sniff on the full 643-file non-questionnaire corpus: every
+  disagreement traced to a genuine correction from the header-tightening rule above (a completion/
+  survey/summary workbook the old unbounded-lookahead rule let through, or a real Date/Time/Rate/
+  Pressure job-log/pump-data sheet the old rule's narrower, non-skipping lookahead was too short to
+  reach past an intervening units row), none a regression.
 - **Interaction (matplotlib only, no Tkinter).** `picks.py` has the event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`,
   `SpanController`, `ModifierSpanController`, `HoverCursorController`, and the
@@ -393,21 +452,41 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   the per-step `seed_*` functions. `plots.py` has the `render_*` renderers. `sliders.py`
   has `PanRangeSlider`.
 - **Folder-mode persistence.** `store.py` is Tk-free, like `model.py`, so it is unit-testable
-  headless. `scan_root` does the depth-1 scan of an opened root: one `TestEntry` per immediate
-  subdirectory holding data files (folder layout), plus one per loose data file or same-stem
-  csv+dbs+xlsx group directly in the root (flat layout); a loose-file entry whose test_id
-  collides with a subfolder entry is dropped in favor of the subfolder (with a warning attached)
-  rather than crashing the queue on a duplicate iid. `TestEntry` gains an `xlsx_path` alongside
-  `csv_path`/`dbs_path`; `_group_data_files` groups `.csv`/`.dbs` files by stem unconditionally
-  but gates a `.xlsx` file through two more checks before it counts as a data file at all -- it
-  must not be a questionnaire or Excel lock file (`questionnaire.is_questionnaire_filename`) and
-  it must actually sniff as time-series data (`io_load.sniff_xlsx_data`, which opens and peeks
-  the workbook) -- since the corpus has roughly 640 non-questionnaire `.xlsx` files that are
-  summaries/tallies/schedules, not DFIT records. This makes opening a folder with many
-  candidate `.xlsx` files noticeably slower than one with none (measured: ~0.18s -> ~32s
-  scanning `aa_DJ Basin`, 113 candidate `.xlsx` files, each opened once to sniff) -- an accepted
-  cost of the gate, not a bug. `available_sources`/`data_path` add `"XLSX"` after `"CSV"`/
-  `"DBS"`. Picks persist to a per-test
+  headless. `scan_root` walks the ENTIRE opened root, any depth (`os.walk`, not depth-1): one
+  `TestEntry` per stem group of data files in each directory it visits, keyed by a path-qualified
+  `test_id` (`_entries_for_dir`) -- one `TestEntry` per immediate subdirectory holding data files
+  (folder layout), plus one per loose data file or same-stem csv+dbs+xlsx group directly in the
+  root (flat layout); a loose-file entry whose test_id collides with a subfolder entry is dropped
+  in favor of the subfolder (with a warning attached) rather than crashing the queue on a
+  duplicate iid. `TestEntry` gains an `xlsx_path` alongside `csv_path`/`dbs_path`;
+  `_group_data_files` groups `.csv`/`.dbs` files by stem unconditionally but gates a `.xlsx` file
+  through three more checks before it counts as a data file at all -- it must not be an Excel
+  lock file (its name starts with `"~$"`, checked explicitly; NOT covered by
+  `is_questionnaire_filename`, which only ever returns True for a name that also contains
+  "questionnaire" -- a lock file almost never does), must not be a questionnaire
+  (`questionnaire.is_questionnaire_filename`), and must actually sniff as time-series data
+  (`io_load.sniff_xlsx_data`, which opens and peeks the workbook) -- since the corpus has roughly
+  640 non-questionnaire `.xlsx` files that are summaries/tallies/schedules, not DFIT records.
+  This makes opening a folder with many candidate `.xlsx` files somewhat slower than one with
+  none (measured: ~0.18s -> ~2.9s scanning `aa_DJ Basin`, 258 candidate `.xlsx` files, each
+  sniffed once via the zip-peek in `io_load.sniff_xlsx_data` above -- openpyxl-based sniffing
+  measured ~32s over the same folder before that) -- an accepted cost of the gate, not a bug.
+
+  **test_id stability.** Adding a data `.xlsx` must never change the test_id of an existing
+  csv/dbs test: an `.xlsx` whose stem matches a csv/dbs group joins that group as its XLSX source
+  (`_group_data_files` already groups purely by stem, unconditionally); any other `.xlsx` becomes
+  its own entry. `_entries_for_dir`'s "does this directory collapse to `test_id = rel`" decision
+  counts only csv/dbs stem groups when the directory has any at all -- an xlsx-only stem group
+  never participates in that count and never collapses to `rel` itself while a csv/dbs group is
+  also present, so a lone csv/dbs test's id can't be pushed out to `rel/<stem>` just because an
+  unrelated xlsx export was discovered alongside it. A directory with no csv/dbs files at all
+  (xlsx-only) keeps the original single-total-stem-group rule, unchanged. Verified against a full
+  `scan_root("C:\DFIT Data")` comparison, pre- and post-xlsx-support: all 3269 pre-existing
+  csv/dbs test_ids are unchanged; the xlsx-only additions are all new ids, never colliding with an
+  existing one (every `test_id` within one `_entries_for_dir` call is already unique by
+  construction -- keyed on a directory's own distinct stems).
+
+  `available_sources`/`data_path` add `"XLSX"` after `"CSV"`/`"DBS"`. Picks persist to a per-test
   `<folder>/<test_id>.dfit_picks.json`, written atomically (temp file + `os.replace`), same
   contract as `PickState.to_json`/`from_json`. `status_for` derives a test's queue status
   ("new"/"in_progress"/"done"/"skipped") from its saved `PickState`: `"done"` and
@@ -420,6 +499,20 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   per-root `dfit_log.csv`; `build_log_row` maps one test's `PickState`/`DerivedResults` into a
   `LOG_COLUMNS`-shaped row (it computes nothing itself), and `upsert_log_row` replaces-or-
   appends by `test_id`.
+
+  **`scripts/triage`'s xlsx handling.** `features.scan_folders` groups files by well root on top
+  of `store.scan_root`, so it inherits the sniff-gated `.xlsx` inclusion above; its own two
+  xlsx-specific rules live in `apply.py`. A non-keeper `.xlsx` is never quarantined (or moved at
+  all) when `apply.plan_moves` executes a decision -- only a non-keeper csv/dbs file is, same as
+  before xlsx was ever part of a scan -- since an xlsx is additive raw-export data, routinely a
+  duplicate or near-duplicate of a well's own csv/dbs pair rather than a rejected candidate the
+  analyst actually reviewed as such; an xlsx the analyst DID pick as a keeper is unaffected and
+  still copied to the destination well folder like any other keeper. And the per-group decision
+  fingerprint (`ledger.group_files_sig`, guarding against a stale decision applying to a
+  since-changed file set -- see `apply._exclusion_reason`) is computed over
+  `features.sig_files_for(scan.files)`: csv/dbs files only, when the group has any at all, else
+  its xlsx files -- so a same-well `.xlsx` discovered by a later re-scan never itself makes an
+  already-decided csv/dbs group's decision go stale.
 - **Shell.** `ui.py` (`DfitApp`) is the only Tkinter consumer. It wires the per-step
   pickers to a recompute-and-redraw loop and holds no interpretation logic. `app.py` just
   launches it, accepting either a file or a folder path on the command line.
@@ -1294,7 +1387,6 @@ ambiguity, not fixed.
   from the build are under `docs/superpowers/`.
 - The master log is CSV only; a parquet mirror alongside `dfit_log.csv` is a deferred
   extension point (`store.py`'s module docstring), not yet implemented.
-- Folder-mode scanning is depth-1 only: nested subfolders (depth 2+) are never scanned.
 - No concurrency control: folder mode assumes a single interpreter working a root at a time.
   Two people (or two windows) open on the same root last-write-wins on both the picks JSON and
   `dfit_log.csv` -- there is no lock file or merge.
@@ -1402,3 +1494,19 @@ ambiguity, not fixed.
   each is consistent with its own, good-or-bad, region). The file currently reports a reasonable-
   looking but wrong ~3,850h; a genuine fix would need a block-aware version of the outlier guard,
   out of scope here.
+- A headerless raw gauge workbook (its first row is already data, no header row at all) is never
+  picked up by `_xlsx_find_header`, which requires a text header row before any data -- there is
+  no fallback that treats row 1 itself as the data start.
+- A multi-series XLSX layout with one Time column PER channel (e.g. Strathcona's `_487.xlsx`,
+  where each pressure/rate/temperature series carries its own adjacent time column rather than
+  sharing one) is not specifically handled: `load_xlsx` still picks exactly one datetime column
+  and one optional companion for the whole sheet, the same as a CSV, so only the channel(s)
+  aligned to that one chosen time base load with a meaningful time axis.
+- A very large workbook (Anderson/Tank DFIT.xlsx, 85-97 MB) loads slowly, or can appear to hang,
+  since `load_xlsx` still has to read every real data row of the winning sheet into memory once
+  it's chosen (`_xlsx_count_data_rows`'s cheap early-stopping walk only bounds the SHEET-CHOICE
+  cost, not the eventual full read) -- and it runs on the Tkinter main thread, so the UI is
+  unresponsive for the duration. Not fixed here.
+- A merged header cell becomes `"Unnamed: N"` for every column except its own anchor (top-left)
+  cell -- `_xlsx_trim_trailing_empty`/`_xlsx_dedupe_headers` have no merged-cell awareness, so a
+  header merged across several columns effectively names only the first of them.
