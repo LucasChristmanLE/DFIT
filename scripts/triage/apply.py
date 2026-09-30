@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from triage import atomic, basins
-from triage.features import FolderScan
+from triage.features import FolderScan, sig_files_for
 from triage.ledger import Ledger, group_files_sig
 
 # Characters Windows forbids in a path component, plus a trailing dot/space -- a questionnaire
@@ -217,13 +217,15 @@ def _exclusion_reason(scan: FolderScan, decision) -> str | None:
       unconditionally: an ambiguous well is excluded regardless of what its ledger decision says,
       fingerprint match or not -- there is no group identity to even check a fingerprint against.
     - `"stale_decision"` (this round's FIX 2): the decision's `files_sig` doesn't match the
-      group's CURRENT fingerprint (`group_files_sig`) -- including a legacy decision with no
-      `files_sig` at all, which can never match. The exact same staleness `review_app.py` treats
-      as "resurface for review"; here it means never silently applying this decision to files no
-      human reviewed in this shape."""
+      group's CURRENT fingerprint (`group_files_sig`, over `sig_files_for(scan.files)` -- csv/dbs
+      only when the group has any, else its xlsx files -- so a later-discovered same-well xlsx
+      never itself makes an already-decided csv/dbs group's fingerprint stale) -- including a
+      legacy decision with no `files_sig` at all, which can never match. The exact same staleness
+      `review_app.py` treats as "resurface for review"; here it means never silently applying
+      this decision to files no human reviewed in this shape."""
     if scan.n_wells != 1:
         return "ambiguous_well"
-    current_sig = group_files_sig(f.sig for f in scan.files)
+    current_sig = group_files_sig(f.sig for f in sig_files_for(scan.files))
     if not decision.files_sig or decision.files_sig != current_sig:
         return "stale_decision"
     return None

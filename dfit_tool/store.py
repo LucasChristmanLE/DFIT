@@ -149,14 +149,17 @@ def _group_data_files(filenames: list[str], dirpath: str) -> dict[str, dict[str,
     name}}`. Files that are not `.csv`/`.dbs`/`.xlsx` (case-insensitive) are skipped, as is
     `LOG_FILENAME` (case-insensitive, it is our own log, not a test).
 
-    An `.xlsx` file has two more gates before it counts as a data file at all: it must not be a
-    questionnaire or an Excel lock file (`is_questionnaire_filename` covers both -- see its own
-    docstring), and it must actually sniff as time-series data (`io_load.sniff_xlsx_data`,
-    which opens and peeks the workbook, hence `dirpath` being needed here at all). The corpus has
-    roughly 640 non-questionnaire `.xlsx` files that are summaries, casing tallies, completion
-    calcs, pump schedules, or production tallies rather than DFIT records; the sniff is what
-    keeps those out of the queue. `.csv`/`.dbs` need no such gate -- every file of either
-    extension in the corpus is a data file.
+    An `.xlsx` file has three more gates before it counts as a data file at all: it must not be
+    an Excel lock file (its name starts with `"~$"`, checked explicitly here -- NOT covered by
+    `is_questionnaire_filename`, which only ever returns True for a name that also contains
+    "questionnaire"; a lock file almost never does, so without this explicit check one would fall
+    through to the sniff below and get opened for nothing before failing to parse as a workbook
+    at all), must not be a questionnaire (`is_questionnaire_filename`), and must actually sniff
+    as time-series data (`io_load.sniff_xlsx_data`, which opens and peeks the workbook, hence
+    `dirpath` being needed here at all). The corpus has roughly 640 non-questionnaire `.xlsx`
+    files that are summaries, casing tallies, completion calcs, pump schedules, or production
+    tallies rather than DFIT records; the sniff is what keeps those out of the queue. `.csv`/
+    `.dbs` need no such gate -- every file of either extension in the corpus is a data file.
 
     Filenames within one directory are unique, so each (stem, ext) maps to exactly one name --
     no "pick first" ambiguity to warn about."""
@@ -170,6 +173,8 @@ def _group_data_files(filenames: list[str], dirpath: str) -> dict[str, dict[str,
         elif low.endswith(".dbs"):
             ext = "dbs"
         elif low.endswith(".xlsx"):
+            if name.startswith("~$"):
+                continue
             if is_questionnaire_filename(name):
                 continue
             if not io_load.sniff_xlsx_data(os.path.join(dirpath, name)):
@@ -187,16 +192,37 @@ def _entries_for_dir(root: str, dirpath: str, filenames: list[str]) -> list[Test
     `root` get `test_id = stem`; a non-root dir with a single stem group collapses to
     `test_id = rel`; a non-root dir with multiple stem groups gets `test_id = rel + "/" + stem`.
     `picks_basename` is always the local stem, so the picks file stays unique within its folder
-    regardless of how test_id is qualified."""
+    regardless of how test_id is qualified.
+
+    The "single stem group" collapse test counts only csv/dbs stem groups whenever the directory
+    has any at all -- an xlsx-only stem group never participates in that count, and never
+    collapses to `rel` itself while a csv/dbs group is also present. Adding a data `.xlsx` must
+    never change the test_id of an existing csv/dbs test: an `.xlsx` whose stem matches a csv/dbs
+    group simply joins that group as its XLSX source (``_group_data_files`` already does this,
+    unconditionally, by stem), so it can only ever affect a group's test_id by changing how many
+    stem groups the directory has -- which is exactly what this carve-out prevents. A directory
+    with no csv/dbs groups at all (xlsx-only) keeps the original one-stem-total rule, unchanged.
+    The extra xlsx-only stems in a directory that also has a csv/dbs group each get their own
+    `rel/<stem>` id, same as the "multiple stem groups" branch below -- since every id in
+    `by_stem` is keyed on a distinct `stem` within this one directory, `rel/<stem>` can never
+    collide with another entry from the SAME `_entries_for_dir` call (the collapsed group's own
+    `rel` has no stem suffix at all, so it can't collide with one either); a cross-directory
+    collision is a pre-existing, separately-handled case (`scan_root`'s deeper-folder-wins dedup).
+    """
     by_stem = _group_data_files(filenames, dirpath)
     if not by_stem:
         return []
     rel = os.path.relpath(dirpath, root).replace(os.sep, "/")
+    csv_dbs_stems = [s for s, by_ext in by_stem.items() if "csv" in by_ext or "dbs" in by_ext]
+    if csv_dbs_stems:
+        collapse_stem = csv_dbs_stems[0] if len(csv_dbs_stems) == 1 else None
+    else:
+        collapse_stem = next(iter(by_stem)) if len(by_stem) == 1 else None
     entries = []
     for stem, by_ext in by_stem.items():
         if rel == ".":
             test_id = stem
-        elif len(by_stem) == 1:
+        elif stem == collapse_stem:
             test_id = rel
         else:
             test_id = f"{rel}/{stem}"

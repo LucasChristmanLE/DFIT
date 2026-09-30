@@ -141,3 +141,75 @@ def test_scan_root_mixed_csv_dbs_xlsx_same_stem_merges(tmp_path):
     assert entry.dbs_path == str(sub / "well5.dbs")
     assert entry.xlsx_path == str(sub / "well5.xlsx")
     assert entry.available_sources == ["CSV", "DBS", "XLSX"]
+
+
+# --------------------------------------------------------------------------------------------------
+# test_id stability (FIX 1): adding an xlsx must never change an existing csv/dbs test's id
+# --------------------------------------------------------------------------------------------------
+def test_scan_root_xlsx_only_extra_stem_does_not_shift_csv_test_id(tmp_path):
+    # Before xlsx-only stems counted toward the collapse decision, adding this unrelated data
+    # xlsx to the folder would have grown by_stem from 1 to 2 groups and pushed well6's own
+    # test_id from "well6" out to "well6/well6" -- silently invalidating any already-saved
+    # picks JSON keyed on the old id.
+    sub = tmp_path / "well6"
+    sub.mkdir()
+    (sub / "well6.csv").write_text("a")
+    _write_data_xlsx(sub / "unrelated_pump_log.xlsx")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert {e.test_id for e in entries} == {"well6", "well6/unrelated_pump_log"}
+    csv_entry = next(e for e in entries if e.test_id == "well6")
+    assert csv_entry.csv_path == str(sub / "well6.csv")
+    xlsx_entry = next(e for e in entries if e.test_id == "well6/unrelated_pump_log")
+    assert xlsx_entry.xlsx_path == str(sub / "unrelated_pump_log.xlsx")
+    assert xlsx_entry.csv_path is None
+
+
+def test_scan_root_two_csv_dbs_groups_plus_xlsx_only_stem_all_qualified(tmp_path):
+    # With >1 csv/dbs stem group already, the "multiple stem groups" branch already qualifies
+    # every stem including an extra xlsx-only one -- this just confirms the collapse-candidate
+    # counting change doesn't disturb that pre-existing, already-correct case.
+    sub = tmp_path / "well7"
+    sub.mkdir()
+    (sub / "a.csv").write_text("a")
+    (sub / "b.csv").write_text("a")
+    _write_data_xlsx(sub / "c.xlsx")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert {e.test_id for e in entries} == {"well7/a", "well7/b", "well7/c"}
+
+
+def test_scan_root_xlsx_only_folder_keeps_old_single_stem_collapse(tmp_path):
+    # No csv/dbs at all in this folder -- the collapse rule falls back to the original
+    # single-total-stem-group behavior, unchanged.
+    sub = tmp_path / "well8"
+    sub.mkdir()
+    _write_data_xlsx(sub / "well8.xlsx")
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert [e.test_id for e in entries] == ["well8"]
+    assert entries[0].xlsx_path == str(sub / "well8.xlsx")
+
+
+# --------------------------------------------------------------------------------------------------
+# lock files (FIX 8): a "~$..." file is excluded outright, before ever being sniffed
+# --------------------------------------------------------------------------------------------------
+def test_scan_root_excludes_xlsx_lock_file_without_questionnaire_in_name(tmp_path):
+    # A lock file for a DATA workbook (no "questionnaire" in its name at all) is not caught by
+    # is_questionnaire_filename's own "questionnaire" substring check -- only the explicit "~$"
+    # prefix check in _group_data_files excludes it. Written as a byte-identical copy of a real
+    # sniffable workbook, so this proves the explicit filename check fires (and skips ever
+    # opening/sniffing it), not merely that a garbage lock file happens to fail the sniff.
+    sub = tmp_path / "well9"
+    sub.mkdir()
+    real = sub / "well9.xlsx"
+    _write_data_xlsx(real)
+    (sub / "~$well9.xlsx").write_bytes(real.read_bytes())
+
+    entries = store.scan_root(str(tmp_path))
+
+    assert len(entries) == 1
+    assert entries[0].xlsx_path == str(real)

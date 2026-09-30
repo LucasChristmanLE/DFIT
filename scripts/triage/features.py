@@ -155,6 +155,18 @@ class FolderScan:
     suggested: list[str] = field(default_factory=list)   # paths pre-selected as keepers
 
 
+# FIX (xlsx fingerprint stability): the files a decision's fingerprint (`ledger.group_files_sig`)
+# is computed over. Adding a data `.xlsx` to a well-root group that already has csv/dbs files
+# must never change that group's fingerprint -- an analyst's already-recorded decision on the
+# csv/dbs files must stay current even after a later re-scan discovers a same-well xlsx export
+# sitting alongside them. So the fingerprint is computed over the group's csv/dbs files ONLY when
+# it has any; an xlsx-only group (no csv/dbs at all) falls back to its xlsx files instead, so it
+# still gets a real, non-empty fingerprint of its own.
+def sig_files_for(files: list[FileFeatures]) -> list[FileFeatures]:
+    csv_dbs = [f for f in files if not f.path.lower().endswith(".xlsx")]
+    return csv_dbs if csv_dbs else files
+
+
 # --------------------------------------------------------------------------------------------------
 # paths
 # --------------------------------------------------------------------------------------------------
