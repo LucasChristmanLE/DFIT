@@ -1936,15 +1936,27 @@ def _looks_like_time_of_day_only(sample: pd.Series) -> bool:
     return bool(sample.str.match(_TIME_OF_DAY_RE).all())
 
 
+# _companion_is_time_of_day tolerates up to this fraction of a companion's sampled values NOT
+# matching the bare time-of-day shape before vetoing it -- a real corpus companion column
+# routinely has one leading units-declaration row (e.g. "(hh:mm:ss)", "HH:mm:ss") sampled right
+# alongside thousands of genuine "14:03:18"-shaped rows (`_sample_series` always includes index 0
+# via its linspace), which `_looks_like_time_of_day_only`'s strict ALL-match would otherwise
+# reject outright over one non-data row. A column that is actually a second full datetime (the
+# case this veto exists to catch) fails far more broadly than one stray row, so this margin does
+# not let one through.
+_COMPANION_TIME_OF_DAY_MIN_FRACTION = 0.9
+
+
 def _companion_is_time_of_day(comp: str, df: pd.DataFrame) -> bool:
-    """True if `comp`'s own sampled VALUES (not just its name) are shaped like a bare
-    time-of-day, never a full datetime -- see ``_looks_like_time_of_day_only``, over the same
-    bounded sample ``_score_datetime_candidate`` uses. Used to veto a same-named "...Time"
-    companion column (``_companion_time_col`` matches purely by name) whose actual values are a
-    second, independent full-datetime column -- e.g. a "Job Time" wall-clock column sitting next
-    to a bare "Date" column -- rather than a genuine time-of-day pair to join with it. `comp` not
-    being a real column at all (shouldn't happen given how this is called, but never trusted)
-    reads as "not time-of-day" -- there's nothing to join.
+    """True if at least ``_COMPANION_TIME_OF_DAY_MIN_FRACTION`` of `comp`'s own sampled VALUES
+    (not just its name) are shaped like a bare time-of-day, never a full datetime -- over the
+    same bounded sample ``_score_datetime_candidate`` uses (see ``_TIME_OF_DAY_RE``). Used to
+    veto a same-named "...Time" companion column (``_companion_time_col`` matches purely by
+    name) whose actual values are a second, independent full-datetime column -- e.g. a "Job
+    Time" wall-clock column sitting next to a bare "Date" column -- rather than a genuine
+    time-of-day pair to join with it. `comp` not being a real column at all (shouldn't happen
+    given how this is called, but never trusted) reads as "not time-of-day" -- there's nothing to
+    join.
 
     Normalizes a ``HH:MM:SS:mmm`` colon-milliseconds shape (``_normalize_ms_colon``, DEFECT 1b)
     before matching -- the same rewrite the real FIX A join applies -- so a genuine time-of-day
@@ -1954,7 +1966,10 @@ def _companion_is_time_of_day(comp: str, df: pd.DataFrame) -> bool:
     if comp not in df.columns:
         return False
     sample = _normalize_ms_colon(_sample_series(df[comp]).astype("string"))
-    return _looks_like_time_of_day_only(sample)
+    if len(sample) == 0:
+        return False
+    frac = float(sample.str.match(_TIME_OF_DAY_RE).fillna(False).mean())
+    return frac >= _COMPANION_TIME_OF_DAY_MIN_FRACTION
 
 
 def _score_datetime_candidate(df: pd.DataFrame, col: str) -> float:

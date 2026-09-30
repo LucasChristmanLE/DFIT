@@ -36,6 +36,7 @@ from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from triage import features, figure
+from triage.features import sig_files_for
 from triage.ledger import Ledger, group_files_sig
 
 PER_PAGE = 8
@@ -108,9 +109,11 @@ class ReviewApp:
         # different (usually smaller, pre-grouping-change) file set can be told apart from one
         # that is still current -- see `Ledger.status_if_current`. Computed once here rather than
         # per-navigation, since it only changes across a fresh `scan`/`review` process, not within
-        # one review session.
+        # one review session. Over `sig_files_for(s.files)` (csv/dbs only when the group has any,
+        # else its xlsx files) -- see that function's docstring -- so a later-discovered same-well
+        # xlsx never itself resurfaces an already-decided csv/dbs group as stale.
         self._files_sig_by_rel = {
-            s.rel: group_files_sig(f.sig for f in s.files) for s in self.scans
+            s.rel: group_files_sig(f.sig for f in sig_files_for(s.files)) for s in self.scans
         }
 
         self.root_win = root_win

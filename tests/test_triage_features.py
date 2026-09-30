@@ -1670,3 +1670,33 @@ def test_render_file_png_masks_nan_timestamps_not_just_truncation(tmp_path, monk
     plotted_p = lines[0].get_ydata()
     assert len(plotted_p) == len(expected_p)
     assert np.allclose(plotted_p, expected_p)
+
+
+# --------------------------------------------------------------------------------------------------
+# sig_files_for (xlsx fingerprint stability)
+# --------------------------------------------------------------------------------------------------
+def _feat(path: str, sig: str) -> features.FileFeatures:
+    return features.FileFeatures(path=path, folder=os.path.dirname(path), size_bytes=1, sig=sig)
+
+
+def test_sig_files_for_csv_dbs_only_when_present():
+    files = [
+        _feat("f1.csv", "a"),
+        _feat("f2.dbs", "b"),
+        _feat("f3.xlsx", "c"),
+    ]
+    assert [f.path for f in features.sig_files_for(files)] == ["f1.csv", "f2.dbs"]
+
+
+def test_sig_files_for_xlsx_only_group_falls_back_to_xlsx():
+    files = [_feat("f1.xlsx", "a"), _feat("f2.xlsx", "b")]
+    assert [f.path for f in features.sig_files_for(files)] == ["f1.xlsx", "f2.xlsx"]
+
+
+def test_sig_files_for_case_insensitive_extension():
+    files = [_feat("f1.CSV", "a"), _feat("f2.XLSX", "b")]
+    assert [f.path for f in features.sig_files_for(files)] == ["f1.CSV"]
+
+
+def test_sig_files_for_empty_list():
+    assert features.sig_files_for([]) == []

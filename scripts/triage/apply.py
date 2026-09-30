@@ -244,6 +244,11 @@ def plan_moves(root: str, out_root: str, scans: list[FolderScan], ledger: Ledger
     or its decision stale (a `files_sig` mismatch, including a legacy decision with none at all).
     `plan_warnings` is the human-readable explanation of every such exclusion; call it alongside
     this function so neither silent-skip reason goes unreported.
+
+    A non-keeper `.xlsx` file is never quarantined (or moved at all), only left in place -- see
+    the loop below. Only a non-keeper csv/dbs file is quarantined, same as before xlsx was ever
+    part of a scan. An xlsx the analyst explicitly picked as a keeper is unaffected by this and is
+    still copied to the destination well folder like any other keeper.
     """
     moves: list[Move] = []
     registry: dict[str, str] = {}  # dst -> the src that claimed it, across the whole plan
@@ -268,6 +273,14 @@ def plan_moves(root: str, out_root: str, scans: list[FolderScan], ledger: Ledger
 
         for feat in scan.files:
             if feat.path in keeps:
+                continue
+            if feat.path.lower().endswith(".xlsx"):
+                # A non-keeper xlsx is never quarantined (or moved at all) -- only a non-keeper
+                # csv/dbs file is. An xlsx is additive raw-export data, routinely a duplicate or
+                # near-duplicate of a well's own csv/dbs pair rather than a rejected candidate in
+                # its own right, and quarantining it here would move a file the analyst never
+                # actually reviewed as a keep/reject choice (the keeper xlsx path above is
+                # unaffected -- an xlsx the analyst DID pick as a keeper is still copied there).
                 continue
             rel_to_root = os.path.relpath(feat.path, root)
             dst = os.path.join(root, "_quarantine", rel_to_root)

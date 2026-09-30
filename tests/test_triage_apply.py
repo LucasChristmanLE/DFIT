@@ -29,7 +29,7 @@ for _p in (_REPO_ROOT, _SCRIPTS_DIR):
 
 from triage import apply as apply_mod  # noqa: E402
 from triage.basins import DEFAULT_BASIN  # noqa: E402
-from triage.features import FileFeatures, FolderScan  # noqa: E402
+from triage.features import FileFeatures, FolderScan, sig_files_for  # noqa: E402
 from triage.ledger import FolderDecision, Ledger, group_files_sig  # noqa: E402
 
 
@@ -43,8 +43,11 @@ def _decide(ledger: Ledger, scan: FolderScan, keeps: list[str], status: str = "d
     """`ledger.set` with `files_sig` computed from `scan`'s own current file set (FIX 2 --
     decision fingerprint guard), so `plan_moves`/`plan_warnings` treat the decision as CURRENT
     rather than stale -- the normal case every `plan_moves` test below wants, unless it is
-    specifically exercising staleness itself."""
-    ledger.set(scan.rel, keeps, status, files_sig=group_files_sig(f.sig for f in scan.files))
+    specifically exercising staleness itself. Uses `sig_files_for` (csv/dbs only when the scan
+    has any, else its xlsx files), matching `_exclusion_reason`'s own fingerprint -- a no-op for
+    any scan with no xlsx files at all."""
+    ledger.set(scan.rel, keeps, status,
+               files_sig=group_files_sig(f.sig for f in sig_files_for(scan.files)))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -236,6 +239,117 @@ def test_plan_moves_decided_folder_keep_questionnaire_and_quarantine(monkeypatch
     assert quarantine_mv.dst == os.path.join(str(root), "_quarantine", "CustomerA", "Well1",
                                               "other.csv")
     assert quarantine_mv.skipped == ""
+
+
+def test_plan_moves_non_keeper_xlsx_never_quarantined(monkeypatch, tmp_path):
+    # FIX (xlsx quarantine): a non-keeper .xlsx sitting alongside the keeper/other csv/dbs files
+    # is left exactly where it is -- not quarantined, not moved at all. The non-keeper .csv is
+    # still quarantined, same as before xlsx was ever part of a scan.
+    _fixed_basin(monkeypatch)
+    root = tmp_path
+    folder = root / "CustomerA" / "Well1"
+    keeper = _write(folder / "keeper.dbs", b"keep")
+    other = _write(folder / "other.csv", b"other")
+    extra_xlsx = _write(folder / "raw_pump_log.xlsx", b"xlsx")
+
+    scan = FolderScan(
+        folder=str(folder), rel="CustomerA/Well1", well_name="Well One",
+        files=[
+            FileFeatures(path=keeper, folder=str(folder), size_bytes=4, sig="a",
+                         verdict="likely_dfit"),
+            FileFeatures(path=other, folder=str(folder), size_bytes=5, sig="b",
+                         verdict="too_short"),
+            FileFeatures(path=extra_xlsx, folder=str(folder), size_bytes=4, sig="c",
+                         verdict="too_short"),
+        ],
+    )
+    ledger = Ledger.load(str(root))
+    _decide(ledger, scan, [keeper])
+
+    out_root = str(root / "out")
+    moves = apply_mod.plan_moves(str(root), out_root, [scan], ledger)
+
+    srcs = {m.src for m in moves}
+    assert extra_xlsx not in srcs
+    assert other in srcs
+    assert keeper in srcs
+    by_kind = {m.kind: [mv for mv in moves if mv.kind == m.kind] for m in moves}
+    assert len(by_kind.get("quarantine", [])) == 1
+    assert by_kind["quarantine"][0].src == other
+
+
+def test_plan_moves_keeper_xlsx_still_copied(monkeypatch, tmp_path):
+    # An xlsx the analyst explicitly picked as a keeper is unaffected by the quarantine-skip
+    # above -- it is still copied to the destination well folder like any other keeper.
+    _fixed_basin(monkeypatch)
+    root = tmp_path
+    folder = root / "CustomerA" / "Well1"
+    keeper_xlsx = _write(folder / "keeper.xlsx", b"keep")
+    other = _write(folder / "other.csv", b"other")
+
+    scan = FolderScan(
+        folder=str(folder), rel="CustomerA/Well1", well_name="Well One",
+        files=[
+            FileFeatures(path=keeper_xlsx, folder=str(folder), size_bytes=4, sig="a",
+                         verdict="likely_dfit"),
+            FileFeatures(path=other, folder=str(folder), size_bytes=5, sig="b",
+                         verdict="too_short"),
+        ],
+    )
+    ledger = Ledger.load(str(root))
+    _decide(ledger, scan, [keeper_xlsx])
+
+    out_root = str(root / "out")
+    moves = apply_mod.plan_moves(str(root), out_root, [scan], ledger)
+
+    by_kind = {m.kind: m for m in moves}
+    assert by_kind["keep"].src == keeper_xlsx
+    assert by_kind["keep"].dst == os.path.join(out_root, "TestBasin", "Well One", "keeper.xlsx")
+    assert by_kind["quarantine"].src == other
+
+
+def test_plan_moves_adding_xlsx_to_decided_group_does_not_go_stale(monkeypatch, tmp_path):
+    # FIX (fingerprint stability): a decision recorded against a csv/dbs-only file set must stay
+    # CURRENT once a same-well xlsx is discovered alongside it on a later scan -- the fingerprint
+    # is computed over the csv/dbs files only, so adding the xlsx to `scan.files` afterward must
+    # not flip _exclusion_reason to "stale_decision".
+    _fixed_basin(monkeypatch)
+    root = tmp_path
+    folder = root / "CustomerA" / "Well1"
+    keeper = _write(folder / "keeper.dbs", b"keep")
+    other = _write(folder / "other.csv", b"other")
+
+    original_scan = FolderScan(
+        folder=str(folder), rel="CustomerA/Well1", well_name="Well One",
+        files=[
+            FileFeatures(path=keeper, folder=str(folder), size_bytes=4, sig="a",
+                         verdict="likely_dfit"),
+            FileFeatures(path=other, folder=str(folder), size_bytes=5, sig="b",
+                         verdict="too_short"),
+        ],
+    )
+    ledger = Ledger.load(str(root))
+    _decide(ledger, original_scan, [keeper])
+
+    # A later re-scan discovers a same-well xlsx alongside the original csv/dbs files.
+    extra_xlsx = _write(folder / "raw_pump_log.xlsx", b"xlsx")
+    rescanned = FolderScan(
+        folder=str(folder), rel="CustomerA/Well1", well_name="Well One",
+        files=list(original_scan.files) + [
+            FileFeatures(path=extra_xlsx, folder=str(folder), size_bytes=4, sig="c",
+                         verdict="too_short"),
+        ],
+    )
+
+    assert apply_mod._exclusion_reason(rescanned, ledger.get(rescanned.rel)) is None
+    warnings = apply_mod.plan_warnings([rescanned], ledger)
+    assert warnings == []
+
+    out_root = str(root / "out")
+    moves = apply_mod.plan_moves(str(root), out_root, [rescanned], ledger)
+    by_kind = {m.kind: m for m in moves}
+    assert by_kind["keep"].src == keeper
+    assert extra_xlsx not in {m.src for m in moves}  # non-keeper xlsx, never quarantined either
 
 
 def test_plan_moves_two_keeps_one_folder_share_dest_dir_no_skip(monkeypatch, tmp_path):
