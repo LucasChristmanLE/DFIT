@@ -2759,16 +2759,37 @@ def _xlsx_zip_peek_rows(z: zipfile.ZipFile, name: str, max_rows: int) -> list:
     (an inline string), ``"b"`` (boolean), or ``"n"`` (a plain number -- a date/time cell is ALSO
     stored as a plain number in the raw XML; its number-FORMAT lives in styles.xml, which this
     never reads, but ``_xlsx_find_header``'s rule treats a number and a date identically anyway,
-    so no style lookup is needed here). Returns `[]`, never raises, on any parse failure.
+    so no style lookup is needed here).
+
+    ROWS are gap-filled too, the same way columns are: a `<row>` element also carries its own
+    ``r`` attribute (its real, 1-based row number), and a fully-blank row is routinely omitted
+    from the XML entirely, exactly like a blank cell within a row is. Without padding those gaps
+    back in as empty rows, this function's OWN output list would silently compress -- a real
+    row's TEXT is unchanged, but its INDEX shifts earlier than its true worksheet row number by
+    however many blank rows preceded it, which can make ``_xlsx_find_header``'s scan land on
+    (or reject) entirely the wrong row purely by coincidence of how many blank rows happened to
+    sit above it. Measured corpus case: a "Notes-Well Data" sheet's real row 8 ("Notes:", a long
+    free-text comment that happens to contain the substring "time") shifted to index 6 with no
+    padding, landing its (false-positive) header-candidacy two rows earlier than intended and
+    changing which lookahead rows got checked against it.
+
+    Returns `[]`, never raises, on any parse failure.
     """
     rows: list = []
     try:
         with z.open(name) as f:
             cur: Optional[list] = None
+            cur_row_num: Optional[int] = None
+            next_expected = 1  # 1-based -- the next row NUMBER rows[] should hold, gaps padded
             for event, el in _ET.iterparse(f, events=("start", "end")):
                 tag = el.tag
                 if event == "start" and tag == _XLSX_MAIN_NS + "row":
                     cur = []
+                    r_attr = el.get("r")
+                    try:
+                        cur_row_num = int(r_attr) if r_attr else next_expected
+                    except ValueError:
+                        cur_row_num = next_expected
                 elif event == "end" and tag == _XLSX_MAIN_NS + "c":
                     if cur is not None:
                         col = _xlsx_col_ref_index(el.get("r"))
@@ -2795,8 +2816,26 @@ def _xlsx_zip_peek_rows(z: zipfile.ZipFile, name: str, max_rows: int) -> list:
                     el.clear()
                 elif event == "end" and tag == _XLSX_MAIN_NS + "row":
                     if cur is not None:
-                        rows.append(cur)
+                        # Pad in any fully-blank rows the XML omitted between the last row
+                        # emitted and this one, so ROW position (not just column position, see
+                        # _xlsx_col_ref_index above) stays aligned with the real worksheet -- a
+                        # row with zero non-blank cells is routinely omitted from the XML
+                        # entirely, exactly like a blank cell within a row is. Without this, a
+                        # header/data row's TEXT content is unchanged but its INDEX within
+                        # `rows` silently shifts earlier than its real worksheet row number,
+                        # which can make `_xlsx_find_header`'s scan land on the wrong row -- or
+                        # find a false header candidate several rows too early -- entirely by
+                        # coincidence of which rows happened to be blank above it.
+                        if cur_row_num is None:
+                            cur_row_num = next_expected
+                        while next_expected < cur_row_num and len(rows) < max_rows:
+                            rows.append([])
+                            next_expected += 1
+                        if len(rows) < max_rows:
+                            rows.append(cur)
+                            next_expected = cur_row_num + 1
                     cur = None
+                    cur_row_num = None
                     el.clear()
                     if len(rows) >= max_rows:
                         break
