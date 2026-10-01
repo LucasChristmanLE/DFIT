@@ -1510,3 +1510,20 @@ ambiguity, not fixed.
 - A merged header cell becomes `"Unnamed: N"` for every column except its own anchor (top-left)
   cell -- `_xlsx_trim_trailing_empty`/`_xlsx_dedupe_headers` have no merged-cell awareness, so a
   header merged across several columns effectively names only the first of them.
+- A header row that is missing a label for one of its own data sub-columns can misalign every
+  later column by one -- measured on Tamboran's "SS-1H DFIT Datacan ... Download.xlsx": its
+  header reads `"Date", "Real", "Time", <blank>, "Pressure", "Temperature"` over data columns
+  `month, day, year, time-of-day, pressure, temperature`, so the bare `"Date"` header column
+  actually holds only the MONTH sub-value and the bare `"Time"` header column holds the YEAR
+  sub-value -- the genuine time-of-day values sit one column further right, under a blank
+  (`"Unnamed: N"`) header the loader has no name-based reason to ever look at. `load_xlsx` now
+  correctly refuses to join "Date" with "Time" as a companion pair (`_companion_is_time_of_day`
+  vetoes it -- "Time"'s real values are a 4-digit year, not a time-of-day), and, with no other
+  named datetime candidate or elapsed/clock fallback available, raises `ValueError` rather than
+  silently reporting a fake, zero-duration "load" (every one of its ~68,000 rows previously
+  collapsed onto the same nonsense instant, since the old code joined "Date" with "Time" anyway
+  and dateutil happened to parse the resulting garbage string into some one fixed date). This is
+  a genuine header defect in the source workbook, not a defect in the loader -- there is no
+  general rule that recovers a datetime from an anonymous column just because the named ones
+  are wrong. The file's own same-well `.csv` sibling (a different export, correctly labeled) is
+  unaffected and still loads normally.

@@ -525,6 +525,42 @@ def test_load_xlsx_missing_dimension_does_not_rank_data_sheet_below_notes(tmp_pa
     assert "Pressure" in "".join(td.columns)
 
 
+def test_load_xlsx_stale_undersized_dimension_does_not_rank_data_sheet_below_notes(tmp_path):
+    # A worksheet's declared <dimension> UNDER-reports its real extent (e.g. "A1:B10" left over
+    # from an earlier, smaller version of the sheet) rather than being missing outright -- must
+    # still not rank a real, much larger data sheet below a smaller notes sheet.
+    import re
+    import zipfile
+
+    wb = openpyxl.Workbook()
+    data = wb.active
+    data.title = "Data"
+    data.append(["Date Time", "Pressure (psi)"])
+    d0 = dt.datetime(2024, 1, 1, 12)
+    for i in range(500):
+        data.append([d0 + dt.timedelta(seconds=i), 5000 - i])
+
+    notes = wb.create_sheet("Notes")
+    notes.append(["Time", "Event"])
+    for i in range(50):
+        notes.append([d0 + dt.timedelta(minutes=i), 1.0])
+    path = _save(wb, tmp_path / "stale_dimension.xlsx")
+
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        contents = {n: z.read(n) for n in names}
+    sheet1 = contents["xl/worksheets/sheet1.xml"].decode("utf-8")
+    understated = re.sub(r'<dimension ref="[^"]*"\s*/>', '<dimension ref="A1:B10"/>', sheet1)
+    assert understated != sheet1
+    contents["xl/worksheets/sheet1.xml"] = understated.encode("utf-8")
+    with zipfile.ZipFile(path, "w") as z:
+        for n, data_bytes in contents.items():
+            z.writestr(n, data_bytes)
+
+    td = io_load.load_xlsx(path)
+    assert td.n == 500
+
+
 def test_xlsx_count_data_rows_stops_after_consecutive_blanks(tmp_path):
     wb = openpyxl.Workbook()
     ws = wb.active

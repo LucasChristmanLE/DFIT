@@ -3065,6 +3065,20 @@ def _xlsx_cell_to_value(cell: object, date_only: bool) -> object:
 
 
 _XLSX_ROW_COUNT_BLANK_STOP = 1000
+# Excel's own hard sheet-row limit -- passed explicitly as `iter_rows`' `max_row` everywhere this
+# module reads a sheet's real data, so iteration is never silently capped by the worksheet's own
+# declared `<dimension>` instead. openpyxl's READ-ONLY mode takes `ws.max_row`/`ws.dimensions`
+# straight from that declaration (it never scans cells to recompute it, which is what makes
+# read-only mode cheap) -- correct when the dimension is accurate or over-states the real extent
+# (an `iter_rows()` call still stops at the last row actually present in the XML either way), but
+# a dimension that UNDER-states the real extent (stale after an edit that removed the tag's own
+# update, or otherwise just wrong) silently truncates iteration at that too-small bound if `iter_rows`
+# is ever called with no explicit `max_row`, or with one derived from `ws.max_row` itself --
+# exactly the same failure this module's sheet-choice fix exists to avoid, just reachable at the
+# READ step instead of the ranking step. Passing this constant costs nothing extra for a
+# well-formed file: `iter_rows` still only reads the `<row>` elements actually present in the
+# XML, regardless of how high `max_row` is set.
+_XLSX_MAX_ROW_CEILING = 1_048_576
 
 
 def _xlsx_count_data_rows(ws, data_start_row: int) -> int:
@@ -3073,9 +3087,12 @@ def _xlsx_count_data_rows(ws, data_start_row: int) -> int:
     ``ws.max_row``/``ws.dimensions``. Those are only as good as the worksheet's declared
     ``<dimension>``, which a real workbook can wildly over-report (measured: a sheet with 669
     real data rows whose ``max_row`` reports 1,047,735 -- an inflated "used range" from stray
-    formatting far past the last real row) or, when the ``<dimension>`` element is missing
-    entirely, under-report down to whatever openpyxl falls back to (often 1) -- either of which
-    can rank a real, populated data sheet below a much smaller notes/comments sheet.
+    formatting far past the last real row) or under-report -- down to whatever openpyxl falls
+    back to (often 1) when the ``<dimension>`` element is missing entirely, or to a stale,
+    too-small real value when the tag is simply wrong -- either of which can rank a real,
+    populated data sheet below a much smaller notes/comments sheet. `max_row=
+    _XLSX_MAX_ROW_CEILING` on the walk below is what makes the under-report case safe too: see
+    that constant's own comment.
 
     Counts every row with at least one non-blank cell, stopping early -- without walking the rest
     of a huge, mostly-empty "used range" -- once ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive
@@ -3084,7 +3101,9 @@ def _xlsx_count_data_rows(ws, data_start_row: int) -> int:
     """
     count = 0
     consec_blank = 0
-    for row in ws.iter_rows(min_row=data_start_row + 1, values_only=True):
+    for row in ws.iter_rows(
+        min_row=data_start_row + 1, max_row=_XLSX_MAX_ROW_CEILING, values_only=True
+    ):
         if all(c is None for c in row):
             consec_blank += 1
             if consec_blank >= _XLSX_ROW_COUNT_BLANK_STOP:
@@ -3159,8 +3178,12 @@ def load_xlsx(path: str) -> TestData:
         columns = _xlsx_dedupe_headers(folded)
 
         data_start_1based = scan["data_start_row"] + 1
+        # max_row=_XLSX_MAX_ROW_CEILING, not ws.max_row: the latter is read straight off this
+        # sheet's own declared <dimension> in read-only mode (never recomputed by scanning
+        # cells), so a stale/wrong dimension that UNDER-reports the real extent would silently
+        # truncate this read at that too-small bound -- see _XLSX_MAX_ROW_CEILING's own comment.
         data_rows = list(ws.iter_rows(
-            min_row=data_start_1based, max_row=ws.max_row, max_col=len(header_cells),
+            min_row=data_start_1based, max_row=_XLSX_MAX_ROW_CEILING, max_col=len(header_cells),
             values_only=True,
         ))
     finally:
