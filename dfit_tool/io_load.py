@@ -1659,7 +1659,7 @@ def _extrapolate_or_warn_edge_block(
     corruption ``_non_empty_mask`` exempts from the trust-fraction check in the first place
     (a genuinely EMPTY edge run, with nothing else in it either, is left alone here -- there is
     nothing to extrapolate FOR). If the surviving good run's own sample interval is regular
-    (>=99% of consecutive steps within 1% of the median), the missing timestamps are
+    (>=99% of consecutive steps within 1% of the median, plus the local-slope and column-continuity gates), the missing timestamps are
     extrapolated at that median step; otherwise they are left as NaT (never guessed at an
     irregular spacing), and a warning says so either way, so this is never silent.
 

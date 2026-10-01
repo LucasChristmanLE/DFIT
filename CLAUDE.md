@@ -238,16 +238,38 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
     file's span comes from the good data alone (~1,199.7h).
 
   If the surviving good run's own sample interval is regular, whatever's both reachable and
-  blank/error-token gets extrapolated at that step (`_regular_step`). Regular means either
-  exactly regular (>=99% of consecutive steps within 1% of the median; the step is the median,
-  unchanged) or, failing that, drift-regular: >=99% of steps within 50% of the median AND the
-  99th-percentile |residual| of a least-squares fit of elapsed time against row position <= 2
-  median steps; the step is then the fitted slope. The drift test exists because millisecond
-  stamps (XLSX cells now keep their `%f` fraction) jitter 0.87-1.0 s around a 1 s cadence, which
-  the 1% test rejected, leaving the whole trailing block NaN (ND State 10TFH/1TFH datatraps,
-  SM Cactus, six Continental TDMS workbooks, Reno 11-10PH Lime Data). 99th percentile rather than
-  the maximum because Reno's first 15 rows hold a 6 s and a 4 s step that put the maximum residual
-  at ~8.8 s while 99% of rows sit within 0.74 s of the line. The message reads (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
+  blank/error-token gets extrapolated at the median step (`_regular_step`), but only when ALL of
+  these hold; otherwise the block stays NaT:
+  - Exactly regular: >=99% of consecutive steps within 1% of the median. There is no drift or
+    jitter tolerance: millisecond stamps wandering 0.87-1.0 s around a 1 s cadence are NOT
+    extrapolated (an earlier drift-based branch fabricated time on blocks that were not a
+    continuation, below).
+  - Local slope (`_local_step_agrees`): the median step over the last 200 steps of the good run
+    (first 200 for a leading block) is within 1% of the whole-run median, so a rate change
+    confined to the end nearest the block is not extrapolated at the whole-run rate.
+  - Column continuity (`_columns_continue`): the block must be a continuation of the same
+    dataset. (a) The set of numeric-data-bearing columns (>=90% finite numeric over the window)
+    in the block must equal the set in the adjacent window of the good run (the last 100 rows
+    before a trailing block, the first 100 after a leading one). (b) No column may hold one
+    constant value across the whole block while it varied in that window; constant padding is
+    not data. A failing block gets `"N data-bearing rows were not extrapolated: their columns do
+    not continue the timestamped record (<reason>)." Measured cases where the record's columns
+    did not continue (all wrongly extrapolated at 053f4d9): one channel padded with a constant
+    past the end of the timestamps, doubling the span (Norfolk 11-1H TDMS x3, 9-1H, 8-1H1,
+    10-1H1; Bridger 10-14H2 and 44-14HS TDMS; Reno 11-10PH Lime Data); side-by-side pump and
+    gauge datasets with separate timestamp columns, where the pump clock was extrapolated over
+    the gauge rows (ND State 10TFH/1TFH, SM Cactus); and multi-rate TDMS "Formula Server" sheets
+    (Emerald Excalibur 6-25-36H and 7-25-36H, WPX Edward Flies Away and Helena Ruth Grant), where
+    the pressure column has ~5x as many rows as the timestamp column. The jittery-stamp files in
+    that list (most of them) are now stopped by the exact-regularity test first and report
+    `"N data-bearing rows had no usable timestamp"`; the exactly-regular Emerald/WPX ones are
+    stopped by the column gate. Real spans after the fix: Norfolk 11-1H 2.78 h, Bridger 10-14H2
+    0.168 h. Known cost: a block whose columns genuinely freeze at shut-in (rate and total volume
+    constant after the pump stops, while they varied in the last 100 rows) also fails (b), e.g.
+    the final 60 s of Civitas Bijou 1B and Titan 04 pump logs are left NaT. Crestone Peak's
+    block passes (Pressure and Temp both continue; only Date Time dies), as do three 60-row
+    pump-log tails whose constant columns were already constant in the window.
+  The message reads (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
   <step> s spacing."`, N counting only the extrapolated rows); an irregular interval, or a block
   with nothing reachable/blank-or-error at all, instead leaves everything unresolved (`"N
   data-bearing rows had no usable timestamp"`, N here counting the block's data-bearing rows,
@@ -410,7 +432,10 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   openpyxl defaults to, often 1, which would otherwise rank a real data sheet below a notes sheet).
   The data read applies the same 1000-consecutive-blank stop and drops that trailing run, so a
   styled cell near row 1,048,000 no longer pads the frame with ~1M empty rows (a real data gap of
-  1000+ blank rows inside a sheet now truncates the read there).
+  1000+ blank rows inside a sheet truncates the read there). When that stop fires,
+  `_xlsx_gap_stop_warning` scans the rest of the sheet at zip level (no stop) and, if any later
+  row holds a value, adds a load warning: read stopped at a gap of >=1000 blank rows, N later rows
+  were not read. No corpus file is affected.
   Data cells are converted so `_finish_frame` sees exactly what a CSV would give it
   (`_xlsx_cell_to_value`): a `datetime` cell becomes a `_PRIMARY_DT_FORMAT` string, or, when it
   carries a nonzero microsecond, the fractional-seconds fast-path format instead (so a
@@ -1424,6 +1449,17 @@ ambiguity, not fixed.
 
 ## Not built / notes
 
+- Unsupported XLSX/CSV layouts, which the extrapolation gate above refuses to guess at (the
+  affected files load with their timestamped rows only, plus a warning):
+  - Side-by-side datasets: pump and gauge data in one sheet, each with its own timestamp columns
+    (ND State 10TFH/1TFH, SM Cactus). Only the first timestamp column is used; the other
+    dataset's rows are not given a time base.
+  - Multi-rate TDMS exports: a "Formula Server" sheet whose pressure column has several times
+    as many rows as its timestamp column (Emerald Excalibur 6-25-36H and 7-25-36H, WPX Edward Flies Away and Helena Ruth Grant; about 5x). The
+    rows cannot be aligned to the timestamps without the per-channel rate, so the block is left
+    NaT.
+  - A channel zero-padded past the end of the timestamps (Norfolk, Bridger, Reno 11-10PH) is
+    treated as padding, not data; the reported span is the timestamped record only.
 - `scipy` is pinned in `requirements.txt` and probed by `start-app.ps1` but is not currently
   imported anywhere in the package.
 - Sample data folders, `Refs/`, and `.superpowers/` are gitignored. Design specs and plans
