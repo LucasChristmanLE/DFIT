@@ -2490,25 +2490,70 @@ def test_refresh_unit_detection_missing_pressure_col_still_skips_rate_inheritanc
     assert rate_det.source == "inherited"
 
 
-def test_load_csv_trailing_block_extrapolates_through_subsecond_jitter(tmp_path):
-    # Millisecond stamps wandering 0.87-1.0 s around a 1 s cadence are NOT irregular: the
-    # drift-based regularity test (small least-squares residual, steps within 50% of the median)
-    # accepts them and extrapolates the timestamp-less trailing block at the fitted slope.
+def _edge_csv(tmp_path, name, good_rows, bad_rows, header):
+    p = tmp_path / name
+    p.write_text(chr(10).join([header] + good_rows + bad_rows) + chr(10))
+    return io_load.load_csv(str(p))
+
+
+def _no_extrapolation(td, n_good):
+    assert np.isfinite(td.t_s).sum() == n_good
+    assert not any("timestamps extrapolated" in w for w in td.load_warnings)
+
+
+def test_load_csv_trailing_block_not_extrapolated_through_subsecond_jitter(tmp_path):
+    # Jittery stamps (0.87-1.0 s around a 1 s cadence) fail the exact regularity test: the block
+    # stays NaT and is reported, never extrapolated at a fitted slope.
     rng = np.random.default_rng(0)
     n_good, n_bad = 400, 60
     t = np.arange(n_good) + rng.uniform(-0.06, 0.06, n_good)
     t[0] = 0.0
-    lines = ["Date Time,Pressure(psi)"]
+    good = []
     for i, s in enumerate(t):
         ms = int(round(s * 1000))
-        lines.append(f"1/1/24 00:{ms // 60000:02d}:{(ms // 1000) % 60:02d}.{ms % 1000:03d},{5000 - i}")
-    lines += [f"#REF!,{4000 - s}" for s in range(n_bad)]
-    p = tmp_path / "jitter_trailing.csv"
-    p.write_text("\n".join(lines) + "\n")
-    td = io_load.load_csv(str(p))
-    assert np.isfinite(td.t_s).sum() == n_good + n_bad
-    assert td.t_s[-1] == pytest.approx(n_good + n_bad - 1, abs=1.0)
-    assert not any("no usable timestamp" in w for w in td.load_warnings)
+        good.append(f"1/1/24 00:{ms // 60000:02d}:{(ms // 1000) % 60:02d}.{ms % 1000:03d},{5000 - i}")
+    bad = [f"#REF!,{4000 - s}" for s in range(n_bad)]
+    td = _edge_csv(tmp_path, "jitter_trailing.csv", good, bad, "Date Time,Pressure(psi)")
+    _no_extrapolation(td, n_good)
+    assert any("no usable timestamp" in w for w in td.load_warnings)
+
+
+def test_local_step_check_catches_rate_change_near_the_block():
+    # The exact test passes (>=99% of steps match the median) but the last 200 steps run at a
+    # different rate than the whole-run median, so a trailing block must not be extrapolated at
+    # the whole-run step.
+    diffs = np.concatenate([np.ones(100000), np.full(200, 2.0)])
+    assert io_load._regular_step(diffs, 1.0) == 1.0
+    assert not io_load._local_step_agrees(diffs, 1.0, "trailing")
+    assert io_load._local_step_agrees(diffs, 1.0, "leading")
+
+
+def test_load_csv_trailing_block_not_extrapolated_when_columns_die(tmp_path):
+    # Side-by-side layout: the pump clock dies, and the second column (gauge data) lives on in
+    # the block while the first (pump data) stops -- a different dataset, not a continuation.
+    good = [f"1/1/24 00:00:{s:02d},{5000 - s},{100 + s}" for s in range(60)]
+    bad = [f"#REF!,,{500 + s}" for s in range(200)]
+    td = _edge_csv(tmp_path, "cols_die.csv", good, bad, "Date Time,Pump(psi),Gauge(psi)")
+    _no_extrapolation(td, 60)
+    assert any("do not continue the timestamped record" in w for w in td.load_warnings)
+
+
+def test_load_csv_trailing_block_not_extrapolated_over_constant_padding(tmp_path):
+    # One channel zero-padded past the end of the real record: it varied in the good run and is a
+    # constant across the block, so the block is padding, not data.
+    good = [f"1/1/24 00:00:{s:02d},{5000 - s},{10 + s}" for s in range(60)]
+    bad = [f"#REF!,{4000 - s},0" for s in range(200)]
+    td = _edge_csv(tmp_path, "const_pad.csv", good, bad, "Date Time,Pressure(psi),Volume")
+    _no_extrapolation(td, 60)
+    assert any("constant" in w for w in td.load_warnings)
+
+
+def test_load_csv_trailing_block_still_extrapolates_when_columns_continue(tmp_path):
+    good = [f"1/1/24 00:00:{s:02d},{5000 - s},{100 + s}" for s in range(60)]
+    bad = [f"#REF!,{4940 - s},{160 + s}" for s in range(200)]
+    td = _edge_csv(tmp_path, "cols_continue.csv", good, bad, "Date Time,Pressure(psi),Temp")
+    assert np.isfinite(td.t_s).sum() == 260
+    assert any("extrapolated" in w for w in td.load_warnings)
 
 
 def test_load_csv_companion_time_with_padded_whitespace_still_joins(tmp_path):

@@ -654,6 +654,32 @@ def test_load_xlsx_data_read_stops_at_blank_run_before_far_styled_cell(tmp_path)
     assert io_load.load_xlsx(path).n == 25
 
 
+def test_load_xlsx_warns_when_blank_gap_stop_hides_later_rows(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    for i in range(25):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    for k in range(3):
+        ws.cell(row=3000 + k, column=1, value=dt.datetime(2020, 1, 1, 1, 0, k))
+        ws.cell(row=3000 + k, column=2, value=4000 - k)
+    td = io_load.load_xlsx(_save(wb, tmp_path / "gap_hides.xlsx"))
+    assert td.n == 25
+    assert any(">=1000 blank rows" in w and "3 later rows" in w for w in td.load_warnings)
+
+
+def test_load_xlsx_no_gap_warning_for_styled_only_far_cell(tmp_path):
+    from openpyxl.styles import PatternFill
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    for i in range(25):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    ws["A1048000"].fill = PatternFill("solid", fgColor="FFFF00")
+    td = io_load.load_xlsx(_save(wb, tmp_path / "styled_only.xlsx"))
+    assert not any("blank rows" in w for w in td.load_warnings)
+
+
 def test_xlsx_zip_count_matches_openpyxl_count(tmp_path):
     import zipfile
     wb = openpyxl.Workbook()

@@ -1583,32 +1583,71 @@ def _find_edge_nat_block(dt: pd.Series) -> Optional[tuple[str, int, int]]:
     return None
 
 
-def _regular_step(positions: np.ndarray, secs: np.ndarray, diffs: np.ndarray,
-                  med: float) -> Optional[float]:
-    """The per-row step to extrapolate a timestamp-less edge block at, or None when the good run
-    is not regular enough to extrapolate.
+_EDGE_CONTINUITY_WINDOW = 100
+_EDGE_COLUMN_FINITE_FRAC = 0.90
+_EDGE_LOCAL_SLOPE_STEPS = 200
+_EDGE_LOCAL_SLOPE_TOL = 0.01
 
-    Exactly regular (>=99% of consecutive steps within 1% of the median): the median step,
-    unchanged. Otherwise a drift-based test, so sub-second jitter (millisecond stamps wandering
-    0.87-1.0 s around a 1 s cadence) does not read as irregular: fit elapsed time against row
-    position by least squares; regular when the 99th-percentile |residual| is <= 2 median steps
-    AND >=99% of steps fall within 50% of the median. The fitted slope is then the step. A slope
-    that is not positive and finite reads as irregular. (99th percentile, not the maximum: a
-    handful of early dropped-sample steps in a 5,500-row 1 Hz record -- Reno 11-10PH Lime Data has
-    a 6 s and a 4 s step in its first 15 rows -- put the maximum residual at ~8.8 s while 99% of
-    rows sit within 0.74 s of the line.)"""
+
+def _regular_step(diffs: np.ndarray, med: float) -> Optional[float]:
+    """The per-row step to extrapolate a timestamp-less edge block at, or None when the good run
+    is not regular enough: >=99% of consecutive steps within 1% of the median -> the median step.
+    A jittery run (sub-second stamps wandering around the cadence) is NOT extrapolated: it gets
+    the "N data-bearing rows had no usable timestamp" warning instead, the conservative outcome.
+    """
     if np.mean(np.abs(diffs - med) <= 0.01 * med) >= 0.99:
         return float(med)
-    if not np.mean(np.abs(diffs - med) <= 0.5 * med) >= 0.99:
-        return None
-    slope, intercept = np.polyfit(positions.astype(float), secs, 1)
-    if not (np.isfinite(slope) and slope > 0):
-        return None
-    resid = secs - (slope * positions + intercept)
-    if np.percentile(np.abs(resid), 99) > 2.0 * med:
-        return None
-    # slope is per ROW; the extrapolation offsets are per row too.
-    return float(slope)
+    return None
+
+
+def _local_step_agrees(diffs: np.ndarray, med: float, side: str) -> bool:
+    """True when the median step over the last (trailing block) or first (leading block)
+    ``_EDGE_LOCAL_SLOPE_STEPS`` steps of the good run matches the whole-run median within 1% --
+    a rate change confined to the end nearest the block would otherwise be extrapolated at the
+    wrong, whole-run rate."""
+    near = diffs[-_EDGE_LOCAL_SLOPE_STEPS:] if side == "trailing" else diffs[:_EDGE_LOCAL_SLOPE_STEPS]
+    if near.size == 0:
+        return True
+    return bool(abs(float(np.median(near)) - med) <= _EDGE_LOCAL_SLOPE_TOL * med)
+
+
+def _finite_numeric(series: pd.Series) -> np.ndarray:
+    return pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+
+
+def _columns_continue(df: pd.DataFrame, cols: list, side: str, sub_start: int, sub_end: int,
+                      good_start: int, good_end: int) -> Optional[str]:
+    """Column-continuity gate for extrapolating an edge block. Returns None when the block's
+    columns continue the adjacent good run, else a short reason string.
+
+    (a) The set of numeric-data-bearing columns (>=90% finite numeric) in the block must equal
+    the set in the adjacent window of the good run (``good_start:good_end``, up to
+    ``_EDGE_CONTINUITY_WINDOW`` rows). A column dying (or appearing) at the timestamp's death is
+    a different dataset, not a continuation.
+    (b) No column may hold one constant value across the whole block while it varied in the
+    window: constant padding (a scheduled-volume column zero-filled past the end of a log) is
+    not data."""
+    bearing_good, bearing_blk = set(), set()
+    const_in_block, varied_in_good = set(), set()
+    for c in cols:
+        g = _finite_numeric(df[c].iloc[good_start:good_end])
+        k = _finite_numeric(df[c].iloc[sub_start:sub_end])
+        if g.size and np.isfinite(g).mean() >= _EDGE_COLUMN_FINITE_FRAC:
+            bearing_good.add(c)
+        if k.size and np.isfinite(k).mean() >= _EDGE_COLUMN_FINITE_FRAC:
+            bearing_blk.add(c)
+        kf, gf = k[np.isfinite(k)], g[np.isfinite(g)]
+        if kf.size and kf.min() == kf.max():
+            const_in_block.add(c)
+        if gf.size and gf.min() != gf.max():
+            varied_in_good.add(c)
+    if bearing_good != bearing_blk:
+        diff = sorted(map(str, bearing_good ^ bearing_blk))
+        return f"data columns differ across the boundary ({', '.join(diff[:4])})"
+    pad = sorted(map(str, const_in_block & varied_in_good))
+    if pad:
+        return f"column(s) constant across the block ({', '.join(pad[:4])})"
+    return None
 
 
 def _extrapolate_or_warn_edge_block(
@@ -1699,9 +1738,23 @@ def _extrapolate_or_warn_edge_block(
     med = np.median(diffs) if len(diffs) else np.nan
     if not (np.isfinite(med) and med > 0):
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
-    step = _regular_step(valid_pos, secs, diffs, med)
-    if step is None:
+    step = _regular_step(diffs, med)
+    if step is None or not _local_step_agrees(diffs, med, side):
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
+
+    # Column continuity: the block must look like the same dataset as the adjacent good run.
+    if side == "trailing":
+        good_end = start
+        good_start = max(0, good_end - _EDGE_CONTINUITY_WINDOW)
+    else:
+        good_start = end
+        good_end = min(len(df), good_start + _EDGE_CONTINUITY_WINDOW)
+    why = _columns_continue(df, other_cols, side, sub_start, sub_end, good_start, good_end)
+    if why is not None:
+        return dt, [
+            f"{n_data_bearing_total} data-bearing rows were not extrapolated: their columns do "
+            f"not continue the timestamped record ({why})."
+        ]
 
     # Within the reachable run, only rows whose own cell(s) are genuinely blank/error-token are
     # extrapolatable -- a readable-but-unparsed cell is left alone (see the docstring's Wake
@@ -3325,6 +3378,7 @@ def _xlsx_read_sheet_frame(ws, scan: dict, limit: Optional[int] = None) -> tuple
     # truncate this read at that too-small bound -- see _XLSX_MAX_ROW_CEILING's own comment.
     data_rows: list = []
     blank = 0
+    gap_stop_row = None
     for row in ws.iter_rows(
         min_row=data_start_1based, max_row=_XLSX_MAX_ROW_CEILING, max_col=len(header_cells),
         values_only=True,
@@ -3333,6 +3387,7 @@ def _xlsx_read_sheet_frame(ws, scan: dict, limit: Optional[int] = None) -> tuple
         if all(c is None for c in row):
             blank += 1
             if blank >= _XLSX_ROW_COUNT_BLANK_STOP:
+                gap_stop_row = data_start_1based + len(data_rows) - 1  # 1-based, last blank row
                 break
         else:
             blank = 0
@@ -3359,7 +3414,59 @@ def _xlsx_read_sheet_frame(ws, scan: dict, limit: Optional[int] = None) -> tuple
             c = columns[j]
             cell = row[j] if j < len(row) else None
             cols_out[c].append(_xlsx_cell_to_value(cell, date_only=(c == date_only_col)))
-    return pd.DataFrame(cols_out), columns
+    out = pd.DataFrame(cols_out)
+    if gap_stop_row is not None:
+        out.attrs["xlsx_gap_stop_row"] = gap_stop_row
+    return out, columns
+
+
+def _xlsx_rows_after(z: zipfile.ZipFile, part: str, after_row: int) -> int:
+    """Count of rows numbered past `after_row` (1-based) in worksheet part `part` that hold a
+    value -- a zip-level scan with no blank-run stop (ElementTree ``iterparse``, rows cleared as
+    they go)."""
+    row_tag = _XLSX_MAIN_NS + "row"
+    v_tag = _XLSX_MAIN_NS + "v"
+    is_tag = _XLSX_MAIN_NS + "is"
+    count = 0
+    last_r = 0
+    with z.open(part) as f:
+        for _event, el in _ET.iterparse(f, events=("end",)):
+            if el.tag != row_tag:
+                continue
+            r_attr = el.get("r")
+            try:
+                r = int(r_attr) if r_attr else last_r + 1
+            except ValueError:
+                r = last_r + 1
+            last_r = r
+            if r > after_row:
+                for c in el:
+                    v = c.find(v_tag)
+                    isv = c.find(is_tag)
+                    if (v is not None and v.text) or (
+                            isv is not None and "".join(isv.itertext())):
+                        count += 1
+                        break
+            el.clear()
+    return count
+
+
+def _xlsx_gap_stop_warning(wb, path: str, ws, stop_row: int) -> Optional[str]:
+    """A load warning when the blank-row stop at `stop_row` cut off later rows that hold values;
+    None when nothing lies past it (or the zip scan cannot run). Never raises."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            parts = _xlsx_worksheet_parts(z)
+            if len(parts) != len(wb.worksheets):
+                return None
+            part = parts[[w.title for w in wb.worksheets].index(ws.title)]
+            n = _xlsx_rows_after(z, part, stop_row)
+    except Exception:
+        return None
+    if n <= 0:
+        return None
+    return (f"Sheet {ws.title!r}: read stopped at a gap of >={_XLSX_ROW_COUNT_BLANK_STOP} blank "
+            f"rows (ending at row {stop_row}); {n} later rows holding values were not read.")
 
 
 # Data rows read from a sheet to judge whether its time base is usable when more than one sheet
@@ -3497,6 +3604,11 @@ def load_xlsx(path: str) -> TestData:
                     first_err = e
                 continue
             if _xlsx_span_s(td) > 0.0:
+                stop_row = df.attrs.get("xlsx_gap_stop_row")
+                if stop_row is not None:
+                    w = _xlsx_gap_stop_warning(wb, path, ws, stop_row)
+                    if w:
+                        td.load_warnings.append(w)
                 return td
             zero_span = True
         if zero_span:
