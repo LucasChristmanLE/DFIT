@@ -112,9 +112,12 @@ class ReviewApp:
         # one review session. Over `sig_files_for(s.files)` (csv/dbs only when the group has any,
         # else its xlsx files) -- see that function's docstring -- so a later-discovered same-well
         # xlsx never itself resurfaces an already-decided csv/dbs group as stale.
-        self._files_sig_by_rel = {
-            s.rel: group_files_sig(f.sig for f in sig_files_for(s.files)) for s in self.scans
-        }
+        # A recorded decision's own keeps feed the fingerprint (a kept xlsx is part of it, see
+        # `sig_files_for`); `_commit_sig` is the matching sig for a decision being recorded now.
+        self._files_sig_by_rel = {}
+        for s in self.scans:
+            d = self.ledger.get(s.rel)
+            self._files_sig_by_rel[s.rel] = self._sig_for(s, d.keeps if d is not None else ())
 
         self.root_win = root_win
         self.page = 0
@@ -161,6 +164,17 @@ class ReviewApp:
     # ----------------------------------------------------------------------------------------
     # navigation / seeding
     # ----------------------------------------------------------------------------------------
+    @staticmethod
+    def _sig_for(scan, keeps) -> str:
+        return group_files_sig(f.sig for f in sig_files_for(scan.files, keeps))
+
+    def _record(self, scan, keeps: list, status: str) -> None:
+        """Write a decision with the fingerprint computed over the keeps being committed, and
+        keep the in-memory current-sig map in step with it."""
+        sig = self._sig_for(scan, keeps)
+        self.ledger.set(scan.rel, keeps, status, files_sig=sig)
+        self._files_sig_by_rel[scan.rel] = sig
+
     def _current_scan(self):
         if 0 <= self.index < len(self.scans):
             return self.scans[self.index]
@@ -298,8 +312,7 @@ class ReviewApp:
             self.status_lbl.config(
                 text='No files selected -- press "0" for "no DFIT here", or "u" for "unsure".')
             return
-        self.ledger.set(scan.rel, sorted(self.keeps), "decided",
-                        files_sig=self._files_sig_by_rel.get(scan.rel, ""))
+        self._record(scan, sorted(self.keeps), "decided")
         self._goto(self.index + 1)
 
     def _mark_none_and_advance(self) -> None:
@@ -307,16 +320,14 @@ class ReviewApp:
         scan = self._current_scan()
         if scan is not None:
             self.keeps = set()
-            self.ledger.set(scan.rel, [], "none",
-                             files_sig=self._files_sig_by_rel.get(scan.rel, ""))
+            self._record(scan, [], "none")
         self._goto(self.index + 1)
 
     def _mark_unsure_and_advance(self) -> None:
         """`u`: revisit later, keeping whatever is currently selected."""
         scan = self._current_scan()
         if scan is not None:
-            self.ledger.set(scan.rel, sorted(self.keeps), "unsure",
-                             files_sig=self._files_sig_by_rel.get(scan.rel, ""))
+            self._record(scan, sorted(self.keeps), "unsure")
         self._goto(self.index + 1)
 
     def _go_back(self) -> None:

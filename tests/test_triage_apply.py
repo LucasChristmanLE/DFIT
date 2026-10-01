@@ -47,7 +47,7 @@ def _decide(ledger: Ledger, scan: FolderScan, keeps: list[str], status: str = "d
     has any, else its xlsx files), matching `_exclusion_reason`'s own fingerprint -- a no-op for
     any scan with no xlsx files at all."""
     ledger.set(scan.rel, keeps, status,
-               files_sig=group_files_sig(f.sig for f in sig_files_for(scan.files)))
+               files_sig=group_files_sig(f.sig for f in sig_files_for(scan.files, keeps)))
 
 
 # --------------------------------------------------------------------------------------------------

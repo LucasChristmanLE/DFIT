@@ -2488,3 +2488,37 @@ def test_refresh_unit_detection_missing_pressure_col_still_skips_rate_inheritanc
     rate_det = td.unit_detections["Rate"]
     assert rate_det.unit == "bpm"
     assert rate_det.source == "inherited"
+
+
+def test_load_csv_trailing_block_extrapolates_through_subsecond_jitter(tmp_path):
+    # Millisecond stamps wandering 0.87-1.0 s around a 1 s cadence are NOT irregular: the
+    # drift-based regularity test (small least-squares residual, steps within 50% of the median)
+    # accepts them and extrapolates the timestamp-less trailing block at the fitted slope.
+    rng = np.random.default_rng(0)
+    n_good, n_bad = 400, 60
+    t = np.arange(n_good) + rng.uniform(-0.06, 0.06, n_good)
+    t[0] = 0.0
+    lines = ["Date Time,Pressure(psi)"]
+    for i, s in enumerate(t):
+        ms = int(round(s * 1000))
+        lines.append(f"1/1/24 00:{ms // 60000:02d}:{(ms // 1000) % 60:02d}.{ms % 1000:03d},{5000 - i}")
+    lines += [f"#REF!,{4000 - s}" for s in range(n_bad)]
+    p = tmp_path / "jitter_trailing.csv"
+    p.write_text("\n".join(lines) + "\n")
+    td = io_load.load_csv(str(p))
+    assert np.isfinite(td.t_s).sum() == n_good + n_bad
+    assert td.t_s[-1] == pytest.approx(n_good + n_bad - 1, abs=1.0)
+    assert not any("no usable timestamp" in w for w in td.load_warnings)
+
+
+def test_load_csv_companion_time_with_padded_whitespace_still_joins(tmp_path):
+    # The companion veto's anchored time-of-day match must ignore cell padding.
+    p = tmp_path / "padded_time.csv"
+    p.write_text(
+        "Date, Time, Pressure\n"
+        "04/10/2016, 12:00:00, 5000\n"
+        "04/10/2016, 12:30:00, 4900\n"
+        "04/10/2016, 14:46:35, 4800\n"
+    )
+    td = io_load.load_csv(str(p))
+    assert td.t_s[-1] - td.t_s[0] == pytest.approx(9995.0)

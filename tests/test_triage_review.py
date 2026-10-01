@@ -58,6 +58,8 @@ def _make_stub(scans, tmp_path, index=None):
     stub.status_lbl = _FakeLabel()
 
     stub._current_scan = types.MethodType(review_app.ReviewApp._current_scan, stub)
+    stub._sig_for = review_app.ReviewApp._sig_for
+    stub._record = types.MethodType(review_app.ReviewApp._record, stub)
     stub._seed_keeps = types.MethodType(review_app.ReviewApp._seed_keeps, stub)
     stub._redraw = lambda: None
     stub._goto = types.MethodType(review_app.ReviewApp._goto, stub)

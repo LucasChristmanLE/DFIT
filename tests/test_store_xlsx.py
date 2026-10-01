@@ -213,3 +213,21 @@ def test_scan_root_excludes_xlsx_lock_file_without_questionnaire_in_name(tmp_pat
 
     assert len(entries) == 1
     assert entries[0].xlsx_path == str(real)
+
+
+def test_scan_root_xlsx_only_subfolder_does_not_displace_loose_csv(tmp_path):
+    (tmp_path / "W.csv").write_text("a")
+    (tmp_path / "Z.csv").write_text("a")
+    sub = tmp_path / "W"
+    sub.mkdir()
+    _write_data_xlsx(sub / "pump.xlsx")
+
+    entries = store.scan_root(str(tmp_path))
+
+    ids = {e.test_id for e in entries}
+    assert ids == {"W", "Z", "W/pump"}
+    w = next(e for e in entries if e.test_id == "W")
+    assert w.csv_path == str(tmp_path / "W.csv")
+    moved = next(e for e in entries if e.test_id == "W/pump")
+    assert moved.xlsx_path == str(sub / "pump.xlsx") and moved.csv_path is None
+    assert any("renamed" in x for x in moved.scan_warnings)

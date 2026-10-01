@@ -604,3 +604,122 @@ def test_load_xlsx_millisecond_stamped_workbook_end_to_end(tmp_path):
     assert td.n == 5
     assert td.t_s[-1] == pytest.approx(1.0)
     assert list(td.t_s) == sorted(td.t_s)
+
+
+def test_load_xlsx_prefers_sheet_with_usable_time_base(tmp_path):
+    # The bigger "Original Data" sheet has a midnight-only datetime column and no time column
+    # (one distinct timestamp); the smaller "Cleaned Data" sheet has a real Date + Time pair.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Original Data"
+    ws.append(["Date/Time", "Pressure"])
+    for i in range(40):
+        ws.append([dt.datetime(2023, 1, 26), 5000 - i])
+    ws2 = wb.create_sheet("Cleaned Data")
+    ws2.append(["Date", "Time", "Pressure"])
+    for i in range(30):
+        ws2.append([dt.datetime(2023, 1, 26), dt.time(9, 0, i), 5000 - i])
+    td = io_load.load_xlsx(_save(wb, tmp_path / "two_sheets.xlsx"))
+    assert td.n == 30
+    assert td.t_s[-1] - td.t_s[0] == pytest.approx(29.0)
+
+
+def test_load_xlsx_zero_span_everywhere_raises(tmp_path):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date/Time", "Pressure"])
+    for i in range(20):
+        ws.append([dt.datetime(2023, 1, 26), 5000 - i])
+    with pytest.raises(ValueError, match="no sheet with a usable time base"):
+        io_load.load_xlsx(_save(wb, tmp_path / "flat.xlsx"))
+
+
+def test_load_xlsx_data_read_stops_at_blank_run_before_far_styled_cell(tmp_path):
+    from openpyxl.styles import PatternFill
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    for i in range(25):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    ws["A1048000"].fill = PatternFill("solid", fgColor="FFFF00")
+    path = _save(wb, tmp_path / "far_styled.xlsx")
+    wb2 = io_load._xlsx_open(path)
+    try:
+        ws2 = wb2.worksheets[0]
+        scan = io_load._xlsx_scan_sheet(ws2)
+        df, _ = io_load._xlsx_read_sheet_frame(ws2, scan)
+    finally:
+        wb2.close()
+    assert len(df) == 25
+    assert io_load.load_xlsx(path).n == 25
+
+
+def test_xlsx_zip_count_matches_openpyxl_count(tmp_path):
+    import zipfile
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    for i in range(50):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    ws["A3000"] = "stray"  # beyond the 1000-blank stop: not counted by either
+    path = _save(wb, tmp_path / "count.xlsx")
+    wb2 = io_load._xlsx_open(path)
+    try:
+        n_opx = io_load._xlsx_count_data_rows(wb2.worksheets[0], 1)
+    finally:
+        wb2.close()
+    with zipfile.ZipFile(path) as z:
+        part = io_load._xlsx_worksheet_parts(z)[0]
+        n_zip = io_load._xlsx_zip_count_data_rows(z, part, 1)
+    assert n_zip == n_opx == 50
+
+
+def test_xlsx_zip_count_handles_gaps_blanks_and_inline_blocks(tmp_path):
+    import zipfile
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    r = 2
+    for i in range(30):
+        ws.cell(row=r, column=1, value=dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i))
+        ws.cell(row=r, column=2, value=5000 - i)
+        r += 1
+        if i in (7, 8, 20):  # skipped (omitted) rows in the middle
+            r += 2
+    ws.cell(row=r + 1, column=2).fill = openpyxl.styles.PatternFill("solid", fgColor="FFFF00")
+    path = _save(wb, tmp_path / "gaps.xlsx")
+    wb2 = io_load._xlsx_open(path)
+    try:
+        n_opx = io_load._xlsx_count_data_rows(wb2.worksheets[0], 1)
+    finally:
+        wb2.close()
+    with zipfile.ZipFile(path) as z:
+        part = io_load._xlsx_worksheet_parts(z)[0]
+        n_zip = io_load._xlsx_zip_count_data_rows(z, part, 1)
+        n_et = io_load._xlsx_zip_count_data_rows_et(z, part, 1)
+    assert n_zip == n_opx == n_et == 30
+
+
+def test_xlsx_zip_count_fast_path_across_small_blocks(tmp_path, monkeypatch):
+    import zipfile
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "Pressure"])
+    for i in range(1500):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    for i in range(1500, 1510):  # blank rows then more data, inside later blocks
+        ws.append([None, None])
+    for i in range(1510, 1600):
+        ws.append([dt.datetime(2020, 1, 1) + dt.timedelta(seconds=i), 5000 - i])
+    path = _save(wb, tmp_path / "blocks.xlsx")
+    monkeypatch.setattr(io_load, "_XLSX_COUNT_BLOCK_BYTES", 4096)
+    fast_calls = []
+    orig = io_load._xlsx_count_region_fast
+    monkeypatch.setattr(io_load, "_xlsx_count_region_fast",
+                        lambda region, st: fast_calls.append(orig(region, st)) or fast_calls[-1])
+    with zipfile.ZipFile(path) as z:
+        part = io_load._xlsx_worksheet_parts(z)[0]
+        n_zip = io_load._xlsx_zip_count_data_rows(z, part, 1)
+        n_et = io_load._xlsx_zip_count_data_rows_et(z, part, 1)
+    assert n_zip == n_et == 1590
+    assert any(fast_calls) and not all(fast_calls)  # both paths exercised

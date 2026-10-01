@@ -1700,3 +1700,11 @@ def test_sig_files_for_case_insensitive_extension():
 
 def test_sig_files_for_empty_list():
     assert features.sig_files_for([]) == []
+
+
+def test_sig_files_for_includes_xlsx_that_is_a_recorded_keeper():
+    files = [_feat("d/f1.csv", "a"), _feat("d/f2.xlsx", "b"), _feat("d/f3.xlsx", "c")]
+    got = features.sig_files_for(files, keeps=["d/f2.xlsx"])
+    assert [f.path for f in got] == ["d/f1.csv", "d/f2.xlsx"]
+    # a merely-present xlsx still never counts, and no keeps is the old behavior
+    assert [f.path for f in features.sig_files_for(files)] == ["d/f1.csv"]

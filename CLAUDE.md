@@ -237,9 +237,17 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
     good sample; they're reported as `"63 data-bearing rows had no usable timestamp"` and the
     file's span comes from the good data alone (~1,199.7h).
 
-  If the surviving good run's own sample interval is regular (>=99% of consecutive steps within
-  1% of the median), whatever's both reachable and blank/error-token gets extrapolated at that
-  median step (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
+  If the surviving good run's own sample interval is regular, whatever's both reachable and
+  blank/error-token gets extrapolated at that step (`_regular_step`). Regular means either
+  exactly regular (>=99% of consecutive steps within 1% of the median; the step is the median,
+  unchanged) or, failing that, drift-regular: >=99% of steps within 50% of the median AND the
+  99th-percentile |residual| of a least-squares fit of elapsed time against row position <= 2
+  median steps; the step is then the fitted slope. The drift test exists because millisecond
+  stamps (XLSX cells now keep their `%f` fraction) jitter 0.87-1.0 s around a 1 s cadence, which
+  the 1% test rejected, leaving the whole trailing block NaN (ND State 10TFH/1TFH datatraps,
+  SM Cactus, six Continental TDMS workbooks, Reno 11-10PH Lime Data). 99th percentile rather than
+  the maximum because Reno's first 15 rows hold a 6 s and a 4 s step that put the maximum residual
+  at ~8.8 s while 99% of rows sit within 0.74 s of the line. The message reads (`"N rows past <time> had no timestamp (<bad value>); timestamps extrapolated at
   <step> s spacing."`, N counting only the extrapolated rows); an irregular interval, or a block
   with nothing reachable/blank-or-error at all, instead leaves everything unresolved (`"N
   data-bearing rows had no usable timestamp"`, N here counting the block's data-bearing rows,
@@ -376,12 +384,33 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   sees it exactly as it would from a CSV -- e.g. a bare "Time" header over a "(hh:mm:ss)" units
   cell folds to `"Time (hh:mm:ss)"`; a blank header cell with only a units-row label (Southern
   Ute's unnamed "DeltaP" column) takes that label as its name outright, unparenthesized. When more
-  than one worksheet qualifies, the one with the most REAL data rows wins (`_xlsx_count_data_rows`,
-  a cheap row walk that stops after 1000 consecutive blank rows) -- never `ws.max_row`/
+  than one worksheet qualifies they are ranked by (time base usable, real data rows). "Usable":
+  the first 2000 data rows of the sheet, run through `_finish_frame`, give a non-zero elapsed
+  span (`_xlsx_sheet_time_base_usable`). Measured: Strathcona's `33P12 26th dta-Graph.xlsx` has an
+  "Original Data" sheet (52,444 rows) whose Date/Time column is midnight-only with no separate
+  time column, which beat the real "Cleaned Data" sheet (52,442 rows) on row count alone and
+  loaded as 0 h; ranking by usability first restores 14.567 h. The ranked sheets are then tried
+  in order: one whose full load raises or whose span is zero/undefined falls through to the
+  next; if all fall through, a zero span raises `ValueError("... no sheet with a usable time
+  base")` (this is also what makes the WPX procedure workbooks, which used to load as fake 0 h
+  records, raise), otherwise the top sheet's own error is re-raised. XLSX only: CSV zero-span
+  behavior is unchanged. The row count is the REAL count, taken at zip level
+  (only when >1 usable sheet needs ordering; `_xlsx_zip_count_data_rows`: a streaming scan of the
+  sheet XML in 4 MB blocks: gap-free, fully populated blocks are counted with C-level byte operations,
+  any block with a gap/blank/self-closing/inline-string row (and the header rows) takes an exact
+  per-row regex path; ~0.9 s vs 3.4 s for ElementTree `iterparse` on a 733k-row sheet, which is kept
+  as `_xlsx_zip_count_data_rows_et` for a part with no plain `<row>` tags, and verified equal on every
+  sheet of the xlsx corpus; a row counts when it holds a `<v>` or inline `<t>` with text, skipped row numbers count as blank, 1000 consecutive blanks stop it;
+  `_xlsx_count_data_rows` is the openpyxl fallback with the same rule) -- fully parsing every
+  qualifying sheet through openpyxl just to count it roughly doubled single-sheet load time. Never
+  `ws.max_row`/
   `ws.dimensions`, which a worksheet's declared `<dimension>` can badly over-report (a sheet with
   669 real rows reporting `max_row == 1,047,735`, an inflated "used range" from stray formatting
   far past the last real row) or under-report (a missing `<dimension>` falls back to whatever
   openpyxl defaults to, often 1, which would otherwise rank a real data sheet below a notes sheet).
+  The data read applies the same 1000-consecutive-blank stop and drops that trailing run, so a
+  styled cell near row 1,048,000 no longer pads the frame with ~1M empty rows (a real data gap of
+  1000+ blank rows inside a sheet now truncates the read there).
   Data cells are converted so `_finish_frame` sees exactly what a CSV would give it
   (`_xlsx_cell_to_value`): a `datetime` cell becomes a `_PRIMARY_DT_FORMAT` string, or, when it
   carries a nonzero microsecond, the fractional-seconds fast-path format instead (so a
@@ -407,8 +436,9 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   "...Time" column when more than one is otherwise eligible -- an exact bare `"Time"` column still
   always wins outright, in column order, unaffected by either rule. A name match alone is still not
   enough: `_finish_frame` (shared by both loaders) also vets the companion's own sampled VALUES
-  (`_companion_is_time_of_day`) and refuses to join it unless they are themselves predominantly
-  bare time-of-day, not a second full datetime -- e.g. a "Job Time" column holding
+  (`_companion_is_time_of_day`, which strips each sampled value before the anchored match, so
+  `"Date, Time"` CSVs with a space after the comma still join) and refuses to join it unless they
+  are themselves predominantly bare time-of-day, not a second full datetime -- e.g. a "Job Time" column holding
   `"04/10/2016 12:00:00"`-shaped values beside a bare "Date" column is a real, independent
   datetime candidate in its own right, never a time-of-day pair to join with "Date".
 
@@ -468,9 +498,11 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   (`io_load.sniff_xlsx_data`, which opens and peeks the workbook) -- since the corpus has roughly
   640 non-questionnaire `.xlsx` files that are summaries/tallies/schedules, not DFIT records.
   This makes opening a folder with many candidate `.xlsx` files somewhat slower than one with
-  none (measured: ~0.18s -> ~2.9s scanning `aa_DJ Basin`, 258 candidate `.xlsx` files, each
-  sniffed once via the zip-peek in `io_load.sniff_xlsx_data` above -- openpyxl-based sniffing
-  measured ~32s over the same folder before that) -- an accepted cost of the gate, not a bug.
+  none (measured: `aa_DJ Basin` `scan_root` 0.44 s -> about 5.5 s on first read with 113
+  candidate `.xlsx` files, 2.1 s with a warm file cache; the full-corpus 643-file sniff takes
+  about 20 s cold, 8.5 s warm; each file is sniffed once via the zip-peek in
+  `io_load.sniff_xlsx_data` above -- openpyxl-based sniffing measured ~32s over `aa_DJ Basin`
+  before that) -- an accepted cost of the gate, not a bug.
 
   **test_id stability.** Adding a data `.xlsx` must never change the test_id of an existing
   csv/dbs test: an `.xlsx` whose stem matches a csv/dbs group joins that group as its XLSX source
@@ -484,7 +516,14 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   `scan_root("C:\DFIT Data")` comparison, pre- and post-xlsx-support: all 3269 pre-existing
   csv/dbs test_ids are unchanged; the xlsx-only additions are all new ids, never colliding with an
   existing one (every `test_id` within one `_entries_for_dir` call is already unique by
-  construction -- keyed on a directory's own distinct stems).
+  construction -- keyed on a directory's own distinct stems). Across directories, `scan_root`'s
+  deeper-folder-wins dedup does NOT apply to a csv/dbs entry versus an xlsx-only entry with the
+  same id (e.g. loose `W.csv` plus a subfolder `W\` holding only a data xlsx): the csv/dbs entry
+  keeps the id and the xlsx-only one is renamed `<id>/<stem>` (made unique with a ` (2)` suffix if
+  needed) with a scan warning. csv/dbs-vs-csv/dbs and xlsx-only-vs-xlsx-only collisions keep the
+  deeper-wins rule. Against the full corpus 0 of the 3269 old ids are missing or changed; 2 extra
+  renamed xlsx-only ids appear (the Berry IC 11-159HC pressure-summary workbook, under both
+  `Great Western` and `aa_DJ Basin`).
 
   `available_sources`/`data_path` add `"XLSX"` after `"CSV"`/`"DBS"`. Picks persist to a per-test
   `<folder>/<test_id>.dfit_picks.json`, written atomically (temp file + `os.replace`), same
@@ -512,7 +551,11 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   since-changed file set -- see `apply._exclusion_reason`) is computed over
   `features.sig_files_for(scan.files)`: csv/dbs files only, when the group has any at all, else
   its xlsx files -- so a same-well `.xlsx` discovered by a later re-scan never itself makes an
-  already-decided csv/dbs group's decision go stale.
+  already-decided csv/dbs group's decision go stale. The one exception: an `.xlsx` that the
+  decision itself recorded as a KEEPER is included even when the group has csv/dbs files
+  (`sig_files_for(files, keeps)`; `apply._exclusion_reason` passes the decision's keeps,
+  `review_app` the keeps being committed via `_record`), so replacing the kept workbook turns
+  that decision stale. None of the 8 recorded decisions keeps an xlsx, so none changed.
 - **Shell.** `ui.py` (`DfitApp`) is the only Tkinter consumer. It wires the per-step
   pickers to a recompute-and-redraw loop and holds no interpretation logic. `app.py` just
   launches it, accepting either a file or a folder path on the command line.
@@ -1504,7 +1547,7 @@ ambiguity, not fixed.
   aligned to that one chosen time base load with a meaningful time axis.
 - A very large workbook (Anderson/Tank DFIT.xlsx, 85-97 MB) loads slowly, or can appear to hang,
   since `load_xlsx` still has to read every real data row of the winning sheet into memory once
-  it's chosen (`_xlsx_count_data_rows`'s cheap early-stopping walk only bounds the SHEET-CHOICE
+  it's chosen (the zip-level row count only bounds the SHEET-CHOICE
   cost, not the eventual full read) -- and it runs on the Tkinter main thread, so the UI is
   unresponsive for the duration. Not fixed here.
 - A merged header cell becomes `"Unnamed: N"` for every column except its own anchor (top-left)

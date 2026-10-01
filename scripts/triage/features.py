@@ -162,8 +162,20 @@ class FolderScan:
 # sitting alongside them. So the fingerprint is computed over the group's csv/dbs files ONLY when
 # it has any; an xlsx-only group (no csv/dbs at all) falls back to its xlsx files instead, so it
 # still gets a real, non-empty fingerprint of its own.
-def sig_files_for(files: list[FileFeatures]) -> list[FileFeatures]:
-    csv_dbs = [f for f in files if not f.path.lower().endswith(".xlsx")]
+#
+# One exception: an xlsx the decision itself recorded as a KEEPER (`keeps`, the decision's own
+# keep list) is part of the fingerprint even when the group has csv/dbs files, so editing or
+# replacing the kept workbook turns the decision stale like any kept csv/dbs would. An xlsx that
+# is merely present, not kept, still never affects the fingerprint. Callers pass the ledger
+# decision's keeps when checking a recorded decision, and the keeps being committed when
+# recording one. With no keeps given (the default) the behavior is exactly the pre-exception one.
+def sig_files_for(files: list[FileFeatures], keeps=()) -> list[FileFeatures]:
+    kept = {os.path.normcase(os.path.normpath(k)) for k in keeps}
+    csv_dbs = [
+        f for f in files
+        if not f.path.lower().endswith(".xlsx")
+        or os.path.normcase(os.path.normpath(f.path)) in kept
+    ]
     return csv_dbs if csv_dbs else files
 
 

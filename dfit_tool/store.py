@@ -254,7 +254,10 @@ def scan_root(root: str, progress=None) -> list[TestEntry]:
     `well1/well1.csv` subfolder of the same name) is resolved in favor of the deeper folder --
     it is the richer layout -- with a warning attached to the surviving entry and the shallower
     one dropped. Duplicate iids would otherwise crash the folder-mode queue Treeview (insert with
-    a repeated iid)."""
+    a repeated iid). The exception is a collision between a csv/dbs entry and an xlsx-only entry:
+    the csv/dbs entry keeps the id whatever the depth, and the xlsx-only one is renamed
+    ``<id>/<stem>`` (made unique) with a warning, so adding a data .xlsx never displaces an
+    existing csv/dbs test."""
     entries: list[TestEntry] = []
     dirs_scanned = 0
     for dirpath, dirnames, filenames in os.walk(root):
@@ -265,10 +268,32 @@ def scan_root(root: str, progress=None) -> list[TestEntry]:
             progress(dirs_scanned, len(entries))
 
     by_id: dict[str, TestEntry] = {}
+    used_ids = {e.test_id for e in entries}
     for entry in entries:
         existing = by_id.get(entry.test_id)
         if existing is None:
             by_id[entry.test_id] = entry
+            continue
+        # csv/dbs vs xlsx-only: the csv/dbs entry keeps the id (adding a data .xlsx must never
+        # change or displace an existing csv/dbs test); the xlsx-only one gets a distinct,
+        # unique id "<id>/<stem>" plus a warning.
+        x_only = lambda e: not (e.csv_path or e.dbs_path)
+        if x_only(existing) != x_only(entry):
+            keeper, moved = (entry, existing) if x_only(existing) else (existing, entry)
+            new_id = f"{moved.test_id}/{moved.picks_basename}"
+            n = 2
+            while new_id in used_ids:
+                new_id = f"{moved.test_id}/{moved.picks_basename} ({n})"
+                n += 1
+            used_ids.add(new_id)
+            moved.scan_warnings.append(
+                f"xlsx-only test renamed {new_id!r}: id {moved.test_id!r} is taken by "
+                f"{os.path.basename(keeper.csv_path or keeper.dbs_path)!r} in "
+                f"{keeper.folder!r}"
+            )
+            moved.test_id = new_id
+            by_id[keeper.test_id] = keeper
+            by_id[new_id] = moved
             continue
         # Same test_id from two different folders: the deeper one wins.
         shallow, deep = sorted((existing, entry), key=lambda e: e.folder.count(os.sep))

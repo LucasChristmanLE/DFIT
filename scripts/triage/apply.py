@@ -225,7 +225,7 @@ def _exclusion_reason(scan: FolderScan, decision) -> str | None:
       this decision to files no human reviewed in this shape."""
     if scan.n_wells != 1:
         return "ambiguous_well"
-    current_sig = group_files_sig(f.sig for f in sig_files_for(scan.files))
+    current_sig = group_files_sig(f.sig for f in sig_files_for(scan.files, decision.keeps))
     if not decision.files_sig or decision.files_sig != current_sig:
         return "stale_decision"
     return None

@@ -1583,6 +1583,34 @@ def _find_edge_nat_block(dt: pd.Series) -> Optional[tuple[str, int, int]]:
     return None
 
 
+def _regular_step(positions: np.ndarray, secs: np.ndarray, diffs: np.ndarray,
+                  med: float) -> Optional[float]:
+    """The per-row step to extrapolate a timestamp-less edge block at, or None when the good run
+    is not regular enough to extrapolate.
+
+    Exactly regular (>=99% of consecutive steps within 1% of the median): the median step,
+    unchanged. Otherwise a drift-based test, so sub-second jitter (millisecond stamps wandering
+    0.87-1.0 s around a 1 s cadence) does not read as irregular: fit elapsed time against row
+    position by least squares; regular when the 99th-percentile |residual| is <= 2 median steps
+    AND >=99% of steps fall within 50% of the median. The fitted slope is then the step. A slope
+    that is not positive and finite reads as irregular. (99th percentile, not the maximum: a
+    handful of early dropped-sample steps in a 5,500-row 1 Hz record -- Reno 11-10PH Lime Data has
+    a 6 s and a 4 s step in its first 15 rows -- put the maximum residual at ~8.8 s while 99% of
+    rows sit within 0.74 s of the line.)"""
+    if np.mean(np.abs(diffs - med) <= 0.01 * med) >= 0.99:
+        return float(med)
+    if not np.mean(np.abs(diffs - med) <= 0.5 * med) >= 0.99:
+        return None
+    slope, intercept = np.polyfit(positions.astype(float), secs, 1)
+    if not (np.isfinite(slope) and slope > 0):
+        return None
+    resid = secs - (slope * positions + intercept)
+    if np.percentile(np.abs(resid), 99) > 2.0 * med:
+        return None
+    # slope is per ROW; the extrapolation offsets are per row too.
+    return float(slope)
+
+
 def _extrapolate_or_warn_edge_block(
     dt: pd.Series, df: pd.DataFrame, dt_col: str, time_col: Optional[str]
 ) -> tuple[pd.Series, list[str]]:
@@ -1663,6 +1691,7 @@ def _extrapolate_or_warn_edge_block(
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
 
     valid = dt.dropna()
+    valid_pos = np.flatnonzero(dt.notna().to_numpy())
     if len(valid) < 2:
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
     secs = (valid - valid.iloc[0]).dt.total_seconds().to_numpy()
@@ -1670,8 +1699,8 @@ def _extrapolate_or_warn_edge_block(
     med = np.median(diffs) if len(diffs) else np.nan
     if not (np.isfinite(med) and med > 0):
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
-    regular = np.mean(np.abs(diffs - med) <= 0.01 * med) >= 0.99
-    if not regular:
+    step = _regular_step(valid_pos, secs, diffs, med)
+    if step is None:
         return dt, [f"{n_data_bearing_total} data-bearing rows had no usable timestamp."]
 
     # Within the reachable run, only rows whose own cell(s) are genuinely blank/error-token are
@@ -1690,25 +1719,25 @@ def _extrapolate_or_warn_edge_block(
     positions = np.arange(sub_start, sub_end)[extrapolatable]
     if side == "trailing":
         anchor = dt.iloc[:start].dropna().iloc[-1]
-        offsets = (np.arange(1, n_reachable + 1) * med)[extrapolatable]
+        offsets = (np.arange(1, n_reachable + 1) * step)[extrapolatable]
         new_vals = (anchor + pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
             "datetime64[us]")
         dt.iloc[positions] = new_vals
         bad_value = str(df[dt_col].iloc[positions[0]]).strip()
         warn = (
             f"{n_extrapolatable} rows past {anchor} had no timestamp ({bad_value}); "
-            f"timestamps extrapolated at {med:g} s spacing."
+            f"timestamps extrapolated at {step:g} s spacing."
         )
     else:
         anchor = dt.iloc[end:].dropna().iloc[0]
-        offsets = (np.arange(n_reachable, 0, -1) * med)[extrapolatable]
+        offsets = (np.arange(n_reachable, 0, -1) * step)[extrapolatable]
         new_vals = (anchor - pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
             "datetime64[us]")
         dt.iloc[positions] = new_vals
         bad_value = str(df[dt_col].iloc[positions[-1]]).strip()
         warn = (
             f"{n_extrapolatable} rows before {anchor} had no timestamp ({bad_value}); "
-            f"timestamps extrapolated at {med:g} s spacing."
+            f"timestamps extrapolated at {step:g} s spacing."
         )
     warnings_out = [warn]
     n_unresolved = n_data_bearing_total - n_extrapolatable
@@ -1968,6 +1997,7 @@ def _companion_is_time_of_day(comp: str, df: pd.DataFrame) -> bool:
     sample = _normalize_ms_colon(_sample_series(df[comp]).astype("string"))
     if len(sample) == 0:
         return False
+    sample = sample.str.strip()
     frac = float(sample.str.match(_TIME_OF_DAY_RE).fillna(False).mean())
     return frac >= _COMPANION_TIME_OF_DAY_MIN_FRACTION
 
@@ -3097,7 +3127,8 @@ def _xlsx_count_data_rows(ws, data_start_row: int) -> int:
     Counts every row with at least one non-blank cell, stopping early -- without walking the rest
     of a huge, mostly-empty "used range" -- once ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive
     fully-blank rows are seen. Never walks a million empty rows just to confirm there is nothing
-    there.
+    there. This is the openpyxl fallback; ``load_xlsx`` normally counts with the much cheaper
+    zip-level ``_xlsx_zip_count_data_rows`` (same rule).
     """
     count = 0
     consec_blank = 0
@@ -3114,6 +3145,247 @@ def _xlsx_count_data_rows(ws, data_start_row: int) -> int:
     return count
 
 
+def _xlsx_zip_count_data_rows_et(z: zipfile.ZipFile, part: str, data_start_row: int) -> int:
+    """ElementTree ``iterparse`` version of ``_xlsx_zip_count_data_rows`` -- the fallback for a
+    sheet part whose rows the byte-regex scan cannot find (e.g. a prefixed ``<x:row>`` namespace).
+    A ``<row>`` counts when any of its cells
+    holds a ``<v>`` or ``<is>`` with text; a row number skipped in the XML is a blank row (the
+    way openpyxl's padded iteration treats it), and ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive
+    blank rows -- omitted or present-but-empty -- end the count, so a styled cell near row
+    1,048,000 is never walked to."""
+    row_tag = _XLSX_MAIN_NS + "row"
+    v_tag = _XLSX_MAIN_NS + "v"
+    is_tag = _XLSX_MAIN_NS + "is"
+    first = data_start_row + 1  # 1-based
+    count = 0
+    blank = 0
+    last_r = first - 1
+    with z.open(part) as f:
+        for _event, el in _ET.iterparse(f, events=("end",)):
+            if el.tag != row_tag:
+                continue
+            r_attr = el.get("r")
+            try:
+                r = int(r_attr) if r_attr else last_r + 1
+            except ValueError:
+                r = last_r + 1
+            if r < first:
+                el.clear()
+                continue
+            blank += max(0, r - last_r - 1)
+            last_r = r
+            if blank >= _XLSX_ROW_COUNT_BLANK_STOP:
+                break
+            has = False
+            for c in el:
+                v = c.find(v_tag)
+                if v is not None and v.text is not None:
+                    has = True
+                    break
+                isv = c.find(is_tag)
+                if isv is not None and "".join(isv.itertext()):
+                    has = True
+                    break
+            el.clear()
+            if has:
+                blank = 0
+                count += 1
+            else:
+                blank += 1
+                if blank >= _XLSX_ROW_COUNT_BLANK_STOP:
+                    break
+    return count
+
+
+_XLSX_ROW_RE = re.compile(rb"<row\b([^>]*?)(?:/>|>(.*?)</row>)", re.S)
+_XLSX_ROW_R_RE = re.compile(rb'\br="(\d+)"')
+_XLSX_ROW_VALUE_RE = re.compile(rb"<v>[^<]|<t(?:\s[^>]*)?>[^<]")
+
+
+# Bytes of worksheet XML ``_xlsx_zip_count_data_rows`` reads per block.
+_XLSX_COUNT_BLOCK_BYTES = 1 << 22
+
+
+def _xlsx_count_region_fast(region: bytes, st: list) -> bool:
+    """C-speed path of ``_xlsx_zip_count_data_rows`` for a block of complete ``<row>`` elements:
+    applies only when every row has an explicit number continuing exactly from the last one
+    (no gaps, no self-closing rows, no inline strings, no empty ``<v>``) and every row holds a
+    ``<v>`` -- i.e. nothing for the blank-run rule to see. Updates `st` ([count, blank, last_r,
+    seen]) and returns True; returns False, touching nothing, when any condition fails."""
+    n = region.count(b"</row>")
+    if (n == 0 or region.count(b"<row ") != n or region.count(b"<is") or
+            region.count(b"<v></v>") or region.count(b"<v/>")):
+        return False
+    i = region.find(b"<row ")
+    j = region.rfind(b"<row ")
+    mi = _XLSX_ROW_R_RE.search(region, i, i + 200)
+    mj = _XLSX_ROW_R_RE.search(region, j, j + 200)
+    if mi is None or mj is None:
+        return False
+    if int(mi.group(1)) != st[2] + 1 or int(mj.group(1)) != st[2] + n:
+        return False
+    if region.count(b"<v>") < n:
+        return False
+    with_v = sum(1 for p in region.split(b"</row>") if b"<v>" in p)
+    if with_v != n:
+        return False
+    st[0] += n
+    st[1] = 0
+    st[2] += n
+    st[3] = True
+    return True
+
+
+def _xlsx_count_region_slow(region: bytes, st: list, first: int) -> bool:
+    """Exact per-row version of ``_xlsx_count_region_fast`` (gaps, blanks, header rows above
+    `first`). Returns True once ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive blank rows are hit."""
+    for m in _XLSX_ROW_RE.finditer(region):
+        st[3] = True
+        rm = _XLSX_ROW_R_RE.search(m.group(1))
+        r = int(rm.group(1)) if rm else st[2] + 1
+        if r < first:
+            continue
+        st[1] += max(0, r - st[2] - 1)
+        st[2] = r
+        if st[1] >= _XLSX_ROW_COUNT_BLANK_STOP:
+            return True
+        body = m.group(2)
+        if body is not None and _XLSX_ROW_VALUE_RE.search(body):
+            st[1] = 0
+            st[0] += 1
+        else:
+            st[1] += 1
+            if st[1] >= _XLSX_ROW_COUNT_BLANK_STOP:
+                return True
+    return False
+
+
+def _xlsx_zip_count_data_rows(z: zipfile.ZipFile, part: str, data_start_row: int) -> int:
+    """Same count as ``_xlsx_count_data_rows`` but straight off worksheet part `part`'s raw XML
+    bytes -- no openpyxl cell objects, shared-string lookups, or number-format conversion, and no
+    ElementTree event machinery either (an ``iterparse`` count still cost ~6 s per 700k-row
+    sheet). A ``<row>`` counts when its body holds a ``<v>`` with text or an inline-string ``<t>``
+    with text; a row number skipped in the XML is a blank row (the way openpyxl's padded
+    iteration treats it), and ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive blank rows -- omitted or
+    present-but-empty -- end the count, so a styled cell near row 1,048,000 is never walked to.
+
+    Works in 4 MB blocks of complete rows. A block of plain, gap-free, fully populated rows (the
+    ordinary data region of a gauge export) is counted with a few C-level byte operations
+    (``_xlsx_count_region_fast``); any block with a gap, blank, self-closing or inline-string
+    row, and the header rows above the data, take the exact per-row regex path
+    (``_xlsx_count_region_slow``). Falls back to the ElementTree version when no ``<row>`` is
+    found at all (an unusual namespace prefix)."""
+    first = data_start_row + 1  # 1-based
+    st = [0, 0, first - 1, False]  # count, consecutive blank, last row number, saw any row
+    buf = b""
+    with z.open(part) as f:
+        while True:
+            chunk = f.read(_XLSX_COUNT_BLOCK_BYTES)
+            buf += chunk
+            idx = buf.rfind(b"</row>")
+            if idx < 0:
+                if not chunk:
+                    break
+                continue
+            idx += len(b"</row>")
+            region, buf = buf[:idx], buf[idx:]
+            if not _xlsx_count_region_fast(region, st):
+                if _xlsx_count_region_slow(region, st, first):
+                    break
+            if not chunk:
+                break
+    if not st[3]:
+        return _xlsx_zip_count_data_rows_et(z, part, data_start_row)
+    return st[0]
+
+
+def _xlsx_read_sheet_frame(ws, scan: dict, limit: Optional[int] = None) -> tuple:
+    """`ws`'s data rows (below `scan`'s header/units rows) as a raw ``(DataFrame, columns)``
+    pair, converted the way ``load_xlsx`` documents. Reads to Excel's row ceiling
+    (``_XLSX_MAX_ROW_CEILING``) but stops after ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive
+    fully-blank rows and drops that trailing blank run, so a styled cell near row 1,048,000
+    never pads the frame with ~1M empty rows. `limit` caps the number of data rows read (a cheap
+    sample). Raises ValueError when no data row survives.
+    """
+    header_cells = list(scan["header_cells"])
+    units_cells = scan["units_cells"]
+    folded = [
+        _xlsx_fold_unit(
+            "" if h is None else str(h).strip(),
+            units_cells[j] if units_cells is not None and j < len(units_cells) else None,
+        )
+        for j, h in enumerate(header_cells)
+    ]
+    columns = _xlsx_dedupe_headers(folded)
+
+    data_start_1based = scan["data_start_row"] + 1
+    # max_row=_XLSX_MAX_ROW_CEILING, not ws.max_row: the latter is read straight off this
+    # sheet's own declared <dimension> in read-only mode (never recomputed by scanning
+    # cells), so a stale/wrong dimension that UNDER-reports the real extent would silently
+    # truncate this read at that too-small bound -- see _XLSX_MAX_ROW_CEILING's own comment.
+    data_rows: list = []
+    blank = 0
+    for row in ws.iter_rows(
+        min_row=data_start_1based, max_row=_XLSX_MAX_ROW_CEILING, max_col=len(header_cells),
+        values_only=True,
+    ):
+        data_rows.append(row)
+        if all(c is None for c in row):
+            blank += 1
+            if blank >= _XLSX_ROW_COUNT_BLANK_STOP:
+                break
+        else:
+            blank = 0
+            if limit is not None and len(data_rows) >= limit:
+                break
+    if blank:
+        del data_rows[len(data_rows) - blank:]
+
+    data_rows, columns = _xlsx_trim_trailing_empty(data_rows, columns)
+    if not data_rows:
+        raise ValueError(f"sheet {ws.title!r} has a header row but no data rows")
+
+    # A date-with-midnight-only column paired with a separate time column (see load_xlsx's
+    # docstring) is formatted date-only -- the same date-with-companion pairing
+    # suggest_channels/_companion_time_col would find, checked against the FINAL column names so
+    # it matches whatever _finish_frame will actually see.
+    guess = suggest_channels(columns)
+    date_only_col = guess["datetime"] if guess["datetime"] and guess["time"] else None
+
+    cols_out: dict = {c: [] for c in columns}
+    ncols = len(columns)
+    for row in data_rows:
+        for j in range(ncols):
+            c = columns[j]
+            cell = row[j] if j < len(row) else None
+            cols_out[c].append(_xlsx_cell_to_value(cell, date_only=(c == date_only_col)))
+    return pd.DataFrame(cols_out), columns
+
+
+# Data rows read from a sheet to judge whether its time base is usable when more than one sheet
+# qualifies (see ``load_xlsx``).
+_XLSX_USABILITY_SAMPLE_ROWS = 2000
+
+
+def _xlsx_span_s(td: TestData) -> float:
+    """Finite max - min of `td.t_s`; 0.0 when undefined."""
+    f = td.t_s[np.isfinite(td.t_s)]
+    return float(f.max() - f.min()) if f.size else 0.0
+
+
+def _xlsx_sheet_time_base_usable(ws, scan: dict, path: str) -> bool:
+    """True when the first ``_XLSX_USABILITY_SAMPLE_ROWS`` data rows of `ws` run through
+    ``_finish_frame`` give >=2 distinct timestamps with a non-zero span. Measured case: a
+    Strathcona workbook's raw "Original Data" sheet (more rows than its "Cleaned Data" sheet)
+    has a midnight-only Date/Time column and no separate time column, so it has ONE distinct
+    timestamp. Never raises."""
+    try:
+        df, _cols = _xlsx_read_sheet_frame(ws, scan, limit=_XLSX_USABILITY_SAMPLE_ROWS)
+        return _xlsx_span_s(_finish_frame(df, path)) > 0.0
+    except Exception:
+        return False
+
+
 def load_xlsx(path: str) -> TestData:
     """Load a DFIT time-series XLSX workbook and attach an elapsed-seconds time base.
 
@@ -3127,10 +3399,20 @@ def load_xlsx(path: str) -> TestData:
     "MM/DD/YY"/"HH:MM:SS") is detected and folded into the header names as ``"Name (unit)"``
     (``_xlsx_fold_unit``) before being dropped, so the existing header-suffix unit detection
     (``_unit_of``) sees it exactly as it would from a CSV -- e.g. a bare "Time" header paired
-    with a "(hh:mm:ss)" units cell folds to ``"Time (hh:mm:ss)"``. When more than one worksheet
-    qualifies, the one with the most REAL data rows wins (``_xlsx_count_data_rows``, a cheap
-    early-stopping row walk) -- never ``ws.max_row``/``ws.dimensions``, which a worksheet's
-    declared ``<dimension>`` can badly over- or under-report (see that function's docstring).
+    with a "(hh:mm:ss)" units cell folds to ``"Time (hh:mm:ss)"``.
+
+    When more than one worksheet qualifies they are ranked by (time base usable, real data
+    rows): "usable" means the first ``_XLSX_USABILITY_SAMPLE_ROWS`` data rows, run through
+    ``_finish_frame``, give a non-zero elapsed span; the row count is the REAL non-blank count
+    (``_xlsx_zip_count_data_rows``, a zip-level streaming byte count with the same early
+    stop as ``_xlsx_count_data_rows``), taken only when more than one usable sheet needs ordering
+    (a lone sheet, or a lone usable sheet, is never counted) -- never ``ws.max_row``/``ws.dimensions``, which a worksheet's
+    declared ``<dimension>`` can badly over- or under-report. The ranked sheets are then tried in
+    order: a sheet whose full load fails or yields a zero/undefined span falls through to the
+    next. If every sheet falls through, a zero span raises ``ValueError("... no sheet with a
+    usable time base")``; otherwise the top-ranked sheet's own error is re-raised. The data read
+    stops after ``_XLSX_ROW_COUNT_BLANK_STOP`` consecutive fully-blank rows and drops that
+    trailing run (a styled cell near row 1,048,000 never pads the frame).
 
     Data cells are converted so ``_finish_frame`` (shared, unchanged, with ``load_csv``) sees
     exactly what a CSV would give it (``_xlsx_cell_to_value``): a ``datetime`` cell becomes a
@@ -3146,70 +3428,83 @@ def load_xlsx(path: str) -> TestData:
     """
     wb = _xlsx_open(path)
     try:
-        candidates = []
+        scans = []
         for ws in wb.worksheets:
             try:
                 scan = _xlsx_scan_sheet(ws)
             except Exception:
                 scan = None
-            if scan is None:
-                continue
-            approx_rows = _xlsx_count_data_rows(ws, scan["data_start_row"])
-            candidates.append((approx_rows, ws.title, scan))
-        if not candidates:
+            if scan is not None:
+                scans.append((ws, scan))
+        if not scans:
             raise ValueError(
                 f"{path!r}: no worksheet looks like DFIT time-series data (no header row with "
                 f"a date/time column and numeric data below it, in the first "
                 f"{_XLSX_HEADER_SCAN_ROWS} rows of any sheet)"
             )
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        _, sheet_title, scan = candidates[0]
-        ws = wb[sheet_title]
 
-        header_cells = list(scan["header_cells"])
-        units_cells = scan["units_cells"]
-        folded = [
-            _xlsx_fold_unit(
-                "" if h is None else str(h).strip(),
-                units_cells[j] if units_cells is not None and j < len(units_cells) else None,
-            )
-            for j, h in enumerate(header_cells)
-        ]
-        columns = _xlsx_dedupe_headers(folded)
+        # Ranking only matters with >1 qualifying sheet; a lone sheet skips the usability sample
+        # and the row count entirely. Otherwise: usability first (a cheap 2000-row sample per
+        # sheet), then the real row count -- a full extra pass over the sheet XML -- only for the
+        # usable sheets, and only when more than one of them needs ordering.
+        ranked = [[False, 0, ws, scan] for ws, scan in scans]
+        if len(ranked) > 1:
+            for r in ranked:
+                r[0] = _xlsx_sheet_time_base_usable(r[2], r[3], path)
+            to_count = [r for r in ranked if r[0]] if sum(r[0] for r in ranked) > 1 else (
+                ranked if not any(r[0] for r in ranked) else [])
+            if len(to_count) > 1:
+                # Real row counts via the zip-level parser when worksheet parts line up
+                # one-to-one with openpyxl's worksheets (workbook order); openpyxl's own walk
+                # otherwise.
+                zf = None
+                parts: list = []
+                try:
+                    zf = zipfile.ZipFile(path)
+                    parts = _xlsx_worksheet_parts(zf)
+                except Exception:
+                    parts = []
+                part_by_title = (
+                    {w.title: parts[k] for k, w in enumerate(wb.worksheets)}
+                    if len(parts) == len(wb.worksheets) else {}
+                )
+                try:
+                    for r in to_count:
+                        ws, scan = r[2], r[3]
+                        n_rows = None
+                        if zf is not None and ws.title in part_by_title:
+                            try:
+                                n_rows = _xlsx_zip_count_data_rows(
+                                    zf, part_by_title[ws.title], scan["data_start_row"])
+                            except Exception:
+                                n_rows = None
+                        if n_rows is None:
+                            n_rows = _xlsx_count_data_rows(ws, scan["data_start_row"])
+                        r[1] = n_rows
+                finally:
+                    if zf is not None:
+                        zf.close()
+            ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
 
-        data_start_1based = scan["data_start_row"] + 1
-        # max_row=_XLSX_MAX_ROW_CEILING, not ws.max_row: the latter is read straight off this
-        # sheet's own declared <dimension> in read-only mode (never recomputed by scanning
-        # cells), so a stale/wrong dimension that UNDER-reports the real extent would silently
-        # truncate this read at that too-small bound -- see _XLSX_MAX_ROW_CEILING's own comment.
-        data_rows = list(ws.iter_rows(
-            min_row=data_start_1based, max_row=_XLSX_MAX_ROW_CEILING, max_col=len(header_cells),
-            values_only=True,
-        ))
+        first_err: Optional[Exception] = None
+        zero_span = False
+        for _usable, _n, ws, scan in ranked:
+            try:
+                df, _cols = _xlsx_read_sheet_frame(ws, scan)
+                td = _finish_frame(df, path)
+            except Exception as e:
+                if first_err is None:
+                    first_err = e
+                continue
+            if _xlsx_span_s(td) > 0.0:
+                return td
+            zero_span = True
+        if zero_span:
+            raise ValueError(f"{path!r}: no sheet with a usable time base")
+        assert first_err is not None
+        raise first_err
     finally:
         wb.close()
-
-    data_rows, columns = _xlsx_trim_trailing_empty(data_rows, columns)
-    if not data_rows:
-        raise ValueError(f"{path!r}: sheet {sheet_title!r} has a header row but no data rows")
-
-    # A date-with-midnight-only column paired with a separate time column (see this function's
-    # docstring) is formatted date-only -- the same date-with-companion pairing
-    # suggest_channels/_companion_time_col would find, checked against the FINAL column names so
-    # it matches whatever _finish_frame will actually see.
-    guess = suggest_channels(columns)
-    date_only_col = guess["datetime"] if guess["datetime"] and guess["time"] else None
-
-    cols_out: dict = {c: [] for c in columns}
-    ncols = len(columns)
-    for row in data_rows:
-        for j in range(ncols):
-            c = columns[j]
-            cell = row[j] if j < len(row) else None
-            cols_out[c].append(_xlsx_cell_to_value(cell, date_only=(c == date_only_col)))
-    df = pd.DataFrame(cols_out)
-
-    return _finish_frame(df, path)
 
 
 def load(path: str) -> TestData:
