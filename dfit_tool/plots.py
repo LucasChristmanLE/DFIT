@@ -43,11 +43,20 @@ Y2_SCALE_G_MIN = 1.0    # G below this is the water-hammer spike -- excluded fro
 @dataclass
 class ViewDefaults:
     """The view a renderer suggests for first-visit display; ``None`` means autoscaled full
-    extent. Callers apply these to the Axes -- renderers never set limits themselves."""
+    extent. Callers apply these to the Axes -- renderers never set limits themselves.
+
+    ``y_color``/``y2_color`` name the color of the primary/twin trace this step's y/y2 zoom
+    slider should be painted to match (``ui.py``'s ``_build_sliders``/``_make_range_slider``);
+    ``None`` means no single color dominates that axis (e.g. log-log's two same-axis series),
+    and the slider falls back to a neutral gray. Not a view limit, so setting them does not
+    violate "renderers never set view limits" -- an early-return ``ViewDefaults()`` (no data
+    to color a slider for) stays colorless."""
     xlim: Optional[tuple[float, float]] = None
     ylim: Optional[tuple[float, float]] = None
     y2lim: Optional[tuple[float, float]] = None
     y3lim: Optional[tuple[float, float]] = None
+    y_color: Optional[str] = None
+    y2_color: Optional[str] = None
 
 
 def _decimate(x: np.ndarray, *ys: np.ndarray):
@@ -213,7 +222,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     _plot_dropout_markers(ax, t_h[masked_idx], p_masked[masked_idx])
 
     ax.set_xlabel("time from file start (h)")
-    ax.set_ylabel("pressure (psi)")
+    ax.set_ylabel("pressure (psi)", color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
     if res.rate_all is not None:
@@ -252,7 +262,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         return ViewDefaults()
     p_lo, p_hi = float(np.nanmin(p[finite_p])), float(np.nanmax(p[finite_p]))
     pad = 0.05 * max(p_hi - p_lo, 1.0)
-    return ViewDefaults(ylim=(0.0, p_hi + pad))
+    y2_color = "tab:blue" if res.rate_all is not None else None
+    return ViewDefaults(ylim=(0.0, p_hi + pad), y_color=press_color, y2_color=y2_color)
 
 
 def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -319,7 +330,8 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
             title += f"   qmax={res.qmax_bpm:.2f} bpm"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=xlim)
+    y2_color = "tab:blue" if res.rate_all is not None else None
+    return ViewDefaults(xlim=xlim, y_color=press_color, y2_color=y2_color)
 
 
 def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -368,7 +380,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     else:
         ax.set_title("Apparent ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=(-1.0, 3.0))
+    return ViewDefaults(xlim=(-1.0, 3.0), y_color="black")
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -499,7 +511,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     title += f"   ({state.closure_scenario or '?'})"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
-    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim)
+    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim, y_color="black", y2_color="tab:red")
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -542,7 +554,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
         title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
-    return ViewDefaults(y2lim=y2lim)
+    return ViewDefaults(y2lim=y2lim, y_color="black", y2_color="tab:red")
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -618,7 +630,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
-    return ViewDefaults(xlim=(0.0, xhi))
+    return ViewDefaults(xlim=(0.0, xhi), y_color="black")
 
 
 def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -691,7 +703,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # finite_pos is already known non-empty -- the all-non-positive case returned above.
     y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
     ylim = (y_lo * 0.5, y_hi * 2.0)  # log-safe floor/pad
-    return ViewDefaults(xlim=xlim, ylim=ylim)
+    return ViewDefaults(xlim=xlim, ylim=ylim, y_color="black")
 
 
 RENDERERS = {

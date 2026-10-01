@@ -300,10 +300,20 @@ def _refresh_stub(td, state, step):
     stub._update_panel_visibility = lambda: None
     stub._update_panel = lambda: None
     stub._update_unit_labels = lambda: None
+    stub._x_slider = None
+    stub._y_slider = None
+    stub._y2_slider = None
     stub._make_range_slider = types.MethodType(DfitApp._make_range_slider, stub)
     stub._build_sliders = types.MethodType(DfitApp._build_sliders, stub)
     stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
     stub._d2_axes = types.MethodType(DfitApp._d2_axes, stub)
+    stub._layout_sliders = types.MethodType(DfitApp._layout_sliders, stub)
+    stub._x_track_geometry_px = types.MethodType(DfitApp._x_track_geometry_px, stub)
+    stub._get_renderer = types.MethodType(DfitApp._get_renderer, stub)
+    stub._measure_overhang_px = types.MethodType(DfitApp._measure_overhang_px, stub)
+    stub._measure_bottom_overhang_px = types.MethodType(DfitApp._measure_bottom_overhang_px, stub)
+    stub._measure_slider_text_col_px = types.MethodType(
+        DfitApp._measure_slider_text_col_px, stub)
     stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     return stub

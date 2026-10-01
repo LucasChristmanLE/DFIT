@@ -506,6 +506,12 @@ Preserve these when changing the code.
   mutate the current `ViewState`, and `draw_idle()`. A full refresh happens only on step
   change, pick commit, Apply, scenario change, or Reset view. Hold slider references on
   `self` — matplotlib keeps no strong reference and GC otherwise kills the callbacks.
+  The right/bottom-margin slider layout itself is pixel-based (`sliders.right_margin_layout`/
+  `bottom_margin_layout`, `ui._layout_sliders`) rather than a fixed figure fraction, since
+  tick-label pixel width doesn't scale with the window; its pixel constants scale with
+  `fig.dpi / 100` (Windows display scaling raises TkAgg's dpi) — it re-runs via `set_position`/`subplots_adjust` (never
+  `refresh()`) on every canvas resize and once after `_build_sliders` on each refresh, and
+  each vertical slider is colored to match its line via `ViewDefaults.y_color`/`y2_color`.
 - **Diagnostic derivatives are reported positive-up for a declining pressure** (negated),
   matching how G-function and log-log plots are conventionally drawn.
 

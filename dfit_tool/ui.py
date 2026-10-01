@@ -29,6 +29,41 @@ from .plots import D2_AXIS_GID, ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
 _SLIDER_GID = "slider"
+# Guess used only when no renderer is available yet to measure the real twin/d2 axis overhang
+# (the initial _build_sliders() rect, before _layout_sliders() corrects it; or a resize firing
+# on a canvas that can't produce a renderer) -- a reasonable stand-in for a typical tick-label
+# column, not a measurement.
+_FALLBACK_OVERHANG_PX = 60.0
+# Neutral fallback for a slider with no ViewDefaults.y_color/y2_color (a horizontal slider, or
+# a step with no single dominant color for that axis, e.g. log-log's two same-axis series).
+_SLIDER_NEUTRAL_COLOR = "0.45"
+# _layout_sliders measure->apply passes to let the d2P/dG2 axis's overhang settle (its spine
+# sits at a FRACTION of the primary Axes' own width, ("axes", 1.12) -- so its absolute pixel
+# overhang moves every time subplots_adjust changes that width, and a single measure-then-apply
+# pass under-reserves after a big width change). Module-level (not a class attribute) so a
+# duck-typed test stub -- a plain SimpleNamespace with no class hierarchy of its own -- can bind
+# ``_layout_sliders`` without also needing to redeclare these.
+_LAYOUT_PASSES = 3
+# A pass-to-pass overhang change below this (px) counts as settled -- stop iterating early.
+_LAYOUT_SETTLE_PX = 1.0
+# dpi the pixel-ish layout constants below (col_px/pad_px/TRACK_PX, the x slider's track height/
+# label gap/text pad) are tuned for. Every use scales by fig.dpi / _LAYOUT_DPI_REF, since a raw
+# pixel count doesn't track a points-based quantity -- text, drawn at a fixed point size -- as
+# dpi rises (e.g. Windows 150%/200% display scaling under TkAgg): an unscaled 60px column and
+# an unscaled 14px track both still made visual sense at 100dpi but not at 150+.
+_LAYOUT_DPI_REF = 100.0
+# Guess used only when no renderer is available yet to measure the real x-axis tick-label/
+# xlabel overhang below the primary Axes (_build_sliders' initial rect, or a resize firing on a
+# canvas that can't produce a renderer) -- mirrors _FALLBACK_OVERHANG_PX for the bottom margin.
+_FALLBACK_BOTTOM_OVERHANG_PX = 40.0
+# Nominal (100dpi) height of the horizontal (x) slider's own track.
+_X_TRACK_HEIGHT_PX = 18.0
+# Nominal (100dpi) small gap between the x slider's track top and the x-axis tick labels/xlabel
+# sitting just above it.
+_BOTTOM_LABEL_GAP_PX = 6.0
+# Nominal (100dpi) small pad added below the x slider's split text's estimated height
+# (sliders.TEXT_HEIGHT_PT; never measured), so the text doesn't sit flush against the figure's bottom edge.
+_BOTTOM_TEXT_PAD_PX = 3.0
 
 STEPS = [
     ("overview", "Overview"),
@@ -401,6 +436,13 @@ class DfitApp:
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=center)
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+        # Re-run the pixel-based slider layout on every canvas resize -- tick-label pixel width
+        # doesn't scale with a fixed figure-fraction margin, so a window resize (this app has no
+        # fixed size) can reopen the exact overlap _layout_sliders() fixes on refresh(). This
+        # only repositions existing Axes (set_position never destroys a slider) and redraws --
+        # it must never call refresh() (that would fig.clf() the sliders mid-resize, same
+        # invariant as a slider's own on_changed callback).
+        self.canvas.mpl_connect("resize_event", self._on_canvas_resize)
 
         # right: pick panel
         panel = ttk.Frame(body, padding=8)
@@ -1329,11 +1371,14 @@ class DfitApp:
         if d2_axes is not None and defaults.y3lim is not None:
             d2_axes.set_ylim(defaults.y3lim)
 
-        self._build_sliders(full_x, full_y, full_y2, view, twin)
-        # tight_layout would fight the manually placed slider axes reserved on the right margin;
-        # the d2 axis's offset third spine needs a wider right margin than usual when it's on.
-        right = 0.70 if (self.step == "gfunction" and self.state.show_d2pdg2) else 0.84
-        self.fig.subplots_adjust(left=0.10, right=right, bottom=0.16, top=0.90)
+        self._build_sliders(full_x, full_y, full_y2, view, twin,
+                            y_color=defaults.y_color, y2_color=defaults.y2_color)
+        # tight_layout would fight the manually placed slider axes reserved on the right margin.
+        # _layout_sliders() measures the twin/d2 axis's real tick-label overhang in pixels and
+        # sets both the plot's right margin and the sliders' positions from that -- replacing the
+        # old fixed-fraction right=0.70/0.84 split, which didn't scale with window width/DPI and
+        # let the sliders sit on top of the twin's tick labels once the figure got narrow.
+        self._layout_sliders()
         self._attach_controllers()
         self.canvas.draw_idle()
         self._update_stepbar()
@@ -1408,7 +1453,7 @@ class DfitApp:
                 return a
         return None
 
-    def _build_sliders(self, full_x, full_y, full_y2, view, twin):
+    def _build_sliders(self, full_x, full_y, full_y2, view, twin, y_color=None, y2_color=None):
         """Per-axis RangeSlider zoom controls: one under the plot for x, one on the right edge
         for y, and (only when a twin exists) one further right for y2.
 
@@ -1416,36 +1461,74 @@ class DfitApp:
         ranges/initial values always reflect the just-applied ViewState. The on_changed
         callbacks only set limits on the target Axes, mutate ``view`` in place, and draw_idle --
         never refresh() (fig.clf() would destroy the slider mid-drag).
+
+        The rects built here are only an initial guess (via ``sliders.right_margin_layout``/
+        ``bottom_margin_layout`` with fixed fallback overhangs, since there is no renderer to
+        measure the real ones from yet) -- ``refresh()`` immediately calls ``_layout_sliders()``
+        after this, which corrects every Axes' position from the actually-measured overhangs
+        (and, for the vertical sliders' column width, their own real text). Both steps share the
+        same pure layout functions so the two positions agree in everything but those figures.
         """
+        fig_w_px = self.fig.get_size_inches()[0] * self.fig.dpi
+        fig_h_px = self.fig.get_size_inches()[1] * self.fig.dpi
+        dpi_scale = self.fig.dpi / _LAYOUT_DPI_REF
+        # full_y (and so a y slider) is always present once there is data; full_y2 (and a
+        # second column) only when refresh() found a twin to read it from. Reserving a column
+        # here even for a slider that _make_range_slider ends up refusing (a degenerate extent)
+        # is harmless -- _layout_sliders() recomputes from the sliders actually built anyway.
+        n_vertical = 2 if twin is not None else 1
+        axes_right_frac, x_fracs = sliders.right_margin_layout(
+            fig_w_px, n_vertical, _FALLBACK_OVERHANG_PX * dpi_scale,
+            col_px=60.0 * dpi_scale, pad_px=12.0 * dpi_scale, track_px=sliders.TRACK_PX * dpi_scale)
+        # Same safety clamp _layout_sliders applies -- without it a very narrow canvas gives the x
+        # slider a negative width and fig.add_axes raises.
+        axes_right_frac = min(max(axes_right_frac, 0.3), 0.95)
+        track_w_frac = sliders.TRACK_PX * dpi_scale / fig_w_px
+
+        default_track_y0_px, track_h_px, text_below_px, label_gap_px = (
+            self._x_track_geometry_px(fig_h_px))
+        _, track_y0_frac = sliders.bottom_margin_layout(
+            fig_h_px, default_track_y0_px, track_h_px, text_below_px,
+            _FALLBACK_BOTTOM_OVERHANG_PX * dpi_scale, label_gap_px)
+
         self._x_slider = self._make_range_slider(
-            rect=[0.10, 0.04, 0.68, 0.03], orientation="horizontal",
+            rect=[0.10, track_y0_frac, axes_right_frac - 0.10, track_h_px / fig_h_px],
+            orientation="horizontal",
             full_range=full_x, cur_range=view.xlim, scale=self.ax.get_xscale(),
             apply=lambda lo, hi: self.ax.set_xlim(lo, hi),
             store=lambda lo, hi: setattr(view, "xlim", (lo, hi)),
         )
         self._y_slider = self._make_range_slider(
-            rect=[0.87, 0.16, 0.02, 0.74], orientation="vertical",
+            rect=[x_fracs[0], 0.16, track_w_frac, 0.74], orientation="vertical",
             full_range=full_y, cur_range=view.ylim, scale=self.ax.get_yscale(),
             apply=lambda lo, hi: self.ax.set_ylim(lo, hi),
             store=lambda lo, hi: setattr(view, "ylim", (lo, hi)),
+            color=y_color,
         )
         self._y2_slider = None
         if twin is not None:  # refresh() only sets full_y2 when there is a twin to read it from
             self._y2_slider = self._make_range_slider(
-                rect=[0.93, 0.16, 0.02, 0.74], orientation="vertical",
+                rect=[x_fracs[1], 0.16, track_w_frac, 0.74], orientation="vertical",
                 full_range=full_y2, cur_range=view.y2lim if view.y2lim is not None else full_y2,
                 scale=twin.get_yscale(),
                 apply=lambda lo, hi: twin.set_ylim(lo, hi),
                 store=lambda lo, hi: setattr(view, "y2lim", (lo, hi)),
+                color=y2_color,
             )
 
-    def _make_range_slider(self, rect, orientation, full_range, cur_range, scale, apply, store):
+    def _make_range_slider(self, rect, orientation, full_range, cur_range, scale, apply, store,
+                           color=None):
         """Build one PanRangeSlider, or return None for a degenerate/non-finite extent (a flat
         or single-sample axis has nothing to zoom).
 
         ``scale`` is the target Axes' actual xscale/yscale ("log" or "linear") -- for a log axis
         the slider itself operates in log10 space (clamped to a 1e-12 floor) with a valfmt that
         displays the linear value, and the callback exponentiates before applying limits.
+
+        ``color`` (a vertical slider only, per ``ViewDefaults.y_color``/``y2_color``) paints the
+        selected-range fill, the handles, and the split value texts to match the line this
+        slider zooms -- ``None`` (a horizontal slider, or a step with no single dominant color
+        for that axis, e.g. log-log) falls back to a neutral gray.
         """
         is_log = scale == "log"
         lo_full, hi_full = full_range
@@ -1467,8 +1550,13 @@ class DfitApp:
         ax = self.fig.add_axes(rect)
         ax.set_gid(_SLIDER_GID)
         valfmt = (lambda v: f"{10.0 ** v:.3g}") if is_log else None
-        slider = sliders.PanRangeSlider(ax, "", lo_full, hi_full, valinit=(lo_cur, hi_cur),
-                                        orientation=orientation, valfmt=valfmt)
+        c = color if color is not None else _SLIDER_NEUTRAL_COLOR
+        slider = sliders.PanRangeSlider(
+            ax, "", lo_full, hi_full, valinit=(lo_cur, hi_cur), orientation=orientation,
+            valfmt=valfmt, facecolor=c, handle_style={"facecolor": c})
+        if slider._hi_text is not None:
+            slider._hi_text.set_color(c)
+            slider._lo_text.set_color(c)
 
         def _on_changed(val):
             lo, hi = val
@@ -1480,6 +1568,180 @@ class DfitApp:
 
         slider.on_changed(_on_changed)
         return slider
+
+    def _on_canvas_resize(self, event):
+        """Canvas resize_event hook (connected once in __init__): re-run the pixel-based slider
+        layout so the sliders track the twin axis's tick labels as the window is resized, then
+        redraw. Never calls refresh() (see the connection comment in __init__)."""
+        self._layout_sliders()
+        self.canvas.draw_idle()
+
+    def _x_track_geometry_px(self, fig_h_px):
+        """Pixel inputs for ``sliders.bottom_margin_layout`` that don't depend on a measured
+        overhang -- the look-and-feel baseline track position, the track's own height, the
+        split text's vertical clearance requirement, and the small label gap -- all dpi-scaled
+        from this module's nominal (100dpi) constants. Points-denominated figures (the text
+        offset/height) need no separate ``dpi_scale`` factor of their own: ``px = pt * dpi/72``
+        is already dpi-correct, which is the whole point of using points there in the first
+        place (see sliders.py's ``TEXT_OFFSET_PT``)."""
+        dpi_scale = self.fig.dpi / _LAYOUT_DPI_REF
+        default_track_y0_px = 0.04 * fig_h_px
+        track_h_px = _X_TRACK_HEIGHT_PX * dpi_scale
+        text_below_px = ((sliders.TEXT_OFFSET_PT + sliders.TEXT_HEIGHT_PT) * self.fig.dpi / 72.0
+                         + _BOTTOM_TEXT_PAD_PX * dpi_scale)
+        label_gap_px = _BOTTOM_LABEL_GAP_PX * dpi_scale
+        return default_track_y0_px, track_h_px, text_below_px, label_gap_px
+
+    def _layout_sliders(self):
+        """Pixel-based right/bottom-margin layout for the plot and its zoom sliders.
+
+        Measures how far the twin axis (and, on the gfunction step with d2P/dG2 on, the third
+        axis too) overhangs past the primary Axes' right edge, and how far the x-axis's own tick
+        labels/xlabel overhang past its bottom edge -- via ``get_tightbbox`` against a live
+        renderer, so both reflect the actual tick-label text at the current font/DPI/window
+        size, not a guess -- and feeds those into ``sliders.right_margin_layout``/
+        ``bottom_margin_layout`` to get the plot's margins and each slider's track position.
+        Each vertical slider's own column width comes from the wider of a dpi-scaled default and
+        the actual measured width of that slider's own rendered text (``_measure_slider_text_col_px``),
+        so a wide log-format value (e.g. "1.3e+03") gets a wide-enough column instead of
+        colliding with its neighbor. Applies everything with ``subplots_adjust``/
+        ``set_position``, which never destroys a slider (unlike ``fig.clf()`` -- so this is safe
+        to call from a slider's own resize/redraw path without breaking the "sliders never call
+        refresh()" invariant).
+
+        Repeats measure-then-apply up to ``_LAYOUT_PASSES`` times, since applying a new right
+        margin can itself move the d2P/dG2 axis's overhang (see that constant's comment) --
+        stops as soon as both measured overhangs settle to within ``_LAYOUT_SETTLE_PX``. Every
+        value used to position a slider after the loop (``axes_right_frac``/``x_fracs``/
+        ``bottom_frac``/``track_y0_frac``) is exactly what the loop's LAST iteration computed
+        and then passed to ``subplots_adjust`` in that same iteration -- never a value clamped
+        or recomputed afterward without being re-applied, which is what let the sliders and the
+        plot's own margin disagree whenever the loop exhausted without settling.
+
+        Always runs -- including ``subplots_adjust`` -- even when no slider exists at all (e.g.
+        no file loaded yet, or a step whose extents are all degenerate): the plot still gets a
+        margin sized for zero reserved columns rather than being left at whatever margin the
+        previous step happened to leave behind. Called from refresh() right after
+        _build_sliders() (correcting that call's fallback-overhang guesses) and from the
+        canvas's resize_event hook on every resize.
+        """
+        fig_w_px = self.fig.get_size_inches()[0] * self.fig.dpi
+        fig_h_px = self.fig.get_size_inches()[1] * self.fig.dpi
+        dpi_scale = self.fig.dpi / _LAYOUT_DPI_REF
+        present = [s for s in (self._y_slider, self._y2_slider) if s is not None]
+        default_track_y0_px, track_h_px, text_below_px, label_gap_px = (
+            self._x_track_geometry_px(fig_h_px))
+        col_px_floor = 60.0 * dpi_scale
+        pad_px = 12.0 * dpi_scale
+        track_px = sliders.TRACK_PX * dpi_scale
+
+        right_overhang_px = self._measure_overhang_px()
+        bottom_overhang_px = self._measure_bottom_overhang_px()
+        for _ in range(_LAYOUT_PASSES):
+            col_px = max(col_px_floor, self._measure_slider_text_col_px(present, dpi_scale))
+            axes_right_frac, x_fracs = sliders.right_margin_layout(
+                fig_w_px, len(present), right_overhang_px,
+                col_px=col_px, pad_px=pad_px, track_px=track_px)
+            # Safety floor/ceiling: an extreme overhang measurement (or a pathologically narrow
+            # window) should never collapse the plot to zero/negative width or claim the whole
+            # figure for it -- clamped here, in the same value that both subplots_adjust and the
+            # slider positioning below use, so they can't disagree.
+            axes_right_frac = min(max(axes_right_frac, 0.3), 0.95)
+            bottom_frac, track_y0_frac = sliders.bottom_margin_layout(
+                fig_h_px, default_track_y0_px, track_h_px, text_below_px,
+                bottom_overhang_px, label_gap_px)
+
+            self.fig.subplots_adjust(left=0.10, right=axes_right_frac, bottom=bottom_frac,
+                                     top=0.90)
+
+            new_right_overhang_px = self._measure_overhang_px()
+            new_bottom_overhang_px = self._measure_bottom_overhang_px()
+            settled = (abs(new_right_overhang_px - right_overhang_px) < _LAYOUT_SETTLE_PX
+                      and abs(new_bottom_overhang_px - bottom_overhang_px) < _LAYOUT_SETTLE_PX)
+            right_overhang_px, bottom_overhang_px = new_right_overhang_px, new_bottom_overhang_px
+            if settled:
+                break
+
+        track_w_frac = track_px / fig_w_px
+        for slider, x_frac in zip(present, x_fracs):
+            # The vertical span tracks the plot's own (bottom_frac..0.90), not a fixed
+            # 0.16..0.90, so it stays aligned with the plot even when bottom_frac grows past
+            # 0.16 to clear a short figure's x-slider text (see bottom_margin_layout).
+            slider.ax.set_position([x_frac, bottom_frac, track_w_frac, 0.90 - bottom_frac])
+        if self._x_slider is not None:
+            self._x_slider.ax.set_position(
+                [0.10, track_y0_frac, axes_right_frac - 0.10, track_h_px / fig_h_px])
+
+    def _get_renderer(self):
+        """The canvas's current renderer, or ``None`` if one isn't available yet (e.g. a canvas
+        not yet realized) -- shared by every ``_layout_sliders`` measurement helper so each one
+        degrades to its own fallback constant the same way, rather than raising."""
+        try:
+            return self.fig.canvas.get_renderer()
+        except Exception:
+            return None
+
+    def _measure_overhang_px(self):
+        """Max, over the primary Axes, its twin, and the gfunction d2P/dG2 axis, of how far that
+        Axes' own tightbbox extends past the primary Axes' right edge, in device pixels. Falls
+        back to a fixed guess when no renderer is available yet (e.g. a canvas not yet realized),
+        or when an Axes' own tightbbox comes back ``None`` (matplotlib can return that for some
+        empty/degenerate Axes), rather than raising -- ``_layout_sliders`` still runs, just
+        against a guess until the next resize/refresh gives it a real measurement."""
+        renderer = self._get_renderer()
+        if renderer is None:
+            return _FALLBACK_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF
+        overhangs = []
+        for ax in (self.ax, self._twin_axes(), self._d2_axes()):
+            if ax is None:
+                continue
+            try:
+                bbox = ax.get_tightbbox(renderer)
+            except Exception:
+                continue
+            if bbox is None:
+                continue
+            overhangs.append(bbox.x1 - self.ax.bbox.x1)
+        return (max(overhangs) if overhangs
+                else _FALLBACK_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF)
+
+    def _measure_bottom_overhang_px(self):
+        """How far the primary Axes' own x-axis tick labels + xlabel extend below its bottom
+        edge, in device pixels -- the bottom-margin counterpart of ``_measure_overhang_px``
+        (mirroring it, including the same no-renderer/``None``-tightbbox fallback)."""
+        renderer = self._get_renderer()
+        if renderer is None:
+            return _FALLBACK_BOTTOM_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF
+        try:
+            bbox = self.ax.get_tightbbox(renderer)
+        except Exception:
+            bbox = None
+        if bbox is None:
+            return _FALLBACK_BOTTOM_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF
+        return max(self.ax.bbox.y0 - bbox.y0, 0.0)
+
+    def _measure_slider_text_col_px(self, present, dpi_scale):
+        """Widest rendered split-text width among the given vertical sliders' hi/lo texts, plus
+        a dpi-scaled side pad on each side -- sizing a slider's column from its own real content
+        (e.g. a log-scaled slider's "1.3e+03") rather than a flat guess that can be too narrow
+        for it and collide with its neighbor. Returns 0.0 (leaving the caller's dpi-scaled
+        default floor untouched) when there's nothing to measure yet (no sliders, or no
+        renderer available)."""
+        renderer = self._get_renderer()
+        if renderer is None:
+            return 0.0
+        widths = []
+        for slider in present:
+            for text in (slider._hi_text, slider._lo_text):
+                try:
+                    bbox = text.get_window_extent(renderer)
+                except Exception:
+                    continue
+                if bbox is not None:
+                    widths.append(bbox.width)
+        if not widths:
+            return 0.0
+        return max(widths) + 2.0 * sliders.COLUMN_TEXT_PAD_PX * dpi_scale
 
     def _reset_view(self):
         self._views[self.step] = None
