@@ -97,6 +97,7 @@ _PC_HINTS = {
 # Tabs for the single "Interpretation guide..." window (_open_guide), in display order.
 GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_content.POSTCLOSURE_GUIDE)]
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
+_LOGO_PATH = pathlib.Path(__file__).parent / "assets" / "liberty_logo.png"
 
 # The 23 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
@@ -342,6 +343,23 @@ class DfitApp:
                                        state="disabled")
         self.cmb_source.pack(side="left")
         self.cmb_source.bind("<<ComboboxSelected>>", lambda e: self._on_source_change())
+
+        # Held on self: Tk GCs an unreferenced PhotoImage and the label goes blank.
+        try:
+            self._logo_img = tk.PhotoImage(file=str(_LOGO_PATH))
+        except Exception:
+            self._logo_img = None
+        if self._logo_img is not None:
+            # A packed spacer fixes the bar's size and keeps other widgets clear of the logo;
+            # the logo is placed over it so it can sit lower, into the frame's bottom padding,
+            # without the bar growing.
+            w, h = self._logo_img.width(), self._logo_img.height()
+            ttk.Frame(top, width=w + 22, height=h + 10).pack(side="right")
+            # tk.Label, not ttk: the theme's label border adds 4 px that pushes the image off
+            # the bar. place() coordinates start inside the frame's 6 px padding.
+            bg = ttk.Style().lookup("TFrame", "background")
+            tk.Label(top, image=self._logo_img, bd=0, padx=0, pady=0, highlightthickness=0,
+                     bg=bg).place(relx=1.0, x=-14, y=14, anchor="ne")
 
         cfg = ttk.Frame(self.root, padding=(6, 0))
         cfg.pack(side="top", fill="x")
