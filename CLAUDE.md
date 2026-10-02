@@ -77,7 +77,12 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   `ModifierSpanController`, `HoverCursorController`, `_CaptureGate` press arbiter), pure
   `commit_*` functions turning finished geometry into `PickState` changes, and per-step `seed_*`
   functions. `plots.py`: `render_*` renderers and the headless PNG export
-  (`render_step_figure`/`save_all_step_pngs`). `sliders.py`: `PanRangeSlider`.
+  (`render_step_figure`/`save_all_step_pngs`, which also writes `9_summary.png` via
+  `render_summary`). `sliders.py`: `PanRangeSlider`.
+- **Expanded results.** `summary.py` (Tk-free, model/interpret only): `summary_sections` builds
+  the grouped tables and `chart_values` the values `plots.render_summary` draws, both through
+  the same not-visited gate (`summary.visited`) the sidebar uses. Computes nothing; new values
+  go in `compute_all`. `ui._open_results_window` shows both in a live, non-modal Toplevel.
 - **Folder-mode persistence.** `store.py` (Tk-free): `scan_root`, `TestEntry`, per-test picks
   JSON, `status_for`, and the `dfit_log.csv` read/write/upsert.
 - **Shell.** `ui.py` (`DfitApp`) is the only Tkinter consumer. It wires pickers to a

@@ -421,6 +421,22 @@ class DerivedResults:
     shmin_rapid_gradient: Optional[float] = None
     shmin_stiffness_gradient: Optional[float] = None
     pore_pressure_gradient: Optional[float] = None
+    effective_isip_compliance_gradient: Optional[float] = None
+    effective_isip_tangent_gradient: Optional[float] = None
+    effective_isip_variable_gradient: Optional[float] = None
+
+    # Pick details behind the reported numbers, shown in the Expanded results window (not
+    # logged): G-time of each closure pick, the Liberty anchor, and the pore-pressure line fit.
+    closure_G_compliance: Optional[float] = None
+    closure_G_tangent: Optional[float] = None
+    closure_G_variable: Optional[float] = None
+    min_dpdg_time_s: Optional[float] = None  # shut-in time at the min-dP/dG pick; None for C-X
+    min_dpdg_pressure: Optional[float] = None  # BHP at the min-dP/dG pick; None for C-X
+    liberty_anchor_G: Optional[float] = None
+    liberty_anchor_pressure: Optional[float] = None
+    liberty_anchor_time_s: Optional[float] = None  # shut-in time at the Liberty anchor G
+    pore_pressure_slope: Optional[float] = None
+    pore_pressure_n_points: Optional[int] = None
 
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
@@ -526,6 +542,9 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
         ("shmin_rapid", "shmin_rapid_gradient"),
         ("shmin_stiffness", "shmin_stiffness_gradient"),
         ("pore_pressure", "pore_pressure_gradient"),
+        ("effective_isip_compliance", "effective_isip_compliance_gradient"),
+        ("effective_isip_tangent", "effective_isip_tangent_gradient"),
+        ("effective_isip_variable", "effective_isip_variable_gradient"),
     )
     # Gates both warnings below: a just-opened test has no picks yet, so there is nothing to
     # normalize and nothing worth saying. Neither is suppressed when compute_all's "Surface
@@ -981,8 +1000,16 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.eff_isip_line_compliance = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
         res.effective_isip_compliance = interpret.effective_isip(anchor_x, anchor_y, slope)
 
+    if (state.min_dpdg_G is not None and not closure_uninterpretable(state)
+            and res.diagnostics is not None and res.resampled is not None):
+        res.min_dpdg_time_s = float(np.interp(state.min_dpdg_G, res.diagnostics.G,
+                                              res.resampled.dt))
+        res.min_dpdg_pressure = float(np.interp(state.min_dpdg_G, res.diagnostics.G,
+                                                res.resampled.p))
+
     # Compliance contact -> Shmin
     if state.contact_G is not None and res.diagnostics is not None:
+        res.closure_G_compliance = state.contact_G
         res.contact_pressure = float(np.interp(state.contact_G, res.diagnostics.G, res.resampled.p))
         res.shmin_compliance = interpret.shmin_compliance(res.contact_pressure)
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
@@ -1002,6 +1029,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if anchor_G is not None:
             p_anchor = float(np.interp(anchor_G, res.diagnostics.G, res.resampled.p))
             res.shmin_liberty = interpret.shmin_liberty(p_anchor)
+            res.liberty_anchor_G, res.liberty_anchor_pressure = anchor_G, p_anchor
+            res.liberty_anchor_time_s = float(np.interp(anchor_G, res.diagnostics.G,
+                                                        res.resampled.dt))
 
     # C-D rapid closure: Shmin ~= apparent ISIP - 175 psi (no contact pick, so no *compliance*
     # effective ISIP -- the tangent one still exists and still feeds the shared reference; this
@@ -1014,6 +1044,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # and the variable method below; the pick itself stays in state.
     tangent_ok = state.closure_G is not None and not state.tangent_uninterpretable
     if tangent_ok and res.diagnostics is not None:
+        res.closure_G_tangent = state.closure_G
         res.closure_pressure = float(np.interp(state.closure_G, res.diagnostics.G, res.resampled.p))
         res.shmin_tangent = interpret.shmin_tangent(res.closure_pressure)
         res.closure_time_tangent_s = float(np.interp(state.closure_G, res.diagnostics.G,
@@ -1034,6 +1065,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             and res.diagnostics is not None and res.resampled is not None):
         dg = res.diagnostics
         G_var = (state.contact_G + state.closure_G) / 2.0
+        res.closure_G_variable = G_var
         res.shmin_variable = float(np.interp(G_var, dg.G, res.resampled.p))
         res.closure_time_variable_s = float(np.interp(G_var, dg.G, res.resampled.dt))
         idx = int(np.nanargmin(np.abs(dg.G - G_var)))
@@ -1054,7 +1086,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if m.sum() >= 2:
             expo = -0.5 if state.pp_axis == "tm12" else -1.0
             x = dg.t[m] ** expo
-            res.pore_pressure = interpret.pore_pressure(x, dg.p[m])
+            res.pore_pressure_slope, res.pore_pressure = interpret.pore_pressure_fit(x, dg.p[m])
+            res.pore_pressure_n_points = int(m.sum())
 
     # Relative stiffness (URTeC-2019-123 A.8/A.9): a fourth, comparison-only Shmin estimate at
     # the upturn where the h-function-derived relative stiffness S rises off its minimum --

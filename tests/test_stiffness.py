@@ -1014,6 +1014,7 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.frm_tangent = _FakeFrame()
     stub.frm_isip = _FakeFrame()
     stub.sep_before_notes = object()
+    stub.frm_notes = object()
     stub.frm_results = _FakeFrame()
     stub.frm_issues = _FakeFrame()
     stub.sep_after_results = object()

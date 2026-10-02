@@ -23,7 +23,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
-from . import interpret
+from . import interpret, summary
 from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
                     skipped_steps)
 from .io_load import TestData
@@ -924,10 +924,156 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     return fig
 
 
+SUMMARY_SIZE = (11.0, 8.0)  # inches, the Expanded results chart and its exported PNG
+
+
+def _summary_ladder(ax, cv) -> bool:
+    """Horizontal dot chart: one row per reported pressure on a shared psi axis. Missing values
+    are omitted, never 0."""
+    shmin_label, shmin = (("Shmin compliance", cv.shmin_compliance)
+                          if cv.shmin_compliance is not None or cv.shmin_rapid is None
+                          else ("Shmin rapid", cv.shmin_rapid))
+    entries = [  # (label, value, color)
+        ("apparent ISIP", cv.apparent_isip, "tab:purple"),
+        ("eff ISIP compliance", cv.eff_isip_compliance, "tab:purple"),
+        ("eff ISIP tangent", cv.eff_isip_tangent, "tab:purple"),
+        ("eff ISIP variable", cv.eff_isip_variable, "tab:purple"),
+        (shmin_label, shmin, "tab:red"),
+        ("Shmin tangent", cv.shmin_tangent, "tab:red"),
+        ("Shmin variable", cv.shmin_variable, "tab:red"),
+        ("Shmin Liberty", cv.shmin_liberty, "tab:red"),
+        ("Shmin stiffness", cv.shmin_stiffness, "tab:red"),
+        ("pore pressure", cv.pore_pressure, "tab:green"),
+    ]
+    entries = [e for e in entries if e[1] is not None]
+    ax.set_gid("summary_ladder")
+    ax.set_title("Reported pressures", fontsize=10, pad=36)
+    if not entries:
+        ax.text(0.5, 0.5, "no pressures yet", ha="center", va="center",
+                transform=ax.transAxes, color="0.5")
+        ax.set_xticks([]); ax.set_yticks([])
+        return False
+    ys = np.arange(len(entries))[::-1]
+    for y, (_, v, color) in zip(ys, entries):
+        ax.plot([v], [y], "o", color=color, ms=7)
+        ax.annotate(f"{v:.0f}", (v, y), xytext=(0, 7), textcoords="offset points",
+                    ha="center", fontsize=8)
+    ax.set_yticks(ys)
+    ax.set_yticklabels([e[0] for e in entries])
+    ax.set_ylim(-0.7, len(entries) - 0.3)
+    vals = [e[1] for e in entries]
+    span = max(max(vals) - min(vals), 1.0)
+    ax.set_xlim(min(vals) - 0.1 * span, max(vals) + 0.1 * span)
+    ax.set_xlabel("Pressure (psi)")
+    ax.grid(axis="x", alpha=0.3)
+    tvd = cv.tvd_ft
+    if tvd is not None:
+        sec = ax.secondary_xaxis("top", functions=(lambda x: x / tvd, lambda g: g * tvd))
+        sec.set_xlabel("psi/ft")
+    return True
+
+
+def _summary_breakdown(ax, cv) -> bool:
+    """Per method, a floating bar Shmin -> reference ISIP (net pressure) and reference ISIP ->
+    apparent ISIP (complexity): Shmin + net + complexity = apparent ISIP."""
+    ax.set_gid("summary_breakdown")
+    ax.set_title("Shmin + net + complexity\n= apparent ISIP", fontsize=10)
+    rows = []
+    for name, shmin, net in (("compliance", cv.shmin_compliance, cv.net_compliance),
+                             ("tangent", cv.shmin_tangent, cv.net_tangent),
+                             ("variable", cv.shmin_variable, cv.net_variable)):
+        if shmin is not None and net is not None:
+            rows.append((name, shmin, net))
+    if not rows:
+        ax.text(0.5, 0.5, "no net pressure yet", ha="center", va="center",
+                transform=ax.transAxes, color="0.5")
+        ax.set_xticks([]); ax.set_yticks([])
+        return False
+    cx = cv.complexity
+    ys = np.arange(len(rows))[::-1]
+    lo = hi = None
+    for y, (name, shmin, net) in zip(ys, rows):
+        ax.barh(y, net, left=shmin, height=0.5, color="tab:blue",
+                label="net pressure" if y == ys[0] else None)
+        ax.text(shmin + net / 2, y, f"{net:.0f}", ha="center", va="center", fontsize=8,
+                color="white")
+        edges = [shmin, shmin + net]
+        if cx is not None:
+            ax.barh(y, cx, left=shmin + net, height=0.5, color="tab:orange",
+                    label="complexity" if y == ys[0] else None)
+            ax.text(shmin + net + cx / 2, y, f"{cx:.0f}", ha="center", va="center",
+                    fontsize=8)
+            edges.append(shmin + net + cx)
+        lo = min(edges) if lo is None else min(lo, min(edges))
+        hi = max(edges) if hi is None else max(hi, max(edges))
+    ax.set_yticks(ys)
+    ax.set_yticklabels([r[0] for r in rows])
+    span = max(hi - lo, 1.0)
+    ax.set_xlim(lo - 0.1 * span, hi + 0.1 * span)
+    ax.set_xlabel("Pressure (psi)")
+    # Below the axes so it never covers a bar; constrained layout makes room for it.
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2, frameon=False)
+    ax.grid(axis="x", alpha=0.3)
+    return True
+
+
+def _summary_closure(ax, cv) -> bool:
+    """BHP vs G-time with each closure pick marked at its reported pressure, labelled with G and
+    the closure time in minutes. The compliance pick is drawn at Shmin (contact - 75 psi), so it
+    sits below the curve; the others are read off the curve."""
+    ax.set_gid("summary_closure")
+    ax.set_title("Closure picks in G-time", fontsize=10)
+    entries = [("min dP/dG", cv.min_dpdg_G, cv.min_dpdg_p, cv.min_dpdg_tc_s, "tab:gray"),
+               ("compliance (contact - 75)", cv.G_compliance, cv.shmin_compliance,
+                cv.tc_compliance_s, "tab:red"),
+               ("variable", cv.G_variable, cv.shmin_variable, cv.tc_variable_s, "tab:orange"),
+               ("tangent closure", cv.G_tangent, cv.shmin_tangent, cv.tc_tangent_s, "tab:blue")]
+    entries = [e for e in entries if e[1] is not None and e[2] is not None]
+    if cv.curve_G is None and not entries:
+        ax.text(0.5, 0.5, "no closure picks yet", ha="center", va="center",
+                transform=ax.transAxes, color="0.5")
+        ax.set_xticks([]); ax.set_yticks([])
+        return False
+    if cv.curve_G is not None:
+        ax.plot(cv.curve_G, cv.curve_p, "-", color="0.35", lw=1.2, label="BHP")
+    for name, G, p, tc_s, color in entries:
+        ax.plot([G], [p], "o", color=color, ms=8, label=name, zorder=3)
+        text = f"G = {G:.2f}" + (f", tc = {tc_s / 60.0:.2f} min" if tc_s is not None else "")
+        ax.annotate(text, (G, p), xytext=(8, 6), textcoords="offset points", fontsize=8)
+    ax.set_xlabel("G-time")
+    ax.set_ylabel("BHP (psi)")
+    ax.grid(alpha=0.3)
+    if entries:
+        ax.legend(fontsize=8, loc="upper right")
+    return True
+
+
+def render_summary(fig: Figure, state: PickState, res: DerivedResults) -> None:
+    """Three summary charts on ``fig`` (cleared first): the pressure ladder, the Shmin / net /
+    complexity breakdown, and the closure picks in G-time. Builds its own axes -- it is not a
+    step renderer, so the step view-limit rules do not apply. Values that are None are omitted,
+    never plotted at 0, and values whose owning step is not visited are omitted
+    like the tables (summary.chart_values); with nothing to show the figure carries a "No results yet" message."""
+    fig.clear()
+    cv = summary.chart_values(state, res)
+    if not cv.has_any():
+        fig.text(0.5, 0.5, "No results yet", ha="center", va="center", fontsize=14,
+                 color="0.5")
+        return
+    # Constrained layout sizes the margins to the tick labels and titles, so the charts fit
+    # whatever width the results window gives the canvas (fixed fractions clipped the labels).
+    fig.set_layout_engine("constrained", h_pad=0.08, w_pad=0.08)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.3, 1.0])
+    _summary_ladder(fig.add_subplot(gs[0, 0]), cv)
+    _summary_breakdown(fig.add_subplot(gs[0, 1]), cv)
+    _summary_closure(fig.add_subplot(gs[1, :]), cv)
+
+
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
     """Render every step's current view to a numbered PNG in ``out_dir``, in ``STEP_KEYS``
-    order. Returns the written paths in that order. Steps the workflow leaves out
+    order, then the Expanded-results chart as ``<n+1>_summary.png`` (always written).
+    Returns the written paths in that order. Steps the workflow leaves out
     (``skipped_steps``; PC-F drops porepressure and stiffness) are omitted, but the numbering
     still runs over every step so the other filenames are unaffected. Used by ``ui._finish``,
     but headless/Tkinter-free like the rest of this module."""
@@ -940,4 +1086,9 @@ def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: Derive
         path = os.path.join(out_dir, f"{i}_{key}.png")
         fig.savefig(path, dpi=dpi)
         paths.append(path)
+    fig = Figure(figsize=SUMMARY_SIZE)
+    render_summary(fig, state, res)
+    path = os.path.join(out_dir, f"{len(STEP_KEYS) + 1}_summary.png")
+    fig.savefig(path, dpi=dpi)
+    paths.append(path)
     return paths

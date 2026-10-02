@@ -14,10 +14,10 @@ def test_save_all_step_pngs_writes_seven_nonempty_files(tmp_path):
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 8
+    assert len(paths) == 9
     expected = [
         "1_overview.png", "2_injection.png", "3_isip.png", "4_gfunction.png",
-        "5_tangent.png", "6_loglog.png", "7_porepressure.png", "8_stiffness.png",
+        "5_tangent.png", "6_loglog.png", "7_porepressure.png", "8_stiffness.png", "9_summary.png",
     ]
     for name in expected:
         full = tmp_path / name
@@ -103,7 +103,7 @@ def test_save_all_step_pngs_smoke_test_with_d2_on(tmp_path):
     res = compute_all(state, td)
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
-    assert len(paths) == 8
+    assert len(paths) == 9
     full = tmp_path / "4_gfunction.png"
     assert full.exists()
     assert full.stat().st_size > 0
@@ -138,7 +138,7 @@ def test_save_all_step_pngs_smoke_test_with_trim_set(tmp_path):
     td, state, res = _crashed_and_trimmed_state()
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
-    assert len(paths) == 8
+    assert len(paths) == 9
     full = tmp_path / "4_gfunction.png"
     assert full.exists()
     assert full.stat().st_size > 0

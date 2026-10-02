@@ -337,14 +337,19 @@ def pressure_gradient(pressure_psi: float, tvd_ft: float) -> float:
 # --------------------------------------------------------------------------------------------------
 # pore pressure (postclosure)
 # --------------------------------------------------------------------------------------------------
+def pore_pressure_fit(x_transform: np.ndarray, P: np.ndarray) -> tuple[float, float]:
+    """Late-time line on the chosen reciprocal-time axis: ``(slope, intercept)``. The intercept
+    is the pore pressure (see ``pore_pressure``); the slope is reported in the results window."""
+    return fit_line(x_transform, P)
+
+
 def pore_pressure(x_transform: np.ndarray, P: np.ndarray) -> float:
     """Pore pressure = intercept (x -> 0) of the late-time line on the chosen reciprocal-time axis.
 
     ``x_transform`` is t**(-1/2) or t**(-1) for the selected window; P the corresponding BHP.
     x -> 0 corresponds to infinite shut-in time.
     """
-    m, b = fit_line(x_transform, P)
-    return b
+    return pore_pressure_fit(x_transform, P)[1]
 
 
 # --------------------------------------------------------------------------------------------------

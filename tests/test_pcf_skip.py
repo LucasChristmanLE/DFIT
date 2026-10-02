@@ -111,7 +111,7 @@ def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 6
+    assert len(paths) == 7
     assert not any("porepressure" in p for p in paths)
     assert not any("stiffness" in p for p in paths)
     assert not list(tmp_path.glob("*porepressure*"))
@@ -126,7 +126,7 @@ def test_save_all_step_pngs_writes_all_eight_for_non_pcf_scenario(tmp_path):
 
     paths = plots.save_all_step_pngs(str(tmp_path), td, state, res, views={})
 
-    assert len(paths) == 8
+    assert len(paths) == 9
     assert any("porepressure" in p for p in paths)
     assert any("stiffness" in p for p in paths)
 

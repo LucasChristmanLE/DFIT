@@ -21,7 +21,7 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import guide_content, interpret, io_load, picks, plots, sliders, store
+from . import guide_content, interpret, io_load, picks, plots, sliders, store, summary
 from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
                     closure_uninterpretable, compute_all, first_not_visited_step,
                     infer_step_status, last_step, next_step, prev_step, resolve_step,
@@ -88,16 +88,16 @@ GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_co
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 _LOGO_PATH = pathlib.Path(__file__).parent / "assets" / "liberty_logo.png"
 
-# The 23 result-panel rows, in display order -- module level (not just a literal inside
+# The 20 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
-    "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP", "apparent ISIP grad (psi/ft)",
+    "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
     "eff ISIP (compliance)", "NWB complexity",
-    "contact P", "Shmin compliance", "Shmin compliance grad (psi/ft)",
+    "contact P", "Shmin compliance",
     "Shmin tangent", "Shmin variable", "Shmin Liberty",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
-    "delta closure", "pore pressure", "pore pressure grad (psi/ft)",
+    "delta closure", "pore pressure",
     "Shmin stiffness",
 ]
 
@@ -112,14 +112,12 @@ FIELD_STEP = {
     "Vinj (bbl)": "injection",
     "qmax (bpm)": "injection",
     "apparent ISIP": "isip",
-    "apparent ISIP grad (psi/ft)": "isip",
     "eff ISIP (compliance)": "gfunction",
     # Needs the isip pick (apparent ISIP) and the gfunction pick (the reference eff ISIP);
     # gfunction is the later of the two, same precedent as "net (compliance)".
     "NWB complexity": "gfunction",
     "contact P": "gfunction",
     "Shmin compliance": "gfunction",
-    "Shmin compliance grad (psi/ft)": "gfunction",
     "tc compliance (min)": "gfunction",
     "net (compliance)": "gfunction",
     "Shmin tangent": "tangent",
@@ -131,9 +129,7 @@ FIELD_STEP = {
     "tc variable (min)": "tangent",
     "net (variable)": "tangent",
     "pore pressure": "porepressure",
-    "pore pressure grad (psi/ft)": "porepressure",
-    # Comparison-only fourth Shmin estimate (URTeC-2019-123 A.8/A.9 relative stiffness) -- no
-    # panel gradient row, same precedent as "Shmin Liberty" (gradient is CSV-only).
+    # Comparison-only fourth Shmin estimate (URTeC-2019-123 A.8/A.9 relative stiffness).
     "Shmin stiffness": "stiffness",
 }
 
@@ -241,6 +237,7 @@ class DfitApp:
         self._y_slider: Optional[sliders.PanRangeSlider] = None
         self._y2_slider: Optional[sliders.PanRangeSlider] = None
         self._guide_win: Optional[tk.Toplevel] = None
+        self._results_win: Optional[tk.Toplevel] = None  # Expanded results window
         self._guide_tab_index: dict[str, int] = {}
 
         # Folder mode: self.current_entry is the single mode flag -- None means single-file
@@ -427,14 +424,23 @@ class DfitApp:
         panel = ttk.Frame(body, padding=8)
         self.body.add(panel, width=320, minsize=220, stretch="never")
 
-        # Bottom-packed first so these two keep their full height when a scenario frame
-        # overfills the panel -- the squeeze then falls on the notes box instead of clipping
-        # the warnings. First-packed side="bottom" is bottommost: hint under warn.
+        # Bottom-packed first so these keep their full height when a scenario frame overfills
+        # the panel -- the squeeze then falls on the top-packed Results rows (all of them are in the
+        # Expanded results window), never on the warnings, Notes, or step controls. On Overview
+        # the issues list is packed ahead of Notes instead (_update_panel_visibility), so there
+        # Notes is squeezed first. First-packed side="bottom" is bottommost: hint, warn, notes.
         self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
         self.hint_lbl.pack(side="bottom", anchor="w", pady=(6, 0))
         self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
+        self.frm_notes = ttk.Frame(panel)
+        self.frm_notes.pack(side="bottom", fill="x")
+        self.sep_before_notes = ttk.Separator(self.frm_notes)
+        self.sep_before_notes.pack(fill="x", pady=6)
+        ttk.Label(self.frm_notes, text="Notes").pack(anchor="w")
+        self.txt_notes = tk.Text(self.frm_notes, height=5, width=36)
+        self.txt_notes.pack(fill="x")
         self._issue_sections: list[tuple[str, list[str]]] = []
         self._warnings_expanded: bool = False
         self.warn_lbl.bind("<Button-1>", self._toggle_warnings)
@@ -460,7 +466,11 @@ class DfitApp:
         # (_update_panel_visibility swaps the two frames).
         self.frm_results = ttk.Frame(panel)
         self.frm_results.pack(fill="x")
-        ttk.Label(self.frm_results, text="Results", font=("", 10, "bold")).pack(anchor="w")
+        hdr = ttk.Frame(self.frm_results)
+        hdr.pack(fill="x")
+        ttk.Label(hdr, text="Results", font=("", 10, "bold")).pack(side="left")
+        ttk.Button(hdr, text="Expanded results...",
+                   command=self._open_results_window).pack(side="right")
         self.value_lbls: dict[str, ttk.Label] = {}
         self.name_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
@@ -481,8 +491,8 @@ class DfitApp:
         # user has reached the step that produces the pick they annotate. Each cluster lives in
         # its own frame so _update_panel_visibility can pack/pack_forget it as a unit without
         # disturbing anything else in the panel. Neither frame is packed here -- refresh() ->
-        # _update_panel_visibility() does that, always relative to sep_before_notes so re-showing
-        # never reorders the panel.
+        # _update_panel_visibility() does that, bottom-packed after frm_notes so each sits just
+        # above Notes.
         self.frm_cscen = ttk.Frame(panel)
         ttk.Label(self.frm_cscen, text="Closure scenario").pack(anchor="w")
         self.var_cscen = tk.StringVar(value="")
@@ -507,10 +517,12 @@ class DfitApp:
         ttk.Label(self.frm_pcscen, text="Pore-pressure axis").pack(anchor="w", pady=(6, 0))
         self.var_ppaxis = tk.StringVar(value="tm12")
         self.rb_ppaxis = []
+        ppaxis_row = ttk.Frame(self.frm_pcscen)  # side by side, to keep the frame short
+        ppaxis_row.pack(anchor="w")
         for txt, val in [("t^(-1/2)", "tm12"), ("t^(-1)", "tm1")]:
-            rb = ttk.Radiobutton(self.frm_pcscen, text=txt, variable=self.var_ppaxis, value=val,
+            rb = ttk.Radiobutton(ppaxis_row, text=txt, variable=self.var_ppaxis, value=val,
                                  command=self._on_scenario)
-            rb.pack(anchor="w")
+            rb.pack(side="left", padx=(0, 12))
             self.rb_ppaxis.append(rb)
 
         ttk.Button(self.frm_pcscen, text="Interpretation guide...",
@@ -539,12 +551,6 @@ class DfitApp:
         ttk.Checkbutton(self.frm_isip, text="Use shut-in pressure (no tangent)",
                         variable=self.var_isip_at_shutin,
                         command=self._on_isip_at_shutin).pack(anchor="w")
-
-        self.sep_before_notes = ttk.Separator(panel)
-        self.sep_before_notes.pack(fill="x", pady=6)
-        ttk.Label(panel, text="Notes").pack(anchor="w")
-        self.txt_notes = tk.Text(panel, height=5, width=36)
-        self.txt_notes.pack(fill="x")
 
     def _show_queue(self):
         """Add the folder-mode sidebar as the leftmost pane -- `before=` re-slots it ahead
@@ -1131,6 +1137,89 @@ class DfitApp:
         self.state.isip_at_shutin = self.var_isip_at_shutin.get()
         self.refresh()
 
+    # ---- expanded results window ------------------------------------------------------------------
+    def _open_results_window(self):
+        """Open the single non-modal Expanded results window (or refocus it)."""
+        if self._results_win is not None and self._results_win.winfo_exists():
+            self._results_win.deiconify()
+            self._results_win.lift()
+            self._results_win.focus_set()
+        else:
+            self._build_results_window()
+        self._update_results_window()
+
+    def _build_results_window(self):
+        win = tk.Toplevel(self.root)
+        win.title("Expanded results")
+        win.geometry("1300x800")
+
+        def _on_close():
+            self._results_win = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        panes = ttk.PanedWindow(win, orient="horizontal")
+        panes.pack(fill="both", expand=True)
+
+        left = ttk.Frame(panes)
+        canvas = tk.Canvas(left, highlightthickness=0, width=560)
+        vsb = ttk.Scrollbar(left, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas)
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(inner_id, width=e.width))
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        panes.add(left, weight=0)  # tables keep their width; extra window width goes to charts
+
+        right = ttk.Frame(panes)
+        fig = Figure(figsize=(6.5, 6.5))
+        chart = FigureCanvasTkAgg(fig, master=right)
+        chart.get_tk_widget().pack(fill="both", expand=True)
+        panes.add(right, weight=1)
+
+        self._results_tables = inner
+        self._results_fig = fig
+        self._results_canvas = chart
+        self._results_win = win
+
+    def _update_results_window(self):
+        """Rebuild the tables and redraw the charts from the current state/results. The figure
+        is the window's own, so the main canvas's slider invariants are untouched."""
+        win = self._results_win
+        if win is None or not win.winfo_exists():
+            self._results_win = None
+            return
+        res = self.res
+        for child in self._results_tables.winfo_children():
+            child.destroy()
+        if res is None:
+            ttk.Label(self._results_tables, text="No results yet").pack(anchor="w", padx=6, pady=6)
+            self._results_fig.clear()
+            self._results_canvas.draw_idle()
+            return
+        for sec in summary.summary_sections(self.state, res):
+            ttk.Label(self._results_tables, text=sec.title,
+                      font=("", 10, "bold")).pack(anchor="w", padx=6, pady=(8, 2))
+            tree = ttk.Treeview(self._results_tables, columns=list(range(len(sec.columns))),
+                                show="headings", height=len(sec.rows), selectmode="none")
+            # The label column keeps a fixed width; only the numeric columns stretch, so a narrow
+            # pane squeezes the numbers rather than the labels (Tk shrinks stretchable columns).
+            for i, name in enumerate(sec.columns):
+                tree.heading(i, text=name)
+                if i == 0:
+                    tree.column(i, width=150, minwidth=150, anchor="w", stretch=False)
+                else:
+                    tree.column(i, width=58, minwidth=45, anchor="e", stretch=True)
+            for row in sec.rows:
+                tree.insert("", "end", values=row)
+            tree.pack(fill="x", padx=6)
+        plots.render_summary(self._results_fig, self.state, res)
+        self._results_canvas.draw_idle()
+
     # ---- interpretation guide window --------------------------------------------------------------
     def _open_guide(self, key: str):
         """Open the single interpretation-guide window (or refocus it) on the tab for `key`
@@ -1394,6 +1483,8 @@ class DfitApp:
         self._update_panel()
         self._update_issues_panel()
         self._update_unit_labels()
+        if getattr(self, "_results_win", None) is not None:
+            self._update_results_window()
         if redirected:
             self.gate_lbl.config(text=step_gate_error(self.state, "overview")
                                  or f"{self.res.blockers[0]}; fix it before continuing.")
@@ -1426,7 +1517,8 @@ class DfitApp:
         """Show the closure-scenario widgets only on "gfunction", the postclosure/pp-axis
         widgets only on "loglog"/"porepressure", the tangent "uninterpretable" checkbox only on
         "tangent", and the stiffness "no slope change apparent" checkbox only on "stiffness" --
-        each packed relative to sep_before_notes so re-showing never reorders the panel."""
+        each packed side="bottom" after frm_notes, so it sits directly above Notes and a
+        short panel clips the Results rows instead of the controls."""
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
         self.frm_tangent.pack_forget()
@@ -1434,26 +1526,28 @@ class DfitApp:
         self.frm_stiffness.pack_forget()
         if self.step == "overview":
             self.frm_results.pack_forget()
-            self.frm_issues.pack(fill="x", before=self.sep_after_results)
+            # Ahead of frm_notes in pack order (still drawn at the top): the issues list is the
+            # only full list of blockers, so a short panel squeezes Notes instead of it.
+            self.frm_issues.pack(fill="x", before=self.frm_notes)
         else:
             self.frm_issues.pack_forget()
             self.frm_results.pack(fill="x", before=self.sep_after_results)
         if self.step == "gfunction":
-            self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
+            self.frm_cscen.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "isip":
             self.var_isip_at_shutin.set(self.state.isip_at_shutin)
-            self.frm_isip.pack(fill="x", before=self.sep_before_notes)
+            self.frm_isip.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "tangent":
             self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
-            self.frm_tangent.pack(fill="x", before=self.sep_before_notes)
+            self.frm_tangent.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step in ("loglog", "porepressure"):
-            self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
+            self.frm_pcscen.pack(side="bottom", fill="x", after=self.frm_notes)
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
             # just lock/unlock the radios to match.
             self._update_ppaxis_enabled()
         if self.step == "stiffness":
             self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
-            self.frm_stiffness.pack(fill="x", before=self.sep_before_notes)
+            self.frm_stiffness.pack(side="bottom", fill="x", after=self.frm_notes)
 
     def _twin_axes(self):
         """The step's twin (secondary y) Axes if it has one, else None.
@@ -2069,16 +2163,11 @@ class DfitApp:
             "Vinj (bbl)": s(r.vinj, "{:.1f}"),
             "qmax (bpm)": s(r.qmax_bpm, "{:.2f}"),
             "apparent ISIP": s(r.apparent_isip),
-            "apparent ISIP grad (psi/ft)": s(r.apparent_isip_gradient, "{:.3f}"),
             "eff ISIP (compliance)": s(r.effective_isip_compliance),
             "NWB complexity": s(r.near_wellbore_complexity),
             "contact P": s(r.contact_pressure),
             "Shmin compliance": (interpret.format_shmin_rapid(r.shmin_rapid) if use_rapid
                                   else s(r.shmin_compliance)),
-            # No "±75" half-range here unlike the parent row -- a gradient of a ±75 psi band
-            # isn't worth rendering -- so the label asterisk below is the only rapid-fallback marker.
-            "Shmin compliance grad (psi/ft)": s(r.shmin_rapid_gradient if use_rapid
-                                                 else r.shmin_compliance_gradient, "{:.3f}"),
             "Shmin tangent": s(r.shmin_tangent),
             "Shmin variable": s(r.shmin_variable),
             "Shmin Liberty": s(r.shmin_liberty),
@@ -2093,25 +2182,15 @@ class DfitApp:
             "net (variable)": s(r.net_pressure_variable),
             "delta closure": s(r.delta_closure),
             "pore pressure": s(r.pore_pressure),
-            "pore pressure grad (psi/ft)": s(r.pore_pressure_gradient, "{:.3f}"),
             "Shmin stiffness": s(r.shmin_stiffness),
         }
         for k, v in vals.items():
-            owning_step = FIELD_STEP[k]
-            visited = self.state.step_status.get(owning_step, "not_visited") != "not_visited"
-            self.value_lbls[k].config(text=v if visited else "-")
+            self.value_lbls[k].config(
+                text=v if summary.visited(self.state, FIELD_STEP[k]) else "-")
         # The asterisk tracks the value: gate it on the same not_visited check the loop above applies.
-        gf_visited = self.state.step_status.get("gfunction", "not_visited") != "not_visited"
+        gf_visited = summary.visited(self.state, "gfunction")
         self.name_lbls["Shmin compliance"].config(
             text="Shmin compliance*" if (use_rapid and gf_visited) else "Shmin compliance")
-        # The grad row has a second blanking path the parent row doesn't: model._resolve_gradients'
-        # tvd_ft > 0 guard. Without the extra clause, a C-D-rapid test with no TVD (e.g. a
-        # pressure_is_bhp downhole-gauge record, where TVD is never entered because it's never
-        # needed) would render this label with its asterisk over a "-" value.
-        self.name_lbls["Shmin compliance grad (psi/ft)"].config(
-            text=("Shmin compliance grad* (psi/ft)"
-                  if (use_rapid and gf_visited and r.shmin_rapid_gradient is not None)
-                  else "Shmin compliance grad (psi/ft)"))
         # Complexity is referenced to the shared eff ISIP; mark it when that fell back to the tangent
         # one (C-C/C-D clear the contact, so there is no compliance eff ISIP to reference). Same
         # not_visited gate as the value, so the asterisk can never sit next to a "-".
