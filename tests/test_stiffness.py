@@ -244,9 +244,8 @@ def test_stiffness_cap_decimates_arrays_and_warns(monkeypatch):
     assert dg.G[i_min] in res.stiffness_G
     assert dg.G[-1] in res.stiffness_G
 
-    assert any("decimated to limit memory" in w for w in res.warnings)
     expected = f"Stiffness plot uses {len(res.stiffness_p_eff)} of {n} resampled points"
-    assert any(expected in w for w in res.warnings)
+    assert any(expected in w for w in res.notes)
 
 
 def test_stiffness_uncapped_case_unchanged():
@@ -254,7 +253,7 @@ def test_stiffness_uncapped_case_unchanged():
     the full diagnostics G-time grid (the fixture's 36-point default resampled grid is nowhere
     near the cap)."""
     td, st, res = _state_with_pore_pressure()
-    assert not any("decimated to limit memory" in w for w in res.warnings)
+    assert not any("Stiffness plot uses" in w for w in res.notes)
     np.testing.assert_array_equal(res.stiffness_G, res.diagnostics.G)
     assert len(res.stiffness_p_eff) == len(res.diagnostics.G)
 
@@ -616,7 +615,8 @@ def _goto_stub(postclosure_scenario):
     stub = types.SimpleNamespace()
     stub.td = object()
     stub.state = PickState(postclosure_scenario=postclosure_scenario,
-                           step_status={k: "visited" for k, _ in ui.STEPS})
+                           step_status={k: "visited" for k, _ in ui.STEPS},
+                           pressure_col="P", pressure_is_bhp=True)  # no blocking issue
     stub.step = "injection"
     stub._seed_step = lambda key: None
     stub._refresh_calls = []
@@ -1036,6 +1036,9 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.frm_tangent = _FakeFrame()
     stub.frm_isip = _FakeFrame()
     stub.sep_before_notes = object()
+    stub.frm_results = _FakeFrame()
+    stub.frm_issues = _FakeFrame()
+    stub.sep_after_results = object()
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
     stub.var_isip_at_shutin = _Var()

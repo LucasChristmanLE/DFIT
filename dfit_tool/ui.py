@@ -23,7 +23,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, interpret, io_load, picks, plots, sliders, store
-from .model import (NO_CONTACT_SCENARIOS, PickState, TangentPick, closure_uninterpretable,
+from .model import (NO_CONTACT_SCENARIOS, PickState, TangentPick, blocking_issues,
+                    closure_uninterpretable,
                     compute_all, infer_step_status, porepressure_skipped, step_gate_error,
                     stiffness_skipped)
 from .plots import D2_AXIS_GID, ViewDefaults
@@ -248,18 +249,39 @@ def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
     return anchor_x_min * 60.0 + t_shutin_s, slope_per_min / 60.0
 
 
-def format_warnings_text(warnings: list[str], expanded: bool) -> str:
-    """Render the pick panel's warnings label text. Collapsed (the default after every
-    recompute -- see ``DfitApp._update_panel``) shows just a count, so a long warning list can
-    never crowd the closure/postclosure scenario controls above it out of view. Expanded shows
-    the full list, same text the label always carried before this feature existed."""
-    if not warnings:
+# Issue levels, most severe first: (DerivedResults attribute, section title, count noun,
+# Overview header color, line prefix in the expanded side-panel label).
+ISSUE_LEVELS = [
+    ("blockers", "Blocking", "blocking issue", "red", "Blocking: "),
+    ("warnings", "Warnings", "warning", "#b35c00", ""),
+    ("notes", "Notes", "note", "gray", "Note: "),
+]
+
+
+def issue_sections(res) -> list[tuple[str, list[str]]]:
+    """``(title, messages)`` for each non-empty issue level on ``res``, most severe first."""
+    return [(title, list(getattr(res, attr))) for attr, title, *_ in ISSUE_LEVELS
+            if getattr(res, attr)]
+
+
+def format_warnings_text(sections: list[tuple[str, list[str]]], expanded: bool) -> str:
+    """Render the side panel's issue label text from ``issue_sections``. Collapsed (the default
+    after every recompute -- see ``DfitApp._update_panel``) shows only per-level counts, so a long
+    list can never crowd the scenario controls above it out of view. Expanded lists every
+    message, notes and blockers marked by a prefix."""
+    if not sections:
         return ""
-    n = len(warnings)
-    noun = "warning" if n == 1 else "warnings"
+    by_title = {title: (noun, prefix) for _, title, noun, _, prefix in ISSUE_LEVELS}
+    counts = []
+    lines = []
+    for title, msgs in sections:
+        noun, prefix = by_title[title]
+        counts.append(f"{len(msgs)} {noun}{'' if len(msgs) == 1 else 's'}")
+        lines.extend(prefix + m for m in msgs)
+    summary = ", ".join(counts)
     if not expanded:
-        return f"{n} {noun} (click to expand)"
-    return f"{n} {noun} (click to collapse)\n" + "\n".join(warnings)
+        return f"{summary} (click to expand)"
+    return f"{summary} (click to collapse)\n" + "\n".join(lines)
 
 
 class DfitApp:
@@ -458,32 +480,43 @@ class DfitApp:
         self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
-        self._warnings_list: list[str] = []
+        self._issue_sections: list[tuple[str, list[str]]] = []
         self._warnings_expanded: bool = False
         self.warn_lbl.bind("<Button-1>", self._toggle_warnings)
+        self._panel_wrap = 300
 
         # Panel is now a resizable pane (sash-draggable), so wraplength must track its actual
         # width instead of a value pinned to the old fixed width=320.
         def _on_panel_configure(event):
             wrap = max(event.width - 20, 100)
+            self._panel_wrap = wrap
             self.hint_lbl.configure(wraplength=wrap)
             self.warn_lbl.configure(wraplength=wrap)
+            for child in self.frm_issues.winfo_children():
+                child.configure(wraplength=wrap)
         panel.bind("<Configure>", _on_panel_configure)
 
-        ttk.Label(panel, text="Results", font=("", 10, "bold")).pack(anchor="w")
+        # Results rows and the Overview issues list share one slot above sep_after_results:
+        # Overview has no results yet, so it shows every issue there instead
+        # (_update_panel_visibility swaps the two frames).
+        self.frm_results = ttk.Frame(panel)
+        self.frm_results.pack(fill="x")
+        ttk.Label(self.frm_results, text="Results", font=("", 10, "bold")).pack(anchor="w")
         self.value_lbls: dict[str, ttk.Label] = {}
         self.name_lbls: dict[str, ttk.Label] = {}
         for key in PANEL_FIELDS:
             # Value packed first: pane minsize only binds sash drags, so a too-narrow
             # window can still squeeze this pane -- the later-packed name label loses
             # pixels then, keeping the number readable.
-            row = ttk.Frame(panel); row.pack(fill="x")
+            row = ttk.Frame(self.frm_results); row.pack(fill="x")
             v = ttk.Label(row, text="-", width=14, anchor="e"); v.pack(side="right")
             n = ttk.Label(row, text=key); n.pack(side="left")
             self.value_lbls[key] = v
             self.name_lbls[key] = n
+        self.frm_issues = ttk.Frame(panel)  # filled by _update_issues_panel
 
-        ttk.Separator(panel).pack(fill="x", pady=6)
+        self.sep_after_results = ttk.Separator(panel)
+        self.sep_after_results.pack(fill="x", pady=6)
 
         # Closure-scenario and postclosure/pp-axis widgets are step-aware: only relevant once the
         # user has reached the step that produces the pick they annotate. Each cluster lives in
@@ -1274,11 +1307,18 @@ class DfitApp:
             step = "loglog"
         if step == "stiffness" and stiffness_skipped(self.state):
             step = "loglog"
+        # A blocking issue (blocking_issues) makes every later step meaningless: land on Overview
+        # instead, without seeding or marking the requested step.
+        blocked = step != "overview" and bool(blocking_issues(self.state))
+        if blocked:
+            step = "overview"
         if self.state.step_status.get(step, "not_visited") == "not_visited":
             self._seed_step(step)
             self.state.step_status[step] = "visited"
         self.step = step
         self.refresh()
+        if blocked:
+            self.gate_lbl.config(text=step_gate_error(self.state, "overview"))
 
     def _seed_step(self, key: str) -> None:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
@@ -1313,9 +1353,15 @@ class DfitApp:
         self._goto(next_step(self.step))
 
     def _skip(self):
-        """Mark the current step skipped and advance, same clamping behavior as _next()."""
+        """Mark the current step skipped and advance, same clamping behavior as _next(). Not
+        gated by the scenario picks, but Overview's blocking issues gate it like Next."""
         if self.td is None:
             return
+        if self.step == "overview":
+            msg = self._overview_gate()
+            if msg:
+                self.gate_lbl.config(text=msg)
+                return
         self.state.step_status[self.step] = "skipped"
         self._goto(next_step(self.step))
 
@@ -1340,11 +1386,26 @@ class DfitApp:
         if self.step == self._last_step():
             self._finish()
             return
-        msg = step_gate_error(self.state, self.step)
+        msg = (self._overview_gate() if self.step == "overview"
+               else step_gate_error(self.state, self.step))
         if msg:
             self.gate_lbl.config(text=msg)
             return
         self._next()
+
+    def _overview_gate(self) -> Optional[str]:
+        """Blocking-issue message for leaving Overview, or None. Next/Skip act as Apply here:
+        typed-but-unapplied Density/TVD or channel edits are synced (and recomputed) first, so
+        filled-in boxes count. Gates on ``res.blockers`` rather than ``blocking_issues`` alone,
+        so a BHP conversion that raises also stops navigation before the next step is seeded."""
+        before = self.state.channel_config()
+        self._sync_state_from_widgets()
+        if self.state.channel_config() != before:
+            self.refresh()
+        if not self.res.blockers:
+            return None
+        return (step_gate_error(self.state, "overview")
+                or f"{self.res.blockers[0]}; fix it before continuing.")
 
     def _back(self):
         """Go to the previous step. No status change -- prev_step() clamps at the first step."""
@@ -1362,6 +1423,11 @@ class DfitApp:
         # render (e.g. resuming directly onto porepressure) would show a stale pore pressure.
         self._reconcile_pp_axis()
         self.res = compute_all(self.state, self.td)
+        # A blocker can appear while on a later step (density/TVD cleared and applied, or a BHP
+        # conversion that raises): fall back to Overview, where the issue is listed.
+        redirected = bool(self.res.blockers) and self.step != "overview"
+        if redirected:
+            self.step = "overview"
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
@@ -1425,7 +1491,11 @@ class DfitApp:
         self._update_stepbar()
         self._update_panel_visibility()
         self._update_panel()
+        self._update_issues_panel()
         self._update_unit_labels()
+        if redirected:
+            self.gate_lbl.config(text=step_gate_error(self.state, "overview")
+                                 or f"{self.res.blockers[0]}; fix it before continuing.")
 
     def _update_stepbar(self):
         """Disable breadcrumb buttons for steps still ``not_visited`` (so a click is only ever
@@ -1464,6 +1534,12 @@ class DfitApp:
         self.frm_tangent.pack_forget()
         self.frm_isip.pack_forget()
         self.frm_stiffness.pack_forget()
+        if self.step == "overview":
+            self.frm_results.pack_forget()
+            self.frm_issues.pack(fill="x", before=self.sep_after_results)
+        else:
+            self.frm_issues.pack_forget()
+            self.frm_results.pack(fill="x", before=self.sep_after_results)
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
         if self.step == "isip":
@@ -2145,19 +2221,44 @@ class DfitApp:
                            and r.net_pressure_isip_source == "tangent")
         self.name_lbls["NWB complexity"].config(
             text="NWB complexity*" if (use_tangent_ref and gf_visited) else "NWB complexity")
-        self._warnings_list = list(r.warnings)
+        self._issue_sections = issue_sections(r)
         self._warnings_expanded = False
-        self.warn_lbl.config(text=format_warnings_text(self._warnings_list, False),
-                             cursor="hand2" if self._warnings_list else "")
+        self._warn_lbl_hidden = False
+        self.warn_lbl.config(text=format_warnings_text(self._issue_sections, False),
+                             cursor="hand2" if self._issue_sections else "")
 
     def _toggle_warnings(self, event=None):
         """Click handler for warn_lbl: flips the collapsed/expanded summary in place, no
-        recompute. No-ops on a click when there's nothing to show."""
-        if not self._warnings_list:
+        recompute. No-ops on a click when there's nothing to show, or on Overview, where
+        _update_issues_panel lists everything and blanks this label."""
+        if not self._issue_sections or getattr(self, "_warn_lbl_hidden", False):
             return
         self._warnings_expanded = not self._warnings_expanded
-        self.warn_lbl.config(text=format_warnings_text(self._warnings_list,
+        self.warn_lbl.config(text=format_warnings_text(self._issue_sections,
                                                         self._warnings_expanded))
+
+    def _update_issues_panel(self):
+        """Overview only: list every issue, grouped by level, in the slot the Results rows use on
+        other steps, and blank the collapsed warn_lbl summary (it would repeat the list)."""
+        if self.step != "overview":
+            return
+        for child in self.frm_issues.winfo_children():
+            child.destroy()
+        wrap = self._panel_wrap
+        ttk.Label(self.frm_issues, text="Data checks", font=("", 10, "bold"),
+                  wraplength=wrap).pack(anchor="w")
+        if not self._issue_sections:
+            ttk.Label(self.frm_issues, text="No warnings.", foreground="gray",
+                      wraplength=wrap).pack(anchor="w")
+        colors = {title: color for _, title, _, color, _ in ISSUE_LEVELS}
+        for title, msgs in self._issue_sections:
+            ttk.Label(self.frm_issues, text=title, foreground=colors[title],
+                      font=("", 9, "bold"), wraplength=wrap).pack(anchor="w", pady=(6, 0))
+            for m in msgs:
+                ttk.Label(self.frm_issues, text=f"\u2022 {m}", wraplength=wrap,
+                          justify="left").pack(anchor="w", fill="x")
+        self.warn_lbl.config(text="", cursor="")
+        self._warn_lbl_hidden = True
 
     def _update_unit_labels(self):
         """Gray "(detected unit)" hint beside each of the three unit dropdowns, from

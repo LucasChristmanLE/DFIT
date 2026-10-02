@@ -470,7 +470,8 @@ def _seeded_with_sustained_rise_and_two_earlier_warnings():
 
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate, "VOLUME": volume})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
-                    columns=list(df.columns))
+                    columns=list(df.columns),
+                    load_warnings=["Earlier load warning"])  # queued ahead of everything
     st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", volume_col="VOLUME",
                    start_idx=start_idx, shutin_idx=shutin_idx)
     res = compute_all(st, td)
@@ -478,15 +479,15 @@ def _seeded_with_sustained_rise_and_two_earlier_warnings():
 
 
 def test_guard_warning_survives_two_earlier_warnings():
-    """Must fail against the pre-fix code: with two warnings already queued ahead of it (density/
-    TVD, volume disagreement), a plain `append` for the guard's own warning lands it at index 2,
+    """Must fail against the pre-fix code: with two warnings already queued ahead of it (a load
+    warning, volume disagreement), a plain `append` for the guard's own warning lands it at index 2,
     below the top of the UI's stacked warn_lbl display -- insert(0) keeps it topmost instead."""
     res = _seeded_with_sustained_rise_and_two_earlier_warnings()
 
     assert res.resampled_full.guard_dt is not None
     # Sanity: this only exercises the ordering bug if there really are >= 2 other warnings queued.
     assert len(res.warnings) >= 3
-    assert any("density/TVD" in w for w in res.warnings)
+    assert "Earlier load warning" in res.warnings
     assert any("disagree" in w for w in res.warnings)
 
     assert any(_WARNING_SNIPPET in w for w in res.warnings[:2])
@@ -505,7 +506,7 @@ def test_guard_warning_survives_two_earlier_warnings():
 # test_guard_warning_honest_when_override_admits_nothing below, which replaces it.
 # ------------------------------------------------------------------------------------------------
 _TRIMMED_SNIPPET = "Tail trimmed"
-_OVERRIDE_NO_DATA_SNIPPET = "Tail-guard override requested to"
+_OVERRIDE_NO_DATA_SNIPPET = "Tail-guard override to"
 
 
 def test_guard_warning_present_when_guard_fires_with_no_trim_or_override():

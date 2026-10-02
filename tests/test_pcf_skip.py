@@ -191,7 +191,8 @@ def _goto_stub(postclosure_scenario):
     stub = types.SimpleNamespace()
     stub.td = object()
     stub.state = PickState(postclosure_scenario=postclosure_scenario,
-                           step_status={k: "visited" for k, _ in ui.STEPS})
+                           step_status={k: "visited" for k, _ in ui.STEPS},
+                           pressure_col="P", pressure_is_bhp=True)  # no blocking issue
     stub.step = "injection"
     stub._seed_step = lambda key: None
     stub._refresh_calls = []

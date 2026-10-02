@@ -469,7 +469,7 @@ def test_overview_wiring_drag_past_guard_rise_never_comes_back_admits_nothing_an
 
     assert not any("Tail guard stopped resampling" in w for w in after.warnings)  # superseded
     assert not any(w.startswith("Tail trimmed") for w in after.warnings)  # would confusingly pair
-    assert any("Tail-guard override requested to" in w for w in after.warnings)
+    assert any("Tail-guard override to" in w for w in after.warnings)
 
 
 def test_overview_wiring_drag_past_guard_with_more_data_after_admits_real_data():
@@ -495,7 +495,7 @@ def test_overview_wiring_drag_past_guard_with_more_data_after_admits_real_data()
     assert after.resampled.dt[-1] > guard_dt
 
     assert not any("Tail guard stopped resampling" in w for w in after.warnings)
-    assert not any("Tail-guard override requested to" in w for w in after.warnings)
+    assert not any("Tail-guard override to" in w for w in after.warnings)
     assert any(w.startswith("Tail trimmed") for w in after.warnings)
 
 

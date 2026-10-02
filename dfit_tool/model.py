@@ -257,12 +257,36 @@ def step_gate_error(state: PickState, step: str) -> Optional[str]:
     or ``None`` if forward navigation is allowed. Only the two scenario selections are
     enforced -- every other step's picks are auto-seeded on first visit, so they are never
     "incomplete". Gates only the "Next >" button (``DfitApp._advance``); Back, Skip, and
-    breadcrumb jumps are unaffected."""
+    breadcrumb jumps are unaffected, except that a blocking issue (``blocking_issues``) also
+    gates Skip on Overview, and ``DfitApp._goto`` redirects every other step to Overview while
+    one exists."""
+    if step == "overview":
+        issues = blocking_issues(state)
+        if issues == [SURFACE_NEEDS_BHP_INPUTS]:
+            return "Enter density and TVD (or map a BHP channel) before continuing."
+        if issues:
+            return f"{issues[0]}; fix it before continuing."
     if step == "gfunction" and not state.closure_scenario:
         return "Select a closure scenario before continuing to Tangent."
     if step == "loglog" and not state.postclosure_scenario:
         return "Select a postclosure scenario before continuing to Pore pressure."
     return None
+
+
+NO_PRESSURE_CHANNEL = "No pressure channel selected"
+SURFACE_NEEDS_BHP_INPUTS = "Surface pressure selected but density/TVD not set"
+
+
+def blocking_issues(state: PickState) -> list[str]:
+    """Conditions that make every downstream step meaningless, so navigation past Overview is
+    blocked while any holds: no pressure channel, or surface pressure with no density/TVD to
+    convert it to BHP. ``compute_all`` reports these (plus a failed BHP conversion) as
+    ``DerivedResults.blockers``."""
+    if not state.pressure_col:
+        return [NO_PRESSURE_CHANNEL]
+    if not state.channel_config().bhp_inputs_ready():
+        return [SURFACE_NEEDS_BHP_INPUTS]
+    return []
 
 
 def porepressure_skipped(state: PickState) -> bool:
@@ -392,7 +416,12 @@ class DerivedResults:
     # units_note column.
     unit_conversion_note: str = ""
 
+    # Three levels, most severe first (ui.issue_sections renders them in this order):
+    # blockers stop navigation past Overview (see blocking_issues/step_gate_error); warnings
+    # flag anything that changed or may invalidate a reported number; notes are informational.
+    blockers: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def _resolve_net_pressures(res: "DerivedResults") -> "DerivedResults":
@@ -448,8 +477,7 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
     has_source = any(getattr(res, src_attr) is not None for src_attr, _ in pairs)
     if state.tvd_ft is None:
         if has_source:
-            res.warnings.append("TVD not set -- psi/ft gradients not reported; enter TVD in "
-                                "the side panel")
+            res.notes.append("TVD not set; gradients blank")
         return res
     # Coerce rather than crash: `_decode`'s contract is that old or foreign JSON never raises,
     # and this is the first code path that reads `tvd_ft` unconditionally, so a hand-edited or
@@ -465,8 +493,7 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
         tvd = math.nan
     if not math.isfinite(tvd) or tvd <= 0:
         if has_source:
-            res.warnings.append(f"TVD {state.tvd_ft!r} is not a positive number -- psi/ft "
-                                "gradients not reported")
+            res.notes.append(f"TVD {state.tvd_ft!r} is not a positive number; gradients blank")
         return res
     for src_attr, grad_attr in pairs:
         src = getattr(res, src_attr)
@@ -517,11 +544,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             notes.append(f"{kind}: {det.unit}×{det.factor:.6g} ({det.source})")
     res.unit_conversion_note = "; ".join(notes)
 
+    res.blockers.extend(blocking_issues(state))
     if not state.pressure_col:
-        res.warnings.append("No pressure channel selected")
         return res
-    if not cfg.bhp_inputs_ready():
-        res.warnings.append("Surface pressure selected but density/TVD not set")
 
     # Full-length channels
     res.t_all_s = td.t_s
@@ -529,7 +554,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.bhp_all = td.bhp(cfg) if cfg.bhp_inputs_ready() else td.pressure_surface(cfg)
         res.pressure_is_bhp = cfg.bhp_inputs_ready()
     except Exception as e:  # pragma: no cover - defensive
-        res.warnings.append(f"BHP computation failed: {e}")
+        res.blockers.append(f"BHP computation failed: {e}")
         res.bhp_all = td.pressure_surface(cfg)
         res.pressure_is_bhp = False
     if res.pressure_is_bhp and not state.pressure_is_bhp:
@@ -553,7 +578,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             res.vinj_integral, res.vinj_source = vr.vinj_integral, vr.source
             res.vinj_disagreement = vr.disagreement_frac
             if vr.disagreement_frac is not None and vr.disagreement_frac > 0.05:
-                res.warnings.append(f"Volume delta vs rate-integral disagree {vr.disagreement_frac:.0%}")
+                res.warnings.append(
+                    f"Vinj: volume and rate integral disagree by {vr.disagreement_frac:.0%}")
             if res.qmax_bpm and res.qmax_bpm > 0:
                 res.te_s = interpret.effective_te_seconds(res.vinj, res.qmax_bpm)
         if res.te_s is not None and not (np.isfinite(res.te_s) and res.te_s > 0):
@@ -562,8 +588,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             dur = float(td.t_s[shutin] - td.t_s[start])
             if dur > 0:
                 res.te_s = dur
-                res.warnings.append(
-                    "te = pump duration (shut-in - start); no usable rate for Vinj/qmax")
+                res.warnings.append("No usable rate: te = pump duration, no Vinj/qmax")
 
     # Apparent ISIP (needs shut-in time). The at-shut-in branch needs res.dropout_mask, so it
     # is evaluated just after the mask is built below. apparent_isip_method is set only when a
@@ -608,14 +633,12 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     detail += f", {duration_str} s"
                 detail += f", to {d.p_min:.0f} psi"
                 res.warnings.insert(0,
-                    f"Pressure dropout masked at {_min_label(d.dt_start)} min after shut-in "
-                    f"({detail}) -- treated as a gauge glitch")
+                    f"Pressure dropout masked at {_min_label(d.dt_start)} min ({detail})")
             elif len(res.dropouts) > 1:
                 first = res.dropouts[0]
                 res.warnings.insert(0,
-                    f"{len(res.dropouts)} pressure dropouts masked (first at "
-                    f"{_min_label(first.dt_start)} min after shut-in) -- treated as gauge "
-                    "glitches")
+                    f"{len(res.dropouts)} pressure dropouts masked, first at "
+                    f"{_min_label(first.dt_start)} min")
 
     if state.isip_at_shutin and res.t_shutin_s is not None and state.shutin_idx is not None:
         p_shutin = (float(res.bhp_all[state.shutin_idx])
@@ -623,7 +646,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if res.dropout_mask[state.shutin_idx] or not np.isfinite(p_shutin):
             res.apparent_isip = None
             res.warnings.append(
-                "Apparent ISIP at shut-in: BHP at the shut-in sample is missing/masked")
+                "Apparent ISIP at shut-in: BHP missing at the shut-in sample")
         else:
             res.apparent_isip = p_shutin
             res.apparent_isip_method = "shutin"
@@ -736,14 +759,12 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # still lands frontmost of the two when both fire.
             if cutoff is not None and cutoff <= rs_full.guard_dt:
                 res.warnings.insert(0,
-                    f"Tail guard stopped resampling {rs_full.guard_dt/60:.0f} min after shut-in "
-                    "(sustained pressure rise); later data excluded")
+                    f"Tail guard stopped resampling at {rs_full.guard_dt/60:.0f} min "
+                    "(sustained pressure rise)")
             elif override_extends_past_guard and not admitted_new_data:
                 res.warnings.insert(0,
-                    f"Tail-guard override requested to {cutoff/60:.0f} min, but the resampler "
-                    f"found no further resampled points past the guard's original cutoff at "
-                    f"{rs_full.guard_dt/60:.0f} min -- Shmin/effective ISIP/pore pressure are "
-                    "unchanged.")
+                    f"Tail-guard override to {cutoff/60:.0f} min added no points past "
+                    f"{rs_full.guard_dt/60:.0f} min; results unchanged")
         if cutoff is not None:
             # cutoff == guard_dt is exactly the "no trim narrower than the guard" case (either
             # state.tail_trim_dt is None, or an explicit trim got clamped back to guard_dt for
@@ -773,10 +794,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # seed_tail_trim snaps to the last resampled sample STRICTLY BEFORE the crash,
                 # side="left") -- so this must point at the crash beginning just past the cut,
                 # not claim the cut is where pressure first read low.
-                msg = (
-                    f"Tail auto-trimmed {state.tail_trim_dt/60:.0f} min after shut-in: surface "
-                    "pressure crashes below 100 psi shortly after this point. Drag the Overview "
-                    "trim line to the right edge to undo.")
+                msg = (f"Tail auto-trimmed at {state.tail_trim_dt/60:.0f} min "
+                       "(surface pressure drops below 100 psi)")
                 # A guard existing at all in this record means it fired LATER than this
                 # low-pressure cut (suggest_tail_trim_dt's earliest-wins rule -- low_pressure is
                 # never chosen over an earlier rise_guard), so dragging to the right edge to undo
@@ -784,8 +803,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # there's no guard in this record (the common case), so the warning stays no
                 # noisier than it has to be.
                 if rs_full.guard_dt is not None:
-                    msg += (" Doing so also overrides the tail guard, which fires further into "
-                            "the tail, extending the cutoff to the end of the record.")
+                    msg += "; undoing it also overrides the tail guard"
                 res.warnings.insert(0, msg)
             elif not (override_extends_past_guard and not admitted_new_data):
                 # Suppressed when the override-admitted-nothing warning above already fired for
@@ -795,8 +813,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # one would.
                 n_excluded = int(np.sum(dt_all[post] > state.tail_trim_dt))
                 res.warnings.insert(0,
-                    f"Tail trimmed {state.tail_trim_dt/60:.0f} min after shut-in "
-                    f"({n_excluded} raw samples excluded)")
+                    f"Tail trimmed at {state.tail_trim_dt/60:.0f} min "
+                    f"({n_excluded} samples excluded)")
         res.resampled = rs
         if len(rs.p) >= 3:
             res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)
@@ -809,8 +827,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # this step). Inserted at the front so it stays the topmost line in warn_lbl's stacked
             # display even when other warnings already queued ahead of it -- this is the escape
             # instruction for an otherwise-blank plot.
-            res.warnings.insert(0, f"Tail trim leaves only {len(rs.p)} resampled point(s); drag "
-                                   "the trim line back right on the Overview tab")
+            res.warnings.insert(0, f"Tail trim leaves {len(rs.p)} resampled point(s); move "
+                                   "the Overview trim line right")
 
     # Low-surface-pressure warning: only when the mapped channel is surface pressure
     # (state.pressure_is_bhp, not res.pressure_is_bhp -- that flips True after hydrostatic
@@ -841,8 +859,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         surf_kept = surf[m]
         finite = np.isfinite(surf_kept)
         if finite.any() and float(np.min(surf_kept[finite])) < interpret.MIN_SURFACE_PRESSURE_PSI:
-            res.warnings.append("Surface pressure fell below 100 psi post-shut-in -- BHP "
-                                "unreliable there; consider trimming the tail")
+            res.warnings.append("Surface pressure fell below 100 psi after shut-in; BHP "
+                                "unreliable there")
 
     # Stale-pick warning: only meaningful once a trim is actually in effect -- gating on
     # state.tail_trim_dt avoids misleadingly reporting picks as "beyond the tail trim" for a
@@ -890,8 +908,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             if emptied or shrunk:
                 stale.append("pore-pressure window")
         if stale:
-            res.warnings.append(f"{', '.join(stale)} pick(s) lie beyond the tail trim -- values "
-                                "may be stale")
+            res.warnings.append(f"{', '.join(stale)} pick(s) beyond the tail trim; may be stale")
 
     # Effective ISIP: tangent to P-vs-G at the contact point, extrapolated to G=0. Derived here
     # (not a stored pick) -- the anchor is the diagnostics sample nearest state.contact_G, the
@@ -1009,9 +1026,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # STIFFNESS_MAX_POINTS + 2 (the 3 extras, minus whatever the linspace already covered).
             even = np.linspace(0, n - 1, STIFFNESS_MAX_POINTS).round().astype(int)
             sel = np.unique(np.concatenate([even, [0, i_min, n - 1]]))
-            res.warnings.append(
-                f"Stiffness plot uses {len(sel)} of {n} resampled points (decimated to limit "
-                "memory)")
+            res.notes.append(f"Stiffness plot uses {len(sel)} of {n} resampled points")
         else:
             sel = np.arange(n)
         h = interpret.h_function(rs.dt[sel], p_eff[sel], res.pore_pressure, res.te_s)

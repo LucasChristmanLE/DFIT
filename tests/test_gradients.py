@@ -119,11 +119,11 @@ def test_all_gradients_none_when_tvd_invalid(bad_tvd, expected_warning):
     # messages describe different analyst-facing problems ("not set" for a missing TVD vs a
     # value-naming "not a positive number" for anything else), and only this catches the two
     # appends being swapped.
-    assert any("gradient" in w.lower() for w in res2.warnings), res2.warnings
-    assert any(expected_warning in w for w in res2.warnings), res2.warnings
+    assert any("gradient" in w.lower() for w in res2.notes), res2.notes
+    assert any(expected_warning in w for w in res2.notes), res2.notes
     if expected_warning == "is not a positive number":
         # The message names the offending value, so the analyst can see what got read.
-        assert any(repr(bad_tvd) in w for w in res2.warnings), res2.warnings
+        assert any(repr(bad_tvd) in w for w in res2.notes), res2.notes
 
 
 # --------------------------------------------------------------------------------------------------
@@ -147,25 +147,25 @@ def test_no_gradient_warning_when_no_source_values_exist(bad_tvd):
     assert res.shmin_rapid is None
     assert res.pore_pressure is None
 
-    assert not any("gradient" in w.lower() for w in res.warnings), res.warnings
+    assert not any("gradient" in w.lower() for w in res.notes), res.notes
 
 
 def test_no_gradient_warning_when_tvd_valid():
     td, st, res = _full_state("C-A clear", tvd_ft=10000.0)
-    assert not any("gradient" in w.lower() for w in res.warnings), res.warnings
+    assert not any("gradient" in w.lower() for w in res.notes), res.notes
 
 
 # --------------------------------------------------------------------------------------------------
-# The gradient warning deliberately coexists with "Surface pressure selected but density/TVD not
-# set" -- the two say different things (BHP reliability vs. gradients not reported) and the panel
-# stacks warnings one per line. A future "fix" collapsing them into one must fail this test.
+# The gradient note deliberately coexists with the "Surface pressure selected but density/TVD
+# not set" blocker -- the two say different things (BHP reliability vs. gradients not reported).
+# A future "fix" collapsing them into one must fail this test.
 # --------------------------------------------------------------------------------------------------
 def test_gradient_warning_coexists_with_density_tvd_warning():
     td, st, res = _full_state("C-A clear", tvd_ft=None)
     assert res.apparent_isip is not None  # a source value exists
 
-    assert "Surface pressure selected but density/TVD not set" in res.warnings
-    assert any("gradient" in w.lower() for w in res.warnings), res.warnings
+    assert "Surface pressure selected but density/TVD not set" in res.blockers
+    assert any("gradient" in w.lower() for w in res.notes), res.notes
 
 
 @pytest.mark.parametrize("bad_tvd", [None, 0.0, -5000.0, math.nan, math.inf])

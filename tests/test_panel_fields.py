@@ -179,7 +179,7 @@ def test_update_panel_collapses_warnings_by_default():
 
     assert stub.warn_lbl.text == "2 warnings (click to expand)"
     assert stub._warnings_expanded is False
-    assert stub._warnings_list == ["Tail auto-trimmed.", "Pressure dropout masked."]
+    assert stub._issue_sections == [("Warnings", ["Tail auto-trimmed.", "Pressure dropout masked."])]
 
 
 def test_update_panel_blanks_warnings_label_when_clean():
@@ -190,7 +190,7 @@ def test_update_panel_blanks_warnings_label_when_clean():
     stub._update_panel()
 
     assert stub.warn_lbl.text == ""
-    assert stub._warnings_list == []
+    assert stub._issue_sections == []
 
 
 # --------------------------------------------------------------------------------------------------
@@ -300,18 +300,18 @@ def test_format_warnings_text_empty():
 
 
 def test_format_warnings_text_collapsed_singular():
-    assert ui.format_warnings_text(["Tail auto-trimmed."], expanded=False) == (
+    assert ui.format_warnings_text([("Warnings", ["Tail auto-trimmed."])], expanded=False) == (
         "1 warning (click to expand)")
 
 
 def test_format_warnings_text_collapsed_plural():
-    warnings = ["Tail auto-trimmed.", "Pressure dropout masked."]
+    warnings = [("Warnings", ["Tail auto-trimmed.", "Pressure dropout masked."])]
     assert ui.format_warnings_text(warnings, expanded=False) == (
         "2 warnings (click to expand)")
 
 
 def test_format_warnings_text_expanded_shows_full_list():
-    warnings = ["Tail auto-trimmed.", "Pressure dropout masked."]
+    warnings = [("Warnings", ["Tail auto-trimmed.", "Pressure dropout masked."])]
     assert ui.format_warnings_text(warnings, expanded=True) == (
         "2 warnings (click to collapse)\nTail auto-trimmed.\nPressure dropout masked.")
 
@@ -319,7 +319,7 @@ def test_format_warnings_text_expanded_shows_full_list():
 def _toggle_stub(warnings_list, expanded):
     stub = types.SimpleNamespace()
     stub.warn_lbl = _FakeLabel()
-    stub._warnings_list = warnings_list
+    stub._issue_sections = [("Warnings", warnings_list)] if warnings_list else []
     stub._warnings_expanded = expanded
     stub._toggle_warnings = types.MethodType(ui.DfitApp._toggle_warnings, stub)
     return stub
@@ -345,3 +345,10 @@ def test_toggle_warnings_noop_when_no_warnings():
 
     assert stub._warnings_expanded is False
     assert stub.warn_lbl.text == ""
+
+
+def test_format_warnings_text_expanded_marks_notes_and_blockers():
+    sections = [("Blocking", ["B"]), ("Warnings", ["W"]), ("Notes", ["N1", "N2"])]
+    assert ui.format_warnings_text(sections, expanded=True) == (
+        "1 blocking issue, 1 warning, 2 notes (click to collapse)\nBlocking: B\nW\nNote: N1\n"
+        "Note: N2")

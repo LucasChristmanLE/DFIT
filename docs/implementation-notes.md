@@ -1094,9 +1094,8 @@ that the default mask above always excludes) before deciding what to say instead
     +-step move off the last pre-guard kept value -- e.g. a rise whose height clears the fixed
     30-psi `rise_tol` enough to fire the guard but not `resample_step`, when the latter is
     configured larger than that height): the original warning is replaced with a distinct, honest
-    one -- `"Tail-guard override requested to N min, but the resampler found no further resampled
-    points past the guard's original cutoff at M min -- Shmin/effective ISIP/pore pressure are
-    unchanged."` The ordinary "Tail trimmed ... (0 raw samples excluded)" message is also
+    one -- `"Tail-guard override to N min added no points past M min; results unchanged"`. The
+    ordinary "Tail trimmed ... (0 samples excluded)" message is also
     suppressed in this specific case (it would otherwise sit right next to the honest warning and
     read as a confusing, near-contradictory pair claiming both "nothing changed" and "0 excluded"
     about the same cut) -- everything the plain message would have said is already covered by the
@@ -1210,9 +1209,8 @@ and `picks.seed_tail_trim` masks `p_surface_post` to NaN before calling
 `interpret.suggest_tail_trim_dt` (which already ignores non-finite samples) so a dropout never
 triggers the `"low_pressure"` auto-trim. A firing detector is never silent: `compute_all`
 `insert(0)`s one warning line -- on the motivating Encore record, `"Pressure dropout masked at 11
-min after shut-in (23 samples, 22 s, to 12 psi) -- treated as a gauge glitch"` -- or, for several
-events, `"3 pressure dropouts masked (first at 11 min after shut-in) -- treated as gauge
-glitches"` -- silent when there are none. Both the minute and (single-event) duration figures are
+min (23 samples, 22 s, to 12 psi)"` -- or, for several events, `"3 pressure dropouts masked,
+first at 11 min"` -- silent when there are none. Both the minute and (single-event) duration figures are
 gated on their FORMATTED (rounded) value, not the raw number, so what's checked always matches
 what's printed: `"at 0 min"` reads as "no time elapsed at all" and is misleading for anything in
 the first ~30 s, so it becomes `"at <1 min"` instead when `f"{dt_start/60:.0f}"` rounds to `"0"`;
@@ -1220,8 +1218,7 @@ likewise the single-event duration clause is dropped entirely (not printed as th
 s"`) when `f"{duration:.0f}"` rounds to `"0"` -- true for an exact-zero single-sample dip
 (`dt_end == dt_start`) and for a sub-0.5 s multi-sample one on a sub-1-Hz channel alike. The
 single-event line also grammar-checks the common case: `"1 sample"` not `"1 samples"` for a
-single-sample glitch -- e.g. `"Pressure dropout masked at <1 min after shut-in (1 sample, to 15
-psi) -- treated as a gauge glitch"`.
+single-sample glitch -- e.g. `"Pressure dropout masked at <1 min (1 sample, to 15 psi)"`.
 `plots._split_dropouts(p, mask)` splits a trace into `(p_clean, p_masked)` (NaN in the
 other array); `render_overview`/`render_isip` plot `p_clean` as the main trace (so the line breaks
 across a masked gap instead of spiking to it) and `p_masked`'s finite samples as small magenta

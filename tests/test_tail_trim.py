@@ -77,7 +77,7 @@ def test_too_tight_trim_leaves_no_diagnostics_and_warns():
     res2 = compute_all(st, td)
 
     assert res2.diagnostics is None
-    assert any("Tail trim leaves only" in w for w in res2.warnings)
+    assert any("Tail trim leaves " in w for w in res2.warnings)
 
 
 def test_too_tight_trim_warning_is_inserted_first():
@@ -85,11 +85,11 @@ def test_too_tight_trim_warning_is_inserted_first():
     must still land topmost, ahead of other warnings queued before it in compute_all."""
     td, st, res = _seeded_with_crash()
     st.pressure_is_bhp = False
-    st.density_ppg = None  # also trips "Surface pressure selected but density/TVD not set"
+    td.load_warnings = ["Earlier load warning"]  # queued ahead of the trim warning
     st.tail_trim_dt = 0.0
     res2 = compute_all(st, td)
 
-    assert res2.warnings[0].startswith("Tail trim leaves only")
+    assert res2.warnings[0].startswith("Tail trim leaves ")
 
 
 def test_stale_contact_pick_beyond_trim_warns():
@@ -603,8 +603,8 @@ def test_compute_all_emits_explanatory_line_for_manual_trim():
     res2 = compute_all(st, td)
 
     assert res2.warnings[0] == (
-        f"Tail trimmed {st.tail_trim_dt/60:.0f} min after shut-in "
-        f"({expected_n_excluded} raw samples excluded)")
+        f"Tail trimmed at {st.tail_trim_dt/60:.0f} min "
+        f"({expected_n_excluded} samples excluded)")
 
 
 def test_compute_all_emits_explanatory_line_for_low_pressure_trim():

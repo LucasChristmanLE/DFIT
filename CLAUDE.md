@@ -190,8 +190,16 @@ Preserve these when changing the code.
   sniffing, ever.
 - **Warnings are never silent about changed numbers.** An auto-trim, a masked dropout, a guard
   cutoff, or an extrapolated timestamp block always produces a warning. Warnings that explain a
-  cut go at the front of `DerivedResults.warnings` (`insert(0)`). The UI collapses the list to a
-  count (`ui.format_warnings_text`).
+  cut go at the front of `DerivedResults.warnings` (`insert(0)`). Keep each message to one short
+  line (`tests/test_warning_levels.py` caps it at 90 characters). Empty trailing `.DBS` records
+  are dropped without a warning.
+- **Three issue levels** on `DerivedResults`: `blockers` (no pressure channel, surface pressure
+  without density/TVD, a failed BHP conversion), `warnings` (changed or possibly invalid
+  numbers), `notes` (informational: TVD missing so gradients are blank, stiffness decimation).
+  `model.blocking_issues(state)` gates Next and Skip on Overview (`step_gate_error`); `_goto` and
+  `refresh` send any other step back to Overview while a blocker holds. Overview shows every
+  issue in place of the Results rows (`ui._update_issues_panel`); other steps show per-level
+  counts (`ui.format_warnings_text`).
 
 ## Testing
 

@@ -552,7 +552,7 @@ def test_dropout_warning_shows_less_than_1_min_for_early_events():
 
     assert len(res.dropouts) == 2
     msg = next(w for w in res.warnings if "pressure dropouts masked" in w)
-    assert "first at <1 min after shut-in" in msg
+    assert "first at <1 min" in msg
     assert "at 0 min" not in msg
 
 

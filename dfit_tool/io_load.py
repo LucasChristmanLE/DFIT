@@ -937,8 +937,7 @@ def _maybe_warn(kind: str, det: UnitDetection) -> list[str]:
     if det.factor != 1.0:
         return [f"{label} converted from {det.unit} ×{det.factor:.6g} ({det.source})"]
     if kind == "pressure" and det.source == "heuristic" and det.confidence == "low":
-        return [f"{label} magnitude ambiguous between psi and kPa; defaulted to psi — "
-                "verify with the unit dropdown"]
+        return [f"{label} unit ambiguous (psi or kPa); assumed psi"]
     return []
 
 
@@ -1216,11 +1215,7 @@ def _find_numeric_time_column(
         if mult is not None:
             return col, vals * mult, []
         if _bare_name(col) == "time":
-            warn = (
-                f"Column {col!r} has no recognized time unit (no header suffix, units row, or "
-                f"unit token in its name) -- assuming MINUTES, the plain Fracpro ASCII "
-                f"elapsed-time convention."
-            )
+            warn = f"Column {col!r} has no time unit; assumed minutes"
             return col, vals * 60.0, [warn]
 
     return None
@@ -1528,11 +1523,9 @@ def _find_clock_column(
                 reversed_ = True
             unwrapped = _unwrap_midnight_rollovers(raw_secs)
             warn = (
-                "Time column has clock times only (no date); elapsed time computed from the "
-                "first sample, midnight rollovers unwrapped."
-                + (" Row order was reversed (newest-first log)." if reversed_ else "")
-                + (" H:MM vs MM:SS was inferred from repeated values only (low confidence); "
-                   "check the Overview duration." if inferred else "")
+                "Time column has clock times only (no date)"
+                + ("; rows reversed (newest first)" if reversed_ else "")
+                + ("; H:MM vs MM:SS guessed (low confidence)" if inferred else "")
             )
         else:
             # An elapsed duration is already monotonic by construction (its "hour" or "minutes"
@@ -1540,10 +1533,7 @@ def _find_clock_column(
             # no unwrap or reversal check applies here.
             unwrapped = raw_secs
             shape = "H:MM:SS" if mode == "elapsed_hms" else "MM:SS"
-            warn = (
-                f"Time column has {shape} durations past its usual wrap point (an elapsed "
-                f"duration, not a wall clock); no midnight unwrap applied."
-            )
+            warn = f"Time column read as {shape} elapsed duration"
         return col, unwrapped, [warn], reversed_
 
     if ambiguous_col is not None:
@@ -1752,8 +1742,8 @@ def _extrapolate_or_warn_edge_block(
     why = _columns_continue(df, other_cols, side, sub_start, sub_end, good_start, good_end)
     if why is not None:
         return dt, [
-            f"{n_data_bearing_total} data-bearing rows were not extrapolated: their columns do "
-            f"not continue the timestamped record ({why})."
+            f"{n_data_bearing_total} rows without timestamps not extrapolated: they do not "
+            f"continue the timestamped record ({why})"
         ]
 
     # Within the reachable run, only rows whose own cell(s) are genuinely blank/error-token are
@@ -1776,22 +1766,14 @@ def _extrapolate_or_warn_edge_block(
         new_vals = (anchor + pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
             "datetime64[us]")
         dt.iloc[positions] = new_vals
-        bad_value = str(df[dt_col].iloc[positions[0]]).strip()
-        warn = (
-            f"{n_extrapolatable} rows past {anchor} had no timestamp ({bad_value}); "
-            f"timestamps extrapolated at {step:g} s spacing."
-        )
+        warn = f"{n_extrapolatable} rows after {anchor}: timestamps extrapolated at {step:g} s"
     else:
         anchor = dt.iloc[end:].dropna().iloc[0]
         offsets = (np.arange(n_reachable, 0, -1) * step)[extrapolatable]
         new_vals = (anchor - pd.to_timedelta(offsets, unit="s")).to_numpy().astype(
             "datetime64[us]")
         dt.iloc[positions] = new_vals
-        bad_value = str(df[dt_col].iloc[positions[-1]]).strip()
-        warn = (
-            f"{n_extrapolatable} rows before {anchor} had no timestamp ({bad_value}); "
-            f"timestamps extrapolated at {step:g} s spacing."
-        )
+        warn = f"{n_extrapolatable} rows before {anchor}: timestamps extrapolated at {step:g} s"
     warnings_out = [warn]
     n_unresolved = n_data_bearing_total - n_extrapolatable
     if n_unresolved > 0:
@@ -2268,8 +2250,7 @@ def _finish_frame(df: pd.DataFrame, path: str) -> TestData:
     # reported span with a huge, spurious swing (see _mask_isolated_timestamp_outliers).
     dt, n_outliers = _mask_isolated_timestamp_outliers(dt)
     outlier_warnings = (
-        [f"{n_outliers} isolated timestamp outlier(s) masked (surrounded by mutually "
-         f"consistent neighbors far closer to each other than to it)."]
+        [f"{n_outliers} isolated timestamp outlier(s) masked"]
         if n_outliers else []
     )
 
@@ -2426,9 +2407,8 @@ def load_dbs(path: str) -> TestData:
     ever sees it. Without this, ``t_s`` for those padding rows would collapse to time zero
     (derived from ``idx``, not array position) and pollute every plot and computation that reads
     ``td.t_s``/columns unfiltered. On a well-formed file (including one with ordinary mid-file
-    jitter) this is a complete no-op. When truncation happens, a one-line note is appended to the
-    returned ``TestData``'s ``load_warnings`` (folded into the analyst-visible warnings panel by
-    ``model.compute_all``); a clean file leaves ``load_warnings`` empty.
+    jitter) this is a complete no-op. The dropped records hold no data, so truncation is silent:
+    ``load_warnings`` stays empty either way.
 
     Two known, accepted edge cases (neither seen in the real corpus this was checked against,
     every observed padding run is a constant ``idx == 0``): a file whose very last real record
@@ -2507,7 +2487,6 @@ def load_dbs(path: str) -> TestData:
     # while one that resumes forward progress before EOF is just ordinary counter jitter and
     # must be left alone. This is a no-op whenever the last record is part of a run that made
     # genuine forward progress into it.
-    load_warnings: list[str] = []
     idx_i64 = rec["idx"].astype(np.int64)
     if idx_i64.size > 1:
         i = idx_i64.size - 1
@@ -2515,12 +2494,7 @@ def load_dbs(path: str) -> TestData:
             i -= 1
         valid_n = i + 1
         if valid_n < idx_i64.size:
-            dropped = idx_i64.size - valid_n
-            load_warnings.append(
-                f"File declares {n_samples:,} samples but only the first {valid_n:,} were "
-                f"recorded; ignored {dropped:,} empty trailing records."
-            )
-            rec = rec[:valid_n]
+            rec = rec[:valid_n]  # empty trailing records: dropped without a warning
 
     t_s = rec["idx"].astype(np.float64) * float(interval_min) * 60.0
 
@@ -2530,8 +2504,7 @@ def load_dbs(path: str) -> TestData:
         cols[name] = rec[f"c{i}"].astype(np.float64)
     df = pd.DataFrame(cols)
 
-    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns),
-                     load_warnings=load_warnings)
+    return TestData(path=path, df=df, datetime_col=dt_col, t_s=t_s, columns=list(df.columns))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -3465,8 +3438,7 @@ def _xlsx_gap_stop_warning(wb, path: str, ws, stop_row: int) -> Optional[str]:
         return None
     if n <= 0:
         return None
-    return (f"Sheet {ws.title!r}: read stopped at a gap of >={_XLSX_ROW_COUNT_BLANK_STOP} blank "
-            f"rows (ending at row {stop_row}); {n} later rows holding values were not read.")
+    return (f"Sheet {ws.title!r}: {n} rows after a blank gap at row {stop_row} not read")
 
 
 # Data rows read from a sheet to judge whether its time base is usable when more than one sheet

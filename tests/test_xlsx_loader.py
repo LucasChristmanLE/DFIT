@@ -665,7 +665,7 @@ def test_load_xlsx_warns_when_blank_gap_stop_hides_later_rows(tmp_path):
         ws.cell(row=3000 + k, column=2, value=4000 - k)
     td = io_load.load_xlsx(_save(wb, tmp_path / "gap_hides.xlsx"))
     assert td.n == 25
-    assert any(">=1000 blank rows" in w and "3 later rows" in w for w in td.load_warnings)
+    assert any("3 rows after a blank gap" in w for w in td.load_warnings)
 
 
 def test_load_xlsx_no_gap_warning_for_styled_only_far_cell(tmp_path):

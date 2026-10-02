@@ -285,6 +285,9 @@ def test_gfunction_ylim_default_scales_from_pressure_data_only():
 def _refresh_stub(td, state, step):
     """Duck-typed DfitApp stand-in exposing only what refresh()/_build_sliders/_twin_axes touch,
     same headless-Agg approach as test_build_sliders.py's _make_app_stub."""
+    # Treat the synthetic channel as BHP so the surface-pressure blocker never redirects the
+    # requested step to Overview. Same numbers: an unconverted surface trace is used as-is.
+    state.pressure_is_bhp = True
     stub = types.SimpleNamespace()
     stub.fig = Figure()
     stub.ax = stub.fig.add_subplot(111)
@@ -299,6 +302,7 @@ def _refresh_stub(td, state, step):
     stub._update_stepbar = lambda: None
     stub._update_panel_visibility = lambda: None
     stub._update_panel = lambda: None
+    stub._update_issues_panel = lambda: None
     stub._update_unit_labels = lambda: None
     stub._x_slider = None
     stub._y_slider = None
