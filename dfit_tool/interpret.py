@@ -724,15 +724,107 @@ def suggest_closure_tangent(
     return slope, last_good
 
 
-def loglog_slope(t: np.ndarray, dp: np.ndarray, i0: int, i1: int) -> float:
-    """Average log-log slope of dp vs t over [i0, i1] (both > 0)."""
-    t = np.asarray(t, dtype=float)[i0:i1]
-    dp = np.asarray(dp, dtype=float)[i0:i1]
-    good = (t > 0) & (dp > 0)
+LOGLOG_HALF_SLOPE_TOL = 0.10  # |slope + 1/2| that counts as a -1/2 (PC-A) window
+LOGLOG_MIN_POINTS = 5  # samples in a suggested log-log window
+LOGLOG_MAX_RMS_DECADES = 0.05  # straightness cap: RMS of the log10 fit residual
+LOGLOG_MIN_SPAN_DECADES = 0.3  # a -1/2 window shorter than this is not trusted
+LOGLOG_PEAK_PROMINENCE_DECADES = 0.15  # a t*dP/dt local max must stand this far above its bases
+LOGLOG_PEAK_HALF_WIDTH = 3  # a peak is the max over +-this many samples
+
+
+def _loglog_peak(v: np.ndarray) -> Optional[int]:
+    """Index of the latest prominent local maximum of log10 t*dP/dt ``v`` that still has
+    >= LOGLOG_MIN_POINTS samples after it, or None. Prominence is the usual topographic one:
+    the peak minus the higher of its two bases, each base being the minimum between the peak
+    and the nearest higher sample on that side (or the array end). "Latest" rather than
+    "tallest" so a tall early-time spike or a pre-closure hump never outranks the postclosure
+    peak the log-log window has to follow."""
+    n = v.size
+    w = LOGLOG_PEAK_HALF_WIDTH
+    for i in range(n - 1 - LOGLOG_MIN_POINTS, 0, -1):
+        if v[i] < np.max(v[max(0, i - w):i + w + 1]):
+            continue
+        higher_l = np.flatnonzero(v[:i] > v[i])
+        left_base = np.min(v[(higher_l[-1] + 1 if higher_l.size else 0):i])
+        higher_r = np.flatnonzero(v[i + 1:] > v[i])
+        right_base = np.min(v[i + 1:(i + 1 + higher_r[0] if higher_r.size else n)])
+        if v[i] - max(left_base, right_base) >= LOGLOG_PEAK_PROMINENCE_DECADES:
+            return i
+    return None
+
+
+def loglog_window_slope(t: np.ndarray, y: np.ndarray, lo: float, hi: float) -> float:
+    """Log-log slope of y vs t over samples with lo <= t <= hi (both edges included). NaN with
+    fewer than 2 usable (t > 0, y > 0) samples."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    good = (t >= lo) & (t <= hi) & (t > 0) & (y > 0) & np.isfinite(y)
     if good.sum() < 2:
         return float("nan")
-    m, _ = fit_line(np.log10(t[good]), np.log10(dp[good]))
+    m, _ = fit_line(np.log10(t[good]), np.log10(y[good]))
     return m
+
+
+def suggest_loglog_window(t: np.ndarray,
+                          y: np.ndarray) -> Optional[tuple[int, int, bool]]:
+    """Suggested log-log window (i0, i1, half_slope) on t*dP/dt ``y``; i0/i1 are inclusive
+    indices into ``t``.
+
+    The window always starts after the postclosure peak (``_loglog_peak``: the latest
+    prominent local maximum, so an early-time spike or a pre-closure hump is skipped). Among
+    post-peak windows of >= LOGLOG_MIN_POINTS samples, the widest (in decades) that is straight
+    (LOGLOG_MAX_RMS_DECADES), spans >= LOGLOG_MIN_SPAN_DECADES, and has a slope within
+    LOGLOG_HALF_SLOPE_TOL of -1/2 wins, with half_slope True. Without one, the straightest
+    section at any slope, with half_slope False: the widest straight window over the span
+    floor, else the lowest-RMS window. None when no such peak exists (derivative still
+    rising)."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.flatnonzero(np.isfinite(t) & np.isfinite(y) & (t > 0) & (y > 0))
+    if valid.size < LOGLOG_MIN_POINTS + 1:
+        return None
+    x = np.log10(t[valid])
+    v = np.log10(y[valid])
+    peak = _loglog_peak(v)
+    if peak is None:
+        return None
+    xs, vs = x[peak + 1:], v[peak + 1:]
+    m = xs.size
+
+    # Closed-form LS over every (a, b) window via prefix sums: O(m^2), no per-window fit.
+    def _cum(z):
+        return np.concatenate([[0.0], np.cumsum(z)])
+    cx, cv, cxx, cxv, cvv = _cum(xs), _cum(vs), _cum(xs * xs), _cum(xs * vs), _cum(vs * vs)
+    a, b = np.meshgrid(np.arange(m), np.arange(m), indexing="ij")
+    n = np.maximum(b - a + 1, 1).astype(float)
+    ok = (b - a + 1) >= LOGLOG_MIN_POINTS
+    sx = cx[b + 1] - cx[a]
+    sv = cv[b + 1] - cv[a]
+    sxx_c = cxx[b + 1] - cxx[a] - sx * sx / n
+    sxv_c = cxv[b + 1] - cxv[a] - sx * sv / n
+    svv_c = cvv[b + 1] - cvv[a] - sv * sv / n
+    ok &= sxx_c > 0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        slope = np.where(ok, sxv_c / np.where(sxx_c > 0, sxx_c, 1.0), np.nan)
+        rms = np.sqrt(np.maximum(svv_c - slope * sxv_c, 0.0) / n)
+    span = xs[b] - xs[a]
+    miss = np.abs(slope + 0.5)
+    good = (ok & (miss <= LOGLOG_HALF_SLOPE_TOL) & (rms <= LOGLOG_MAX_RMS_DECADES)
+            & (span >= LOGLOG_MIN_SPAN_DECADES))
+    straight = ok & (rms <= LOGLOG_MAX_RMS_DECADES) & (span >= LOGLOG_MIN_SPAN_DECADES)
+    if good.any() or straight.any():
+        score = np.where(good if good.any() else straight, span, -np.inf)
+        ia, ib = np.unravel_index(int(np.argmax(score)), score.shape)
+    else:
+        # Nothing is straight enough: the lowest-RMS window, over the span floor when any
+        # window reaches it.
+        pool = ok & (span >= LOGLOG_MIN_SPAN_DECADES)
+        score = np.where(pool if pool.any() else ok, rms, np.inf)
+        if not np.isfinite(score).any():
+            return None
+        ia, ib = np.unravel_index(int(np.argmin(score)), score.shape)
+    off = peak + 1
+    return int(valid[off + ia]), int(valid[off + ib]), bool(good.any())
 
 
 # --------------------------------------------------------------------------------------------------

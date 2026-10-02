@@ -1355,6 +1355,36 @@ entirely (below). `model._decode` normalizes the four old pre-rename labels (`"P
 `"PC-D mixed"`, `"PC-E none"`, `"PC-F none"`) found in older saved picks JSON to their current
 form; unrecognized strings pass through untouched.
 
+**Log-log window seed and PC-A auto-assign.** `picks.seed_loglog` takes its window from
+`interpret.suggest_loglog_window` on t·dP/dt. The window always starts after the postclosure
+peak, found by `interpret._loglog_peak`: the latest local maximum (max over ±3 samples) whose
+topographic prominence is >= 0.15 decades and that has >= 5 samples after it. "Latest", not
+"tallest": Argentine 7170 has an early spike at ~6 s, and Caprito 99-202H has a pre-closure
+hump at ~280 s about 6x taller than its postclosure peak at ~4.8e4 s. An earlier
+trough-then-argmax rule failed on Caprito because its first sample (t = 3 s) was the global
+low. After the peak, every window of >= 5 samples is fit in closed form (prefix sums, O(m²)).
+The widest window (in decades) with |slope + 0.5| <= 0.10, residual RMS <= 0.05 decades, and
+span >= 0.3 decades wins. Otherwise the straightest section at any slope: the widest window
+with RMS <= 0.05 and span >= 0.3 decades, else the lowest-RMS window. The −1/2 preference is a
+first choice only; an earlier "closest to −1/2" fallback landed in the curved rollover just
+after the peak whenever the real trend was some other slope. No qualifying
+peak (derivative still rising) falls back to the old last-40% window. On 7170 the seed is
+1.56e5–1.57e6 s, slope −0.58, which matches the analyst's saved window (1.55e5–1.67e6 s, PC-A).
+
+The window slope is `DerivedResults.loglog_slope` (`interpret.loglog_window_slope`, both edges
+inclusive). The renderer used to compute it over `[i0, i1)` and drop the right edge.
+`picks.auto_assign_postclosure(state, slope)` sets `"PC-A linear"` with
+`PickState.postclosure_auto = True` when the slope is within 0.10 of −1/2. It runs after every
+window drag (`ui` loglog `on_span`), and after the seed only when `suggest_loglog_window`
+reports a qualifying −1/2 window (its third return value); a fallback window is not
+evidence of PC-A. It never touches a scenario the analyst chose; it re-sets an auto PC-A on a hit and
+clears it to blank on a miss. Any postclosure-combobox selection (`ui._on_pcscen_selected`)
+clears `postclosure_auto`, including re-picking the auto PC-A, which confirms it. The closure
+combobox and the axis radios share `_on_scenario`, so the clear lives in the combobox handler
+only. While the flag holds, the
+log-log hint says the scenario was auto-set (the plot title does not); the flag is logged in the
+`postclosure_auto` tail column.
+
 **PC-F skip.** `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}` whenever
 `postclosure_scenario` starts with `"PC-F"`, else an empty set. It is the only place the rule
 lives. Porepressure is skipped because the derivative never peaks, so no postclosure line

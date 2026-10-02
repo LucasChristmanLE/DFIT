@@ -512,7 +512,7 @@ class DfitApp:
         self.cmb_pcscen = ttk.Combobox(self.frm_pcscen, textvariable=self.var_pcscen,
                                        values=POSTCLOSURE_SCENARIOS, state="readonly")
         self.cmb_pcscen.pack(fill="x")
-        self.cmb_pcscen.bind("<<ComboboxSelected>>", lambda e: self._on_scenario())
+        self.cmb_pcscen.bind("<<ComboboxSelected>>", lambda e: self._on_pcscen_selected())
 
         ttk.Label(self.frm_pcscen, text="Pore-pressure axis").pack(anchor="w", pady=(6, 0))
         self.var_ppaxis = tk.StringVar(value="tm12")
@@ -1075,6 +1075,13 @@ class DfitApp:
         self._sync_state_from_widgets()
         self.refresh()
 
+    def _on_pcscen_selected(self):
+        """Any pick in the postclosure combobox is the analyst's, including re-picking an
+        auto-set PC-A, so a later window drag no longer re-evaluates it. Kept off _on_scenario,
+        which the closure combobox and the axis radios also call."""
+        self.state.postclosure_auto = False
+        self._on_scenario()
+
     def _on_scenario(self):
         cscen = self.var_cscen.get()
         cscen_changed = cscen != self.state.closure_scenario
@@ -1383,6 +1390,9 @@ class DfitApp:
             seeder(self.state, self.td, res)
         else:
             seeder(self.state, res)
+            if key == "loglog":
+                # seed_loglog may auto-assign PC-A, which the combobox doesn't see on its own.
+                self.var_pcscen.set(self.state.postclosure_scenario)
 
     def _next(self):
         """Mark the current step done and advance. next_step() clamps at the last step, so at
@@ -2104,9 +2114,19 @@ class DfitApp:
         elif step == "loglog":
             def on_span(lo, hi):
                 picks.handle_loglog_span(self.state, lo, hi)
+                slope = compute_all(self.state, self.td).loglog_slope
+                hint = picks.auto_assign_postclosure(self.state, slope)
+                self.var_pcscen.set(self.state.postclosure_scenario)
                 self.refresh()
+                if hint:
+                    # After refresh(): _attach_controllers resets the step's default hint.
+                    self.hint_lbl.config(text=hint)
             self._controllers.append(picks.SpanController(self.ax, on_span))
-            self.hint_lbl.config(text="Drag to select the late-time window; set postclosure scenario.")
+            if self.state.postclosure_auto:
+                self.hint_lbl.config(text=picks.postclosure_auto_hint(self.res.loglog_slope))
+            else:
+                self.hint_lbl.config(
+                    text="Drag to select the late-time window; set postclosure scenario.")
         elif step == "porepressure":
             def on_span(lo, hi):
                 picks.handle_pp_span(self.state, lo, hi)

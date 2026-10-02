@@ -680,11 +680,8 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
     if state.loglog_window is not None:
         lo, hi = state.loglog_window
         ax.axvspan(lo, hi, color="tab:orange", alpha=0.15)
-        from .interpret import loglog_slope
-        i0 = int(np.searchsorted(dg.t, lo))
-        i1 = int(np.searchsorted(dg.t, hi))
-        s = loglog_slope(dg.t, dg.tdpdt, i0, i1)
-        ax.set_title(f"Log-log   window slope={s:.2f}   ({state.postclosure_scenario or '?'})",
+        s = "?" if res.loglog_slope is None else f"{res.loglog_slope:.2f}"
+        ax.set_title(f"Log-log   window slope={s}   ({state.postclosure_scenario or '?'})",
                      fontsize=10)
     else:
         ax.set_title("Log-log -- select the late-time window", fontsize=10)

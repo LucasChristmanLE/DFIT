@@ -119,6 +119,9 @@ class PickState:
     # --- step 7-8: log-log window + postclosure + pore pressure ---
     loglog_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
     postclosure_scenario: str = ""  # PC-A..PC-F
+    # True while postclosure_scenario is PC-A set by picks.auto_assign_postclosure (a near -1/2
+    # window slope) rather than by the analyst; a manual scenario change clears it.
+    postclosure_auto: bool = False
     pp_axis: str = "tm12"  # "tm12" (t^-1/2) or "tm1" (t^-1)
     pp_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
 
@@ -437,6 +440,7 @@ class DerivedResults:
     liberty_anchor_time_s: Optional[float] = None  # shut-in time at the Liberty anchor G
     pore_pressure_slope: Optional[float] = None
     pore_pressure_n_points: Optional[int] = None
+    loglog_slope: Optional[float] = None  # t*dP/dt log-log slope over state.loglog_window
 
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
@@ -1075,6 +1079,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     _resolve_net_pressures(res)
     if res.shmin_compliance is not None and res.shmin_tangent is not None:
         res.delta_closure = res.shmin_compliance - res.shmin_tangent
+
+    if state.loglog_window is not None and res.diagnostics is not None:
+        s = interpret.loglog_window_slope(res.diagnostics.t, res.diagnostics.tdpdt,
+                                          *state.loglog_window)
+        res.loglog_slope = s if np.isfinite(s) else None
 
     # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
     # postclosure line exists -- suppress the fit even if a stale pp_window pick is present.

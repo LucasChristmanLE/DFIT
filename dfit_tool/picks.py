@@ -1484,14 +1484,51 @@ def seed_tangent(state: PickState, res: DerivedResults) -> None:
         state.closure_G = float(dg.G[idep])
 
 
+def auto_assign_postclosure(state: PickState, slope: Optional[float]) -> Optional[str]:
+    """Set PC-A from a log-log window slope within LOGLOG_HALF_SLOPE_TOL of -1/2, or clear a
+    previous auto PC-A when the slope no longer qualifies. A scenario the analyst chose
+    (postclosure_auto False, scenario set) is never touched. Returns hint text when the
+    scenario changed or stays auto-set, else None."""
+    if state.postclosure_scenario and not state.postclosure_auto:
+        return None
+    hit = (slope is not None and math.isfinite(slope)
+           and abs(slope + 0.5) <= interpret.LOGLOG_HALF_SLOPE_TOL)
+    if hit:
+        state.postclosure_scenario = "PC-A linear"
+        state.postclosure_auto = True
+        state.pp_axis = suggest_pp_axis(state.postclosure_scenario) or state.pp_axis
+        return postclosure_auto_hint(slope)
+    if state.postclosure_auto:
+        state.postclosure_scenario = ""
+        state.postclosure_auto = False
+        return "Window slope is not near -1/2: auto PC-A cleared. Select a postclosure scenario."
+    return None
+
+
+def postclosure_auto_hint(slope: Optional[float]) -> str:
+    s = f"{slope:.2f}" if slope is not None and math.isfinite(slope) else "?"
+    return f"Slope {s} is near -1/2: scenario auto-set to PC-A. Change it if needed."
+
+
 def seed_loglog(state: PickState, res: DerivedResults) -> None:
-    """Late-time window for the log-log diagnostic plot."""
+    """Late-time window for the log-log diagnostic plot: interpret.suggest_loglog_window (after
+    the t*dP/dt peak, preferring a -1/2 slope), else the last 40% of samples. Auto-assigns PC-A
+    (auto_assign_postclosure) only when the suggester found a qualifying -1/2 window, not
+    from its straightest-section fallback."""
     if state.loglog_window is not None:
         return
     dg = res.diagnostics
     if dg is None or len(dg.t) <= 6:
         return
-    state.loglog_window = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
+    win = interpret.suggest_loglog_window(dg.t, dg.tdpdt)
+    if win is None:
+        state.loglog_window = (float(dg.t[int(len(dg.t) * 0.6)]), float(dg.t[-1]))
+        return
+    i0, i1, half_slope = win
+    state.loglog_window = (float(dg.t[i0]), float(dg.t[i1]))
+    if half_slope:
+        auto_assign_postclosure(state, interpret.loglog_window_slope(dg.t, dg.tdpdt,
+                                                                     *state.loglog_window))
 
 
 def seed_pp(state: PickState, res: DerivedResults) -> None:

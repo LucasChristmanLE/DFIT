@@ -308,6 +308,14 @@ Postclosure scenarios (`picks.suggest_pp_axis` maps by `scenario[:4]`):
 | PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
 | PC-F no peak | derivative still rising | porepressure and stiffness skipped |
 
+Log-log window seed (`interpret.suggest_loglog_window`): always starts after the latest
+prominent t·dP/dt peak (`_loglog_peak`, >= 0.15 decades), preferring the widest straight window
+with slope within 0.10 of −1/2, else the widest straight window at any slope. A window slope
+(`DerivedResults.loglog_slope`) within 0.10 of −1/2 auto-sets PC-A (`picks.auto_assign_postclosure`, `PickState.postclosure_auto`) on every
+drag, and at seed only when the suggester found a qualifying window (not its fallback). A manual
+scenario is never touched; an auto PC-A clears on a miss; any postclosure-combobox selection
+(`ui._on_pcscen_selected`, even re-picking PC-A) clears the flag. Logged as `postclosure_auto`.
+
 PC-F: `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}`. It is the only place
 the rule lives; callers ask it rather than checking the scenario. `model.last_step` returns
 `"loglog"`, `model.resolve_step` (used by `ui._goto`) redirects both steps to loglog, their

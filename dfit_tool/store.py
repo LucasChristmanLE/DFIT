@@ -77,6 +77,9 @@ LOG_COLUMNS = [
     # How the apparent ISIP was taken: "tangent" or "shutin" (BHP at the shut-in sample) --
     # tail-appended per the append-only convention.
     "apparent_isip_method",
+    # True when the postclosure scenario is the auto-assigned PC-A (picks.auto_assign_postclosure)
+    # -- tail-appended per the append-only convention.
+    "postclosure_auto",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -527,4 +530,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "tail_guard_override": state.tail_guard_override,
         "tangent_uninterpretable": state.tangent_uninterpretable,
         "apparent_isip_method": res.apparent_isip_method,
+        "postclosure_auto": state.postclosure_auto,
     }
