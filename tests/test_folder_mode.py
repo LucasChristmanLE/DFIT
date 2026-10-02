@@ -448,7 +448,7 @@ def _apply_stub():
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
     stub.var_isip_at_shutin = _Var()
-    stub.quest_lbl = types.SimpleNamespace(config=lambda **kw: None)
+    stub._quest_lines = ["stale"]
     stub.txt_notes = _Text()
     stub._views = {"stale": "leftover"}
     stub._goto_calls = []
@@ -464,6 +464,7 @@ def test_apply_loaded_state_infers_step_status_when_missing():
     stub._apply_loaded_state(state)
 
     assert stub.state is state
+    assert stub._quest_lines == []  # picks-file values must not keep questionnaire provenance
     assert stub.state.step_status == infer_step_status(state)
     assert stub._goto_calls == [first_not_visited_step(stub.state.step_status)]
 

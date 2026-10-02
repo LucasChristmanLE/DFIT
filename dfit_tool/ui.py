@@ -251,6 +251,9 @@ def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
 
 # Issue levels, most severe first: (DerivedResults attribute, section title, count noun,
 # Overview header color, line prefix in the expanded side-panel label).
+# Marks a questionnaire warning line; _update_issues_panel draws it bold in the warning color.
+_QUEST_WARNING_PREFIX = "Warning: "
+
 ISSUE_LEVELS = [
     ("blockers", "Blocking", "blocking issue", "red", "Blocking: "),
     ("warnings", "Warnings", "warning", "#b35c00", ""),
@@ -406,14 +409,12 @@ class DfitApp:
         ttk.Button(cfg2, text="Save picks…", command=self._save_picks).pack(side="right", padx=4)
         ttk.Button(cfg2, text="Load picks…", command=self._load_picks).pack(side="right")
 
-        # Provenance for the density/TVD prefill above -- set by _load when a questionnaire xlsx
-        # is auto-detected next to the CSV; empty when none was found. Density/TVD stay ordinary
-        # editable entries either way, this is just so the user can see (and judge) the source. On
-        # its own full-width row so long warning text isn't clipped by the buttons packed on cfg2.
-        cfg3 = ttk.Frame(self.root, padding=(6, 2))
-        cfg3.pack(side="top", fill="x")
-        self.quest_lbl = ttk.Label(cfg3, text="", foreground="gray")
-        self.quest_lbl.pack(fill="x", anchor="w")
+        # Provenance for the density/TVD prefill above -- set by _load_questionnaire when a
+        # questionnaire xlsx is auto-detected next to the data file; empty when none was found.
+        # Density/TVD stay ordinary editable entries either way, this is just so the user can see
+        # (and judge) the source. Shown on Overview only, below the issues list
+        # (_update_issues_panel).
+        self._quest_lines: list[str] = []
 
     def _build_body(self):
         # sashrelief="raised" makes the drag affordance visible; a flat sash is
@@ -493,7 +494,11 @@ class DfitApp:
             self.hint_lbl.configure(wraplength=wrap)
             self.warn_lbl.configure(wraplength=wrap)
             for child in self.frm_issues.winfo_children():
-                child.configure(wraplength=wrap)
+                if isinstance(child, ttk.Label):
+                    child.configure(wraplength=wrap)
+                else:  # questionnaire warning row: [bold prefix][message]
+                    prefix, msg = child.winfo_children()
+                    msg.configure(wraplength=max(wrap - prefix.winfo_reqwidth() - 4, 50))
         panel.bind("<Configure>", _on_panel_configure)
 
         # Results rows and the Overview issues list share one slot above sep_after_results:
@@ -1051,7 +1056,7 @@ class DfitApp:
         SG->ppg reading) -- the provenance label shows the raw source text so it can be checked.
         Well name/formation are plain free text, so there's no analogous "source" text to show.
         """
-        self.quest_lbl.config(text="")
+        self._quest_lines = []
         try:
             xlsx_path, find_warnings = find_questionnaire(csv_path)
             if xlsx_path is None:
@@ -1064,22 +1069,19 @@ class DfitApp:
         parts = []
         if result.density_ppg is not None:
             self.var_density.set(str(result.density_ppg))
-            parts.append(f'density {result.density_ppg} ppg ["{result.density_source}"]')
+            parts.append(f'Density: {result.density_ppg} ppg ["{result.density_source}"]')
         if result.tvd_ft is not None:
             self.var_tvd.set(str(result.tvd_ft))
-            parts.append(f'TVD {result.tvd_ft} ft ["{result.tvd_source}"]')
+            parts.append(f'TVD: {result.tvd_ft} ft ["{result.tvd_source}"]')
         if result.well_name is not None:
             self.var_well.set(result.well_name)
-            parts.append(f'well "{result.well_name}"')
+            parts.append(f'Well: {result.well_name}')
         if result.formation is not None:
             self.var_formation.set(result.formation)
-            parts.append(f'formation "{result.formation}"')
-        all_warnings = find_warnings + result.warnings
-        if all_warnings:
-            parts.append("warnings: " + "; ".join(all_warnings))
+            parts.append(f'Formation: {result.formation}')
+        parts += [f"{_QUEST_WARNING_PREFIX}{w}" for w in find_warnings + result.warnings]
         if parts:
-            text = f"Questionnaire: {', '.join(parts)} — {os.path.basename(xlsx_path)}"
-            self.quest_lbl.config(text=text)
+            self._quest_lines = [f"File: {os.path.basename(xlsx_path)}"] + parts
 
     def _sync_state_from_widgets(self):
         self.state.pressure_col = self.var_pressure.get()
@@ -2257,6 +2259,25 @@ class DfitApp:
             for m in msgs:
                 ttk.Label(self.frm_issues, text=f"\u2022 {m}", wraplength=wrap,
                           justify="left").pack(anchor="w", fill="x")
+        if self._quest_lines:
+            ttk.Label(self.frm_issues, text="Questionnaire", foreground="gray",
+                      font=("", 9, "bold"), wraplength=wrap).pack(anchor="w", pady=(6, 0))
+            warn_color = next(c for key, _, _, c, _ in ISSUE_LEVELS if key == "warnings")
+            for line in self._quest_lines:
+                if not line.startswith(_QUEST_WARNING_PREFIX):
+                    ttk.Label(self.frm_issues, text=f"• {line}", wraplength=wrap,
+                              justify="left").pack(anchor="w", fill="x")
+                    continue
+                # ttk.Label can't mix fonts, so the bold prefix and the wrapping message are two
+                # labels in a row frame; _on_panel_configure narrows the message by the prefix.
+                row = ttk.Frame(self.frm_issues)
+                row.pack(anchor="w", fill="x")
+                prefix = ttk.Label(row, text=f"• {_QUEST_WARNING_PREFIX.strip()}",
+                                   foreground=warn_color, font=("", 9, "bold"))
+                prefix.pack(side="left", anchor="n")
+                ttk.Label(row, text=line[len(_QUEST_WARNING_PREFIX):], justify="left",
+                          wraplength=max(wrap - prefix.winfo_reqwidth() - 4, 50)
+                          ).pack(side="left", anchor="n", padx=(4, 0))
         self.warn_lbl.config(text="", cursor="")
         self._warn_lbl_hidden = True
 
@@ -2371,7 +2392,7 @@ class DfitApp:
         # Density/TVD above now came from the picks file, not the questionnaire that was auto-
         # detected (if any) when the CSV was loaded -- clear the stale provenance label so it
         # doesn't misattribute these values.
-        self.quest_lbl.config(text="")
+        self._quest_lines = []
         self.var_alpha.set(str(self.state.alpha))
         self.var_step.set(str(self.state.resample_step))
         self.var_cscen.set(self.state.closure_scenario)
