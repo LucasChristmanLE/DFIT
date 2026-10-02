@@ -20,14 +20,14 @@ test's results up into a per-root `dfit_log.csv` master log. The sidebar and the
 in folder mode; single-file mode is otherwise unchanged. There is still no cross-test
 aggregation beyond that one log (no charts, no rollup stats). Permeability is out of scope.
 
-The eight steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
+The eight steps (`model.STEPS`): overview → injection → isip → gfunction → tangent → loglog →
 porepressure → stiffness. Overview shows the entire dataset, unclamped, and hosts the always-on
 tail-trim line; its y-axis is labeled "pressure (psi)", and when BHP is converted from surface
 pressure it also overlays the raw surface trace (`DerivedResults.p_surface_all`, set by
 `compute_all`) as a thin red line on the same axis; Injection is the zoomed injection-window view with the draggable start/shut-in
 lines and the te/Vinj/qmax title; stiffness is a semilog-y relative-stiffness-vs-effective-
 pressure plot (URTeC-2019-123 A.8/A.9) that needs the pore-pressure estimate, so it comes last
-and is skipped end to end under PC-F exactly like porepressure (`model.stiffness_skipped`).
+and is skipped end to end under PC-F exactly like porepressure (`model.skipped_steps`).
 
 ## Commands
 
@@ -734,7 +734,7 @@ Per-test deliverables:
   at the upturn where the fracture walls come into contact (`interpret.h_function`/
   `relative_stiffness`/`suggest_stiffness_upturn_index`, auto-seeded then draggable). Needs the
   pore-pressure estimate (the h-function's Pres term), so it is skipped end to end under PC-F
-  exactly like porepressure (`model.stiffness_skipped`). Comparison-only, like Shmin Liberty:
+  exactly like porepressure (`model.skipped_steps`). Comparison-only, like Shmin Liberty:
   shown as the "Shmin stiffness" panel row and logged to the `Shmin_stiffness`/
   `Shmin_stiffness_gradient` columns only — never drawn into net pressure, the shared reference
   ISIP, or complexity. `h_function` is O(n²) in the point count, so above `model.
@@ -767,7 +767,7 @@ Per-test deliverables:
   in `store.status_for` — correct, since the analyst hasn't actually finished the test yet, and
   distinct from the per-step Skip button, which marks the whole test `"skipped"` regardless of
   how far it got. Logged to the tail-appended `stiffness_no_upturn` column (`store.LOG_COLUMNS`)
-  as `True`/`False` — except once `model.stiffness_skipped(state)` is true (PC-F), when
+  as `True`/`False` — except once `"stiffness" in model.skipped_steps(state)` (PC-F), when
   `store.build_log_row` logs blank instead of the stored flag: switching to PC-F after checking
   the box makes the step unreachable (so the box can never be unchecked again), and the flag is
   left alone in the picks JSON on purpose (switching back off PC-F revives it) rather than
@@ -1242,8 +1242,8 @@ percentile over all samples was dominated by that spike, since the resampled gri
 across it, and the old hard 50-psi/G cap squashed any record whose real derivative ran higher.
 A record entirely below G=1 falls back to all finite samples. The **slider's full range** is the
 twin Axes' own autoscale unioned with that default, then hard-clamped into
-`(0, plots.DPDG_VIEW_MAX)` -- both steps in `ui.refresh` and again in
-`plots.render_step_figure`, kept in textual lockstep. The clamp is what stops the slider
+`(0, plots.DPDG_VIEW_MAX)` -- both steps in `plots.apply_step_view`, which `ui.refresh` and
+`plots.render_step_figure` share. The clamp is what stops the slider
 traveling past 500 no matter how extreme the raw spike is. The union is what keeps the default
 view inside the travel: the raw autoscale is inflated at the top by the near-G=0 spike and
 lifted off zero at the bottom by a nonzero data minimum, so the default can fall outside it in
@@ -1355,33 +1355,25 @@ entirely (below). `model._decode` normalizes the four old pre-rename labels (`"P
 `"PC-D mixed"`, `"PC-E none"`, `"PC-F none"`) found in older saved picks JSON to their current
 form; unrecognized strings pass through untouched.
 
-**PC-F skip.** `model.porepressure_skipped(state)` is true whenever `postclosure_scenario`
-starts with `"PC-F"`: the derivative never peaks, so no postclosure line exists and
-`compute_all` leaves `pore_pressure` `None` even if a stale `pp_window` pick exists. When it's
-true, the pore-pressure step is skipped end to end: `ui._last_step()` reports `"loglog"` so
-`_advance`'s Next button becomes "Finish" there instead of on pore pressure; `_goto` redirects
-any `"porepressure"` destination (the log-log Skip button, resume-on-load, a breadcrumb click)
-to `"loglog"`; `_update_stepbar` force-disables the porepressure breadcrumb even if that step
-was visited earlier in the session; and `plots.save_all_step_pngs` omits the porepressure PNG
-(the other steps keep their `RENDERERS`-order numbering).
-
-**Stiffness skip.** `model.stiffness_skipped(state)` mirrors `porepressure_skipped(state)`
-exactly (it is the same PC-F check): the relative-stiffness plot's h-function needs a
-pore-pressure estimate as its `Pres` term, and PC-F never yields one. Every place the
-pore-pressure skip is consulted has an independent stiffness counterpart -- `_goto` redirects a
-`"stiffness"` destination to `"loglog"` the same way it redirects `"porepressure"`;
-`_update_stepbar` force-disables the stiffness breadcrumb under the same condition;
-`plots.save_all_step_pngs` also omits `"8_stiffness.png"`; and `store.status_for`'s
-`_accounted`/`_user_skipped` PC-F carve-outs are OR'd with `stiffness_skipped` alongside the
-existing `porepressure_skipped` clause, so a PC-F test with neither step's `step_status` entry
-still reports `"done"`. `ui._last_step()` needs no separate stiffness case: it already reports
-`"loglog"` under PC-F, which is correct since PC-F skips both steps.
+**PC-F skip.** `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}` whenever
+`postclosure_scenario` starts with `"PC-F"`, else an empty set. It is the only place the rule
+lives. Porepressure is skipped because the derivative never peaks, so no postclosure line
+exists; `compute_all` leaves `pore_pressure` `None` even if a stale `pp_window` pick exists.
+Stiffness is skipped because its h-function needs a pore-pressure estimate as its `Pres` term.
+Consumers ask `skipped_steps` (or the helpers built on it) rather than checking the scenario:
+`model.last_step` reports `"loglog"`, so `_advance`'s Next button becomes "Finish" there;
+`model.resolve_step` (called by `ui._goto`) sends a skipped destination (the log-log Skip
+button, resume-on-load, a breadcrumb click) to the nearest earlier active step, `"loglog"`;
+`_update_stepbar` force-disables skipped breadcrumbs even if visited earlier in the session;
+`plots.save_all_step_pngs` omits their PNGs (the others keep their `STEP_KEYS`-order
+numbering); and `store.status_for` drops them from the steps that must be accounted for, so a
+PC-F test with neither step's `step_status` entry still reports `"done"`.
 
 PC-F is not the only way to land on an empty stiffness plot -- `plots.render_stiffness` shows
 an instructional title in place of the plot (no exception, no blank axes) whenever
 `res.stiffness_S` is `None`, which `model.compute_all`'s stiffness block leaves unset in any of
 four gate failures: `state.min_dpdg_G` not yet picked, no pore-pressure estimate (this is where
-the PC-F case actually surfaces, transitively, per `stiffness_skipped` above), `res.te_s`
+the PC-F case actually surfaces, transitively, per `skipped_steps` above), `res.te_s`
 unavailable, or fewer than 4 resampled points surviving (the tail trim, an aggressive resample
 step, or a short record can all produce this). A separate guard inside the same renderer handles
 a fifth, arrays-present-but-degenerate case: `stiffness_S` computed but entirely

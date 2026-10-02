@@ -125,7 +125,7 @@ class PickState:
     # --- step 9: relative stiffness (URTeC-2019-123 A.8/A.9) -- a draggable vline pick on the
     # semilog-y stiffness-vs-effective-pressure plot, in psi. Comparison-only: feeds
     # Shmin(stiffness) = this - 75 psi (interpret.shmin_compliance) and nothing else. Needs the
-    # pore-pressure estimate (see stiffness_skipped/compute_all), so it is skipped end to end
+    # pore-pressure estimate (see skipped_steps/compute_all), so it is skipped end to end
     # under PC-F exactly like porepressure. Old saves lack this key and take the default via
     # _decode's known-field filter, no migration needed. ---
     stiffness_pick_P: Optional[float] = None
@@ -289,17 +289,75 @@ def blocking_issues(state: PickState) -> list[str]:
     return []
 
 
-def porepressure_skipped(state: PickState) -> bool:
-    """PC-F (no peak): the derivative never peaks, so no postclosure line exists and
-    the pore-pressure step is skipped entirely."""
-    return state.postclosure_scenario.startswith("PC-F")
+# --------------------------------------------------------------------------------------------------
+# workflow steps
+# --------------------------------------------------------------------------------------------------
+# The eight workflow steps, in order, with their breadcrumb labels. The one step list: ui's
+# breadcrumbs, store.status_for, and the PNG export all read it from here.
+STEPS = [
+    ("overview", "Overview"),
+    ("injection", "Injection"),
+    ("isip", "Apparent ISIP"),
+    ("gfunction", "G-function"),
+    ("tangent", "Tangent"),
+    ("loglog", "Log-log"),
+    ("porepressure", "Pore pressure"),
+    ("stiffness", "Stiffness"),
+]
+STEP_KEYS = tuple(k for k, _ in STEPS)
 
 
-def stiffness_skipped(state: PickState) -> bool:
-    """The stiffness step needs a pore-pressure estimate (the h-function's Pres term), which
-    PC-F never yields -- mirrors porepressure_skipped exactly, and is consulted at every call
-    site the same way (see ../CLAUDE.md)."""
-    return porepressure_skipped(state)
+def step_index(key: str) -> int:
+    """Position of ``key`` in ``STEPS``."""
+    return STEP_KEYS.index(key)
+
+
+def next_step(key: str) -> str:
+    """The step after ``key``, or ``key`` itself if it is already the last one."""
+    return STEP_KEYS[min(step_index(key) + 1, len(STEP_KEYS) - 1)]
+
+
+def prev_step(key: str) -> str:
+    """The step before ``key``, or ``key`` itself if it is already the first one."""
+    return STEP_KEYS[max(step_index(key) - 1, 0)]
+
+
+def first_not_visited_step(step_status: dict[str, str]) -> str:
+    """Where ``_load_picks`` should land after loading a file: the first (in ``STEPS`` order)
+    step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
+    left off. If every step already has some status -- an old file whose picks cover the whole
+    workflow -- there is no natural "resume point", so the simplest sensible fallback is the
+    first step, "overview"."""
+    for key in STEP_KEYS:
+        if step_status.get(key, "not_visited") == "not_visited":
+            return key
+    return STEP_KEYS[0]
+
+
+def skipped_steps(state: PickState) -> frozenset[str]:
+    """Steps this test's interpretation leaves out end to end. PC-F (no peak): the derivative
+    never peaks, so there is no postclosure line (porepressure) and no pore-pressure estimate
+    for the h-function's Pres term (stiffness). The one place the PC-F skip rule lives: a
+    skipped step is not computed, not navigable, not exported, and counts as accounted for."""
+    if state.postclosure_scenario.startswith("PC-F"):
+        return frozenset({"porepressure", "stiffness"})
+    return frozenset()
+
+
+def last_step(state: PickState) -> str:
+    """The effective last step: where Next becomes Finish."""
+    skipped = skipped_steps(state)
+    return next(k for k in reversed(STEP_KEYS) if k not in skipped)
+
+
+def resolve_step(state: PickState, step: str) -> str:
+    """``step`` itself when it is part of this test's workflow, else the nearest earlier step
+    that is (PC-F sends porepressure and stiffness to loglog)."""
+    skipped = skipped_steps(state)
+    i = step_index(step)
+    while STEP_KEYS[i] in skipped and i > 0:
+        i -= 1
+    return STEP_KEYS[i]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -988,7 +1046,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
 
     # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
     # postclosure line exists -- suppress the fit even if a stale pp_window pick is present.
-    if state.pp_window and res.diagnostics is not None and not porepressure_skipped(state):
+    if (state.pp_window and res.diagnostics is not None
+            and "porepressure" not in skipped_steps(state)):
         dg = res.diagnostics
         lo, hi = state.pp_window
         m = (dg.t >= lo) & (dg.t <= hi) & (dg.t > 0)
@@ -1004,7 +1063,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # extrapolation from that pick before it (same construction as eff_isip_line_compliance,
     # anchored at min_dpdg_G instead of contact_G). Gated on the pore-pressure estimate (the
     # h-function's Pres term) existing -- which transitively covers PC-F, see
-    # stiffness_skipped -- and on >= 4 resampled points, the minimum this O(n^2) construction
+    # skipped_steps -- and on >= 4 resampled points, the minimum this O(n^2) construction
     # needs to be meaningful. shmin_stiffness is set INSIDE this gate: a stale pick whose
     # arrays are no longer computable must report nothing.
     if (state.min_dpdg_G is not None and res.pore_pressure is not None and res.te_s

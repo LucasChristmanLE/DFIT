@@ -5,7 +5,7 @@ loop. Holds no interpretation logic itself -- every number comes from model.comp
 
 There is no matplotlib toolbar: its sticky zoom/pan mode silently swallowed pick clicks/drags,
 which is exactly the interaction this app depends on. View state (pan/zoom) is instead a
-first-class per-step concept -- see ``ViewState`` and ``_views`` below -- restored on every
+first-class per-step concept -- ``_views`` below, resolved by ``plots.apply_step_view`` -- restored on every
 revisit to a step rather than only optionally preserved across one recompute.
 """
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 import os
 import pathlib
-from dataclasses import dataclass
 from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -23,11 +22,11 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, interpret, io_load, picks, plots, sliders, store
-from .model import (NO_CONTACT_SCENARIOS, PickState, TangentPick, blocking_issues,
-                    closure_uninterpretable,
-                    compute_all, infer_step_status, porepressure_skipped, step_gate_error,
-                    stiffness_skipped)
-from .plots import D2_AXIS_GID, ViewDefaults
+from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
+                    closure_uninterpretable, compute_all, first_not_visited_step,
+                    infer_step_status, last_step, next_step, prev_step, resolve_step,
+                    skipped_steps, step_gate_error)
+from .plots import D2_AXIS_GID, ViewDefaults, ViewState
 from .questionnaire import find_questionnaire, parse_questionnaire
 
 _SLIDER_GID = "slider"
@@ -67,16 +66,6 @@ _BOTTOM_LABEL_GAP_PX = 6.0
 # (sliders.TEXT_HEIGHT_PT; never measured), so the text doesn't sit flush against the figure's bottom edge.
 _BOTTOM_TEXT_PAD_PX = 3.0
 
-STEPS = [
-    ("overview", "Overview"),
-    ("injection", "Injection"),
-    ("isip", "Apparent ISIP"),
-    ("gfunction", "G-function"),
-    ("tangent", "Tangent"),
-    ("loglog", "Log-log"),
-    ("porepressure", "Pore pressure"),
-    ("stiffness", "Stiffness"),
-]
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid",
                      "C-X uninterpretable"]
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
@@ -149,35 +138,6 @@ FIELD_STEP = {
 }
 
 
-def step_index(key: str) -> int:
-    """Position of ``key`` in ``STEPS``."""
-    return next(i for i, (k, _) in enumerate(STEPS) if k == key)
-
-
-def next_step(key: str) -> str:
-    """The step after ``key``, or ``key`` itself if it is already the last one."""
-    i = step_index(key)
-    return STEPS[min(i + 1, len(STEPS) - 1)][0]
-
-
-def prev_step(key: str) -> str:
-    """The step before ``key``, or ``key`` itself if it is already the first one."""
-    i = step_index(key)
-    return STEPS[max(i - 1, 0)][0]
-
-
-def first_not_visited_step(step_status: dict[str, str]) -> str:
-    """Where ``_load_picks`` should land after loading a file: the first (in ``STEPS`` order)
-    step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
-    left off. If every step already has some status -- an old file whose picks cover the whole
-    workflow -- there is no natural "resume point", so the simplest sensible fallback is the
-    first step, "overview"."""
-    for key, _ in STEPS:
-        if step_status.get(key, "not_visited") == "not_visited":
-            return key
-    return STEPS[0][0]
-
-
 def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> str:
     """Which of ``entry.available_sources`` ``_load_test`` should open, absent an explicit
     ``source=`` override: the saved picks' ``active_source`` when there is a saved PickState
@@ -203,30 +163,6 @@ def _next_new_index(statuses: list[str], current_index: int) -> Optional[int]:
         if statuses[i] == "new":
             return i
     return None
-
-
-@dataclass
-class ViewState:
-    """The resolved (non-optional) view actually applied to a step's Axes: primary xlim/ylim,
-    and the twin axes' ylim if that step has one."""
-    xlim: tuple[float, float]
-    ylim: tuple[float, float]
-    y2lim: Optional[tuple[float, float]] = None
-
-
-def _resolve_view(stored: Optional[ViewState], defaults: ViewDefaults,
-                  full_x: tuple[float, float], full_y: tuple[float, float],
-                  full_y2: Optional[tuple[float, float]]) -> ViewState:
-    """First visit to a step (``stored`` is None): seed from the renderer's ``ViewDefaults``,
-    falling back to the full autoscaled extent for whichever axis the renderer left ``None``.
-    A revisit reuses the stored view unchanged, so user pan/zoom survives a recompute."""
-    if stored is not None:
-        return stored
-    return ViewState(
-        xlim=defaults.xlim if defaults.xlim is not None else full_x,
-        ylim=defaults.ylim if defaults.ylim is not None else full_y,
-        y2lim=defaults.y2lim if defaults.y2lim is not None else full_y2,
-    )
 
 
 def _isip_pick_in_minutes(pick: Optional[TangentPick],
@@ -1155,12 +1091,12 @@ class DfitApp:
             self.var_ppaxis.set(self.state.pp_axis)
             hint = _PC_HINTS.get(pcscen[:4]) or hint
         self._update_ppaxis_enabled()
-        if pcscen_changed and self.step == "porepressure" and porepressure_skipped(self.state):
+        if pcscen_changed and self.step in skipped_steps(self.state):
             # PC-F just got selected while sitting on the now-skipped pore-pressure step -- the
             # scenario combobox is visible on both loglog and porepressure, so this can happen
-            # without ever leaving porepressure. _goto redirects to "loglog" and calls refresh()
-            # itself; calling refresh() again here would just redo the same work.
-            self._goto("loglog")
+            # without ever leaving porepressure. _goto redirects (resolve_step) and calls
+            # refresh() itself; calling refresh() again here would just redo the same work.
+            self._goto(self.step)
         else:
             self.refresh()
         if hint:
@@ -1317,16 +1253,12 @@ class DfitApp:
         further than the user has been). First-visit seeding lives here, not in Next/Skip/Back,
         so the seed always runs regardless of which control got the user there.
 
-        A "porepressure" destination redirects to "loglog" whenever PC-F skips the pore-pressure
-        step -- this one place covers the log-log Skip button, resume-on-load
-        (first_not_visited_step), and any other programmatic jump. "stiffness" redirects the
-        same way, independently, whenever PC-F skips it too (stiffness_skipped)."""
+        A destination the workflow leaves out (model.skipped_steps; PC-F drops porepressure and
+        stiffness) redirects through model.resolve_step -- this one place covers the log-log
+        Skip button, resume-on-load (first_not_visited_step), and any other programmatic jump."""
         if self.td is None:
             return
-        if step == "porepressure" and porepressure_skipped(self.state):
-            step = "loglog"
-        if step == "stiffness" and stiffness_skipped(self.state):
-            step = "loglog"
+        step = resolve_step(self.state, step)
         # A blocking issue (blocking_issues) makes every later step meaningless: land on Overview
         # instead, without seeding or marking the requested step.
         blocked = step != "overview" and bool(blocking_issues(self.state))
@@ -1365,8 +1297,8 @@ class DfitApp:
 
     def _next(self):
         """Mark the current step done and advance. next_step() clamps at the last step, so at
-        "porepressure" this simply re-marks it done and re-refreshes -- a no-op in terms of
-        navigation, per the brief."""
+        "stiffness" this simply re-marks it done and re-refreshes -- a no-op in terms of
+        navigation."""
         if self.td is None:
             return
         self.state.step_status[self.step] = "done"
@@ -1385,25 +1317,16 @@ class DfitApp:
         self.state.step_status[self.step] = "skipped"
         self._goto(next_step(self.step))
 
-    def _last_step(self) -> str:
-        """The effective last step of the workflow: "loglog" when the postclosure scenario is
-        PC-F (no peak, so there is no postclosure line and the pore-pressure AND stiffness steps
-        are both skipped -- stiffness needs the pore-pressure estimate), else the actual last
-        entry in STEPS ("stiffness")."""
-        if porepressure_skipped(self.state):
-            return "loglog"
-        return STEPS[-1][0]
-
     def _advance(self):
-        """Bound to the Next/Finish stepbar button. On the effective last step (_last_step(),
-        normally "porepressure" but "loglog" when PC-F skips pore pressure) the button reads
+        """Bound to the Next/Finish stepbar button. On the effective last step (model.last_step,
+        normally "stiffness" but "loglog" under PC-F) the button reads
         "Finish" and exports (_finish). Otherwise it advances (_next) -- but only once the
         current step's required scenario pick is present; step_gate_error gates the forward
         jump and the inline gate_lbl says what is missing. Back/Skip/breadcrumb navigation are
         NOT gated."""
         if self.td is None:
             return
-        if self.step == self._last_step():
+        if self.step == last_step(self.state):
             self._finish()
             return
         msg = (self._overview_gate() if self.step == "overview"
@@ -1453,52 +1376,10 @@ class DfitApp:
         self.ax = self.fig.add_subplot(111)
         defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
 
-        full_x = self.ax.get_xlim()
-        full_y = self.ax.get_ylim()
-        if defaults.ylim is not None:
-            # gfunction must still REPLACE full_y (shield the y-slider from the effective-ISIP
-            # tangent's dashed extension, drawn on this same Axes, which can swing the Axes' own
-            # autoscale to extreme psi values far outside the real BHP data -- the renderer's own
-            # data-driven ylim is the true outer bound there). Every other step UNIONS instead,
-            # so a concrete ViewDefaults.ylim reaching outside the autoscaled extent (e.g.
-            # Overview's pinned y-min 0 against a converted-BHP trace) still ends up inside the
-            # slider's full range -- otherwise _make_range_slider's valinit pinning would clamp
-            # the stored/default view back up into the autoscaled extent on the first slider
-            # touch, losing the 0 baseline.
-            full_y = (defaults.ylim if self.step == "gfunction"
-                     else (min(full_y[0], defaults.ylim[0]), max(full_y[1], defaults.ylim[1])))
-        twin = self._twin_axes()
-        full_y2 = twin.get_ylim() if twin is not None else None
-        if self.step != "gfunction" and full_y2 is not None and defaults.y2lim is not None:
-            # Same union as full_y above (kept in lockstep with plots.render_step_figure): the
-            # rate axis's 3x default reaches outside its autoscaled extent, and
-            # _make_range_slider's valinit pinning would snap the view off it on first touch.
-            full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
-        if self.step == "gfunction" and full_y2 is not None:
-            # UNION the renderer's own y2 default in, same reasoning as full_y above: the default is
-            # the G>=1-masked max of dP/dG, while this range is the twin's raw autoscale (which the
-            # near-G=0 spike inflates at the top and a nonzero data minimum lifts at the bottom), so
-            # the default can reach outside it in either direction -- and _make_range_slider's valinit
-            # pinning would then snap the view off the default on the first slider touch.
-            if defaults.y2lim is not None:
-                full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
-            # Then hard-clamp the derivative (dP/dG) slider's full range to 0-500 regardless of how
-            # extreme the raw dPdG spike is, so the slider itself can never travel past it.
-            full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], plots.DPDG_VIEW_MAX))
+        sv = plots.apply_step_view(self.step, self.ax, defaults, self._views.get(self.step))
+        self._views[self.step] = sv.view
 
-        view = _resolve_view(self._views.get(self.step), defaults, full_x, full_y, full_y2)
-        self._views[self.step] = view
-        self.ax.set_xlim(view.xlim)
-        self.ax.set_ylim(view.ylim)
-        if twin is not None and view.y2lim is not None:
-            twin.set_ylim(view.y2lim)
-        # The d2P/dG2 axis gets no slider and no persisted view (decision D3) -- apply the
-        # renderer's fresh default every refresh instead of folding it into ``view``/``_views``.
-        d2_axes = self._d2_axes()
-        if d2_axes is not None and defaults.y3lim is not None:
-            d2_axes.set_ylim(defaults.y3lim)
-
-        self._build_sliders(full_x, full_y, full_y2, view, twin,
+        self._build_sliders(sv.full_x, sv.full_y, sv.full_y2, sv.view, sv.twin,
                             y_color=defaults.y_color, y2_color=defaults.y2_color)
         # tight_layout would fight the manually placed slider axes reserved on the right margin.
         # _layout_sliders() measures the twin/d2 axis's real tick-label overhang in pixels and
@@ -1522,23 +1403,20 @@ class DfitApp:
         honored for a reached step) and highlight the current step. Bold text rather than an
         Accent.TButton style -- that style name is theme-specific and not guaranteed to exist.
 
-        The "porepressure" and "stiffness" breadcrumbs are force-disabled whenever PC-F skips
-        those steps, even if either was visited earlier in the session (e.g. the analyst picked
-        PC-F after already reaching pore pressure) -- _goto redirects both destinations to
-        "loglog" regardless, so neither button must look reachable."""
+        Breadcrumbs for steps the workflow leaves out (model.skipped_steps) are force-disabled,
+        even if visited earlier in the session (e.g. the analyst picked PC-F after already
+        reaching pore pressure) -- _goto redirects them regardless, so none must look reachable."""
         style = ttk.Style()
         style.configure("StepCurrent.TButton", font=("TkDefaultFont", 9, "bold"))
-        skip_pp = porepressure_skipped(self.state)
-        skip_stiff = stiffness_skipped(self.state)
+        skipped = skipped_steps(self.state)
         for key, btn in self.step_buttons.items():
             status = self.state.step_status.get(key, "not_visited")
-            reachable = status != "not_visited" and not (
-                (key == "porepressure" and skip_pp) or (key == "stiffness" and skip_stiff))
+            reachable = status != "not_visited" and key not in skipped
             btn.state(["!disabled"] if reachable else ["disabled"])
             btn.configure(style="StepCurrent.TButton" if key == self.step else "TButton")
         # On the effective last step the Next button becomes Finish (bold, like the current-step
         # breadcrumb) -- _advance dispatches to _finish() instead of _next() in that case.
-        if self.step == self._last_step():
+        if self.step == last_step(self.state):
             self.next_btn.configure(text="Finish", style="StepCurrent.TButton")
         else:
             self.next_btn.configure(text="Next >", style="TButton")

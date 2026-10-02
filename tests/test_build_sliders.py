@@ -21,8 +21,9 @@ from dfit_tool import plots
 from dfit_tool.model import compute_all
 from dfit_tool.sliders import (PanRangeSlider, TRACK_PX, bottom_margin_layout,
                                right_margin_layout, to_log_bounds)
-from dfit_tool.ui import (DfitApp, ViewState, _FALLBACK_BOTTOM_OVERHANG_PX,
-                         _FALLBACK_OVERHANG_PX, _SLIDER_NEUTRAL_COLOR, _resolve_view)
+from dfit_tool.plots import ViewState
+from dfit_tool.ui import (DfitApp, _FALLBACK_BOTTOM_OVERHANG_PX,
+                         _FALLBACK_OVERHANG_PX, _SLIDER_NEUTRAL_COLOR)
 from tests.helpers import injection_state, make_testdata
 
 
@@ -397,19 +398,10 @@ def test_layout_sliders_d2_axis_widen_settles_after_resize():
 
     stub = _bare_stub((7.0, 6.0))
     defaults = plots.render_gfunction(stub.ax, td, st, res)
-    full_x = stub.ax.get_xlim()
-    full_y = defaults.ylim if defaults.ylim is not None else stub.ax.get_ylim()
-    twin = stub._twin_axes()
-    view = _resolve_view(None, defaults, full_x, full_y, defaults.y2lim)
-    stub.ax.set_xlim(view.xlim)
-    stub.ax.set_ylim(view.ylim)
-    if twin is not None and view.y2lim is not None:
-        twin.set_ylim(view.y2lim)
+    sv = plots.apply_step_view("gfunction", stub.ax, defaults)
     d2 = stub._d2_axes()
-    if d2 is not None and defaults.y3lim is not None:
-        d2.set_ylim(defaults.y3lim)
 
-    stub._build_sliders(full_x, full_y, defaults.y2lim, view, twin,
+    stub._build_sliders(sv.full_x, sv.full_y, sv.full_y2, sv.view, sv.twin,
                         y_color=defaults.y_color, y2_color=defaults.y2_color)
     stub._layout_sliders()
     stub.canvas.draw()

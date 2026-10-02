@@ -310,10 +310,8 @@ def test_seeders_covers_exactly_the_step_keys():
 
 
 def test_renderers_and_store_step_keys_match_ui_steps_order():
-    """The four hand-duplicated step-key lists (ui.STEPS, picks.SEEDERS, plots.RENDERERS,
-    store.STEP_KEYS) must all agree. SEEDERS is pinned above by set equality; RENDERERS and
-    STEP_KEYS are pinned here by order too, since PNG numbering (save_all_step_pngs) depends
-    on RENDERERS' insertion order matching STEPS."""
+    """model.STEPS is the one step list (ui and store re-import it). The per-step tables
+    keyed by it (picks.SEEDERS above, plots.RENDERERS here) must cover exactly those keys."""
     assert list(plots.RENDERERS.keys()) == [k for k, _ in ui.STEPS]
     assert list(store.STEP_KEYS) == [k for k, _ in ui.STEPS]
 

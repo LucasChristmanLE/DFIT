@@ -19,16 +19,11 @@ from typing import Optional
 import pandas as pd
 
 from . import io_load, model
-from .model import PickState
+from .model import STEP_KEYS, PickState, skipped_steps
 from .questionnaire import find_questionnaire, is_questionnaire_filename
 
 LOG_FILENAME = "dfit_log.csv"      # lives at <opened_root>/dfit_log.csv
 PICKS_SUFFIX = ".dfit_picks.json"  # <test_folder>/<test_id>.dfit_picks.json
-
-# Deliberately duplicated from ui.py's STEPS keys, not imported -- ui.py imports tkinter at
-# module level, and store.py must stay importable with no Tk on the path (see module docstring).
-STEP_KEYS = ("overview", "injection", "isip", "gfunction", "tangent", "loglog", "porepressure",
-             "stiffness")
 
 # Column order: the 33 original schema columns, then the appended per-method columns the tool
 # computes beyond that schema. CSV only for now; a parquet mirror alongside dfit_log.csv is a
@@ -365,28 +360,13 @@ def status_for(state: Optional[PickState]) -> str:
         return "skipped"
     if not any(k in state.step_status for k in STEP_KEYS):
         return "new"
-    pp_auto = model.porepressure_skipped(state)
-    stiff_auto = model.stiffness_skipped(state)
-
-    def _accounted(key: str) -> bool:
-        # PC-F ("no peak") skips the pore-pressure AND stiffness steps end to end, so either may
-        # have no step_status entry at all -- and any entry either does have (from a session
-        # where the analyst hit Skip before choosing PC-F) is not a user decision worth
-        # reporting.
-        if key == "porepressure" and pp_auto:
-            return True
-        if key == "stiffness" and stiff_auto:
-            return True
-        return state.step_status.get(key) in ("done", "skipped")
-
-    def _user_skipped(key: str) -> bool:
-        return not (key == "porepressure" and pp_auto) \
-            and not (key == "stiffness" and stiff_auto) \
-            and state.step_status.get(key) == "skipped"
-
-    if not all(_accounted(k) for k in STEP_KEYS):
+    # A step the workflow leaves out (skipped_steps; PC-F drops porepressure and stiffness) may
+    # have no step_status entry at all, and any entry it does have (from a session where the
+    # analyst hit Skip before choosing PC-F) is not a user decision worth reporting.
+    keys = [k for k in STEP_KEYS if k not in skipped_steps(state)]
+    if not all(state.step_status.get(k) in ("done", "skipped") for k in keys):
         return "in_progress"
-    return "skipped" if any(_user_skipped(k) for k in STEP_KEYS) else "done"
+    return "skipped" if any(state.step_status.get(k) == "skipped" for k in keys) else "done"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -542,7 +522,8 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         # it -- mirroring how a stale pp_window pick is suppressed, not cleared, under PC-F (see
         # model.py's pore-pressure block comment). Blank here matches every other stiffness
         # output going blank for a test whose stiffness curve never existed under PC-F.
-        "stiffness_no_upturn": "" if model.stiffness_skipped(state) else state.stiffness_no_upturn,
+        "stiffness_no_upturn": ("" if "stiffness" in skipped_steps(state)
+                                else state.stiffness_no_upturn),
         "tail_guard_override": state.tail_guard_override,
         "tangent_uninterpretable": state.tangent_uninterpretable,
         "apparent_isip_method": res.apparent_isip_method,

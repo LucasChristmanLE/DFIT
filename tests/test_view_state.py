@@ -1,5 +1,5 @@
 """Renderer view contract: render_* never sets Axes limits; it returns a ViewDefaults that the
-caller (ui.py) applies. Also covers the pure view-resolution helper ui.py uses in refresh()."""
+caller (ui.py) applies. Also covers plots.apply_step_view, the view resolution ui.refresh and the export share."""
 
 import types
 
@@ -14,7 +14,8 @@ from dfit_tool.model import DerivedResults, PickState, compute_all
 from dfit_tool.resample import Diagnostics, Resampled
 from dfit_tool import plots
 from dfit_tool.plots import ViewDefaults
-from dfit_tool.ui import DfitApp, ViewState, _resolve_view
+from dfit_tool.ui import DfitApp
+from dfit_tool.plots import ViewState
 from tests.helpers import PRESSURE_COL, make_testdata, injection_state
 
 
@@ -238,21 +239,6 @@ def test_injection_no_clamp_when_rate_is_none():
     press_line = ax.get_lines()[0]
     assert press_line.get_xdata().max() == pytest.approx(float(t_h[-1]))
     assert not any(a is not ax for a in fig.axes)  # no rate -> no twin either
-
-
-def test_resolve_view_first_visit_seeds_from_defaults_falling_back_to_full_extent():
-    defaults = ViewDefaults(xlim=(1.0, 2.0), ylim=None, y2lim=None)
-    view = _resolve_view(None, defaults, full_x=(0.0, 10.0), full_y=(0.0, 5.0), full_y2=(0.0, 3.0))
-    assert view.xlim == (1.0, 2.0)  # renderer had an opinion
-    assert view.ylim == (0.0, 5.0)  # renderer left it None -> full autoscaled extent
-    assert view.y2lim == (0.0, 3.0)  # same for the twin axes
-
-
-def test_resolve_view_revisit_reuses_stored_view_unchanged():
-    stored = ViewState(xlim=(3.0, 4.0), ylim=(1.0, 2.0), y2lim=(0.0, 1.0))
-    defaults = ViewDefaults(xlim=(100.0, 200.0))
-    view = _resolve_view(stored, defaults, full_x=(0.0, 10.0), full_y=(0.0, 5.0), full_y2=None)
-    assert view is stored
 
 
 def test_gfunction_ylim_default_scales_from_pressure_data_only():
@@ -486,3 +472,57 @@ def test_render_step_figure_unions_gfunction_full_y2_with_default_view():
 
     applied = twin.get_ylim()
     assert applied == pytest.approx(defaults.y2lim)
+
+
+# ---------------------------------------------------------------------------
+# plots.apply_step_view: the single view-resolution path shared by ui.refresh and the PNG export.
+
+def _two_axis_figure(y=(0.0, 5.0), y2=(0.0, 3.0)):
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    ax.plot([0.0, 10.0], list(y))
+    twin = ax.twinx()
+    twin.plot([0.0, 10.0], list(y2))
+    return ax, twin
+
+
+def test_apply_step_view_first_visit_seeds_from_defaults_falling_back_to_full_extent():
+    ax, twin = _two_axis_figure()
+    full_x, full_y, full_y2 = ax.get_xlim(), ax.get_ylim(), twin.get_ylim()
+    sv = plots.apply_step_view("tangent", ax, ViewDefaults(xlim=(1.0, 2.0)))
+    assert sv.view.xlim == (1.0, 2.0)
+    assert sv.view.ylim == full_y and sv.view.y2lim == full_y2
+    assert sv.full_x == full_x and sv.twin is twin
+    assert ax.get_xlim() == (1.0, 2.0) and twin.get_ylim() == full_y2
+
+
+def test_apply_step_view_revisit_reuses_stored_view_unchanged():
+    ax, twin = _two_axis_figure()
+    stored = ViewState(xlim=(3.0, 4.0), ylim=(1.0, 2.0), y2lim=(0.0, 1.0))
+    sv = plots.apply_step_view("tangent", ax, ViewDefaults(xlim=(100.0, 200.0)), stored)
+    assert sv.view is stored
+    assert ax.get_xlim() == (3.0, 4.0) and twin.get_ylim() == (0.0, 1.0)
+
+
+def test_apply_step_view_unions_default_outside_autoscale_except_gfunction_y():
+    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 2.0))
+    d = ViewDefaults(ylim=(0.0, 150.0), y2lim=(0.0, 9.0))
+    sv = plots.apply_step_view("overview", ax, d)
+    assert sv.full_y[0] == 0.0 and sv.full_y[1] >= 200.0
+    assert sv.full_y2[0] == 0.0 and sv.full_y2[1] == 9.0
+
+    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 2000.0))
+    sv = plots.apply_step_view("gfunction", ax, ViewDefaults(ylim=(120.0, 180.0), y2lim=(0.0, 50.0)))
+    assert sv.full_y == (120.0, 180.0)                      # replaced, not unioned
+    assert sv.full_y2[0] == 0.0 and sv.full_y2[1] == plots.DPDG_VIEW_MAX
+
+
+def test_apply_step_view_applies_fresh_y3lim_to_d2_axis_and_never_treats_it_as_twin():
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    ax.plot([0.0, 1.0], [0.0, 1.0])
+    d2 = ax.twinx()
+    d2.set_gid(plots.D2_AXIS_GID)
+    sv = plots.apply_step_view("gfunction", ax, ViewDefaults(y3lim=(-5.0, 5.0)))
+    assert sv.twin is None and sv.full_y2 is None
+    assert d2.get_ylim() == (-5.0, 5.0)

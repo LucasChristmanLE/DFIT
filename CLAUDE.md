@@ -17,7 +17,7 @@ Two modes. Single-file mode opens one file directly. Folder mode ("Open Folder�
 into a queue of tests shown in a left sidebar and rolls each test's results into a per-root
 `dfit_log.csv`. There is no other cross-test aggregation. Permeability is out of scope.
 
-The eight steps (`ui.py:STEPS`): overview → injection → isip → gfunction → tangent → loglog →
+The eight steps (`model.STEPS`): overview → injection → isip → gfunction → tangent → loglog →
 porepressure → stiffness.
 - Overview: the whole dataset, unclamped, with the always-on tail-trim line. When BHP is converted
   from surface pressure it also overlays the raw surface trace (`DerivedResults.p_surface_all`).
@@ -166,15 +166,16 @@ Preserve these when changing the code.
 - **Keep `picks.py`, `plots.py`, `sliders.py` free of Tkinter.** They run headless under Agg.
 - **Renderers never set view limits.** `render_*` leave Axes autoscaled and return
   `ViewDefaults(xlim, ylim, y2lim)`. `ui.py` owns per-step view state (`_views`). No
-  `set_xlim`/`set_ylim` inside a renderer. `ui.refresh` and `plots.render_step_figure` must apply
-  view resolution identically; keep them in lockstep. On every step except gfunction, the
+  `set_xlim`/`set_ylim` inside a renderer. `plots.apply_step_view` is the one place view
+  resolution happens (returns `StepView`: the applied `ViewState` plus slider ranges); both
+  `ui.refresh` and `plots.render_step_figure` call it. On every step except gfunction, the
   renderer's `ViewDefaults.ylim` is unioned into `full_y` (the slider's outer range), or
   `_make_range_slider`'s valinit clamping snaps the view off the default on first touch.
   Gfunction replaces `full_y` instead; its dP/dG slider range is the twin autoscale unioned with
   the default, then clamped to `(0, DPDG_VIEW_MAX)`.
   Rate axes (overview, injection, isip) default to 0..3x the max rate plotted on that step
   (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
-  `full_y2` on every non-gfunction step, in `ui.refresh` and `render_step_figure` alike.
+  `full_y2` on every non-gfunction step.
   Default y-limits round outward to tick values (`plots.nice_limits`, 1/2/2.5/5 x 10^k steps;
   `nice_log_limits` rounds the stiffness log axis to decades).
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`** (a `twinx` owns `inaxes`
@@ -302,10 +303,11 @@ Postclosure scenarios (`picks.suggest_pp_axis` maps by `scenario[:4]`):
 | PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
 | PC-F no peak | derivative still rising | porepressure and stiffness skipped |
 
-PC-F (`model.porepressure_skipped`, `model.stiffness_skipped`): `ui._last_step()` returns
-`"loglog"`, `_goto` redirects both steps to loglog, their breadcrumbs disable, their PNGs are
-omitted, and `store.status_for` counts them as accounted for. The stiffness flag is logged blank
-under PC-F.
+PC-F: `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}`. It is the only place
+the rule lives; callers ask it rather than checking the scenario. `model.last_step` returns
+`"loglog"`, `model.resolve_step` (used by `ui._goto`) redirects both steps to loglog, their
+breadcrumbs disable, their PNGs are omitted, `compute_all` leaves pore pressure blank, and
+`store.status_for` counts them as accounted for. The stiffness flag is logged blank under PC-F.
 
 The in-app "Interpretation guide" (`ui._open_guide`) shows the ResFrac C-A…C-D and PC-A…PC-F
 figures; content is in `dfit_tool/guide_content.py`, images in `dfit_tool/assets/guide/`.

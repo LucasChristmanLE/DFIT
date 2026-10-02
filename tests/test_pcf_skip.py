@@ -14,7 +14,7 @@ import types
 import pytest
 
 from dfit_tool import picks, plots, ui
-from dfit_tool.model import PickState, _decode, compute_all, porepressure_skipped
+from dfit_tool.model import PickState, _decode, compute_all, skipped_steps
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
 
@@ -38,7 +38,7 @@ def test_compute_all_suppresses_pore_pressure_under_pcf():
 
     res = compute_all(st, td)
 
-    assert porepressure_skipped(st)
+    assert "porepressure" in skipped_steps(st)
     assert res.pore_pressure is None
 
 
@@ -50,7 +50,7 @@ def test_compute_all_still_computes_pore_pressure_for_non_pcf_scenario():
 
     res = compute_all(st, td)
 
-    assert not porepressure_skipped(st)
+    assert "porepressure" not in skipped_steps(st)
     assert res.pore_pressure is not None
 
 
@@ -101,7 +101,7 @@ def test_pickstate_from_json_roundtrip_migrates_label(tmp_path):
 # --------------------------------------------------------------------------------------------------
 # plots.save_all_step_pngs: PC-F omits both the porepressure and stiffness PNGs (six files, none
 # named "*porepressure*"/"*stiffness*" -- stiffness needs the pore-pressure estimate PC-F never
-# yields, see model.stiffness_skipped); a non-PC-F scenario still writes all eight.
+# yields, see model.skipped_steps); a non-PC-F scenario still writes all eight.
 # --------------------------------------------------------------------------------------------------
 def test_save_all_step_pngs_omits_porepressure_under_pcf(tmp_path):
     td = make_testdata()
@@ -133,8 +133,7 @@ def test_save_all_step_pngs_writes_all_eight_for_non_pcf_scenario(tmp_path):
 
 # --------------------------------------------------------------------------------------------------
 # Navigation: DfitApp._advance/_goto route around the skipped pore-pressure step. Same
-# duck-typed stand-in pattern as test_step_gate.py's _nav_stub -- _advance needs self._last_step,
-# so the real DfitApp._last_step is bound onto the stub too.
+# duck-typed stand-in pattern as test_step_gate.py's _nav_stub.
 # --------------------------------------------------------------------------------------------------
 class _GateLabel:
     def __init__(self):
@@ -159,7 +158,6 @@ def _nav_stub(step, postclosure_scenario=""):
     stub._goto = lambda dest: stub._goto_calls.append(dest)
     stub._finish_calls = []
     stub._finish = lambda: stub._finish_calls.append(True)
-    stub._last_step = types.MethodType(DfitApp._last_step, stub)
     stub._advance = types.MethodType(DfitApp._advance, stub)
     stub._next = types.MethodType(DfitApp._next, stub)
     stub._skip = types.MethodType(DfitApp._skip, stub)

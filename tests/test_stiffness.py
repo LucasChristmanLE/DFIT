@@ -3,7 +3,7 @@ step, "stiffness". The h-function is a time-convolution leakoff integral (needs 
 estimate); relative stiffness S = -dP_eff/dh; the upturn where S rises off its minimum marks
 fracture-wall contact and gives a fourth, comparison-only Shmin estimate
 (Shmin(stiffness) = picked pressure - 75 psi, interpret.shmin_compliance). Skipped end to end
-under PC-F, exactly like pore pressure -- see model.stiffness_skipped.
+under PC-F, exactly like pore pressure -- see model.skipped_steps.
 
 interpret.h_function is checked against McClure's reference O(n^2) loop, transcribed verbatim
 here (his dt in minutes / pressure in MPa cancel out of this relative quantity, so this
@@ -22,7 +22,7 @@ from matplotlib.figure import Figure
 
 from dfit_tool import interpret, model, picks, plots, store, ui
 from dfit_tool.model import (
-    PickState, compute_all, infer_step_status, porepressure_skipped, stiffness_skipped,
+    PickState, compute_all, infer_step_status, last_step, skipped_steps,
 )
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state
@@ -579,21 +579,6 @@ def test_stiffness_is_in_renderers_after_porepressure():
 
 
 # --------------------------------------------------------------------------------------------------
-# model.stiffness_skipped mirrors porepressure_skipped
-# --------------------------------------------------------------------------------------------------
-def test_stiffness_skipped_mirrors_porepressure_skipped_under_pcf():
-    st = PickState(postclosure_scenario="PC-F no peak")
-    assert stiffness_skipped(st) is True
-    assert stiffness_skipped(st) == porepressure_skipped(st)
-
-
-def test_stiffness_skipped_mirrors_porepressure_skipped_otherwise():
-    st = PickState(postclosure_scenario="PC-A linear")
-    assert stiffness_skipped(st) is False
-    assert stiffness_skipped(st) == porepressure_skipped(st)
-
-
-# --------------------------------------------------------------------------------------------------
 # ui.STEPS / picks.SEEDERS / plots.RENDERERS / store.STEP_KEYS all agree, "stiffness" included.
 # --------------------------------------------------------------------------------------------------
 def test_stiffness_is_the_last_ui_step():
@@ -638,17 +623,11 @@ def test_goto_stiffness_lands_on_stiffness_under_non_pcf():
 
 
 def test_last_step_is_stiffness_for_non_pcf():
-    stub = types.SimpleNamespace()
-    stub.state = PickState(postclosure_scenario="PC-A linear")
-    stub._last_step = types.MethodType(DfitApp._last_step, stub)
-    assert stub._last_step() == "stiffness"
+    assert last_step(PickState(postclosure_scenario="PC-A linear")) == "stiffness"
 
 
 def test_last_step_is_loglog_under_pcf():
-    stub = types.SimpleNamespace()
-    stub.state = PickState(postclosure_scenario="PC-F no peak")
-    stub._last_step = types.MethodType(DfitApp._last_step, stub)
-    assert stub._last_step() == "loglog"
+    assert last_step(PickState(postclosure_scenario="PC-F no peak")) == "loglog"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -756,7 +735,6 @@ def _update_stepbar_stub(postclosure_scenario, step_status, step="loglog"):
     stub.step_buttons = {k: _FakeStepButton() for k, _ in ui.STEPS}
     stub.next_btn = _FakeNextButton()
     stub._update_skip_test_btn = lambda: None
-    stub._last_step = types.MethodType(DfitApp._last_step, stub)
     stub._update_stepbar = types.MethodType(DfitApp._update_stepbar, stub)
     return stub
 
@@ -907,7 +885,7 @@ def test_build_log_row_blanks_stiffness_no_upturn_under_pcf(tmp_path):
     st.stiffness_no_upturn = True
     st.postclosure_scenario = "PC-F no peak"
     res = compute_all(st, td)
-    assert stiffness_skipped(st) is True  # sanity
+    assert "stiffness" in skipped_steps(st)  # sanity
 
     entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
     active_path = str(tmp_path / "well1.csv")

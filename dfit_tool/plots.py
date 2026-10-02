@@ -6,9 +6,9 @@ Each ``render_*`` takes an Axes, the loaded ``TestData``, the ``PickState``, and
 
 Renderers no longer set view limits (``set_xlim``/``set_ylim``) on the Axes -- they leave the
 Axes autoscaled to the full data extent and instead return a ``ViewDefaults`` describing the
-view the caller should apply on first visit to a step. Callers (ui.py) own view state from
-there: they read the autoscaled extent, resolve it against ``ViewDefaults``, and apply the
-result to the Axes themselves.
+view the caller should apply on first visit to a step. ``apply_step_view`` is the one place that
+resolves the autoscaled extent against ``ViewDefaults`` (or a stored ``ViewState``) and applies
+it; ui.refresh and the headless PNG export both call it. ui.py owns the per-step stored views.
 
 Matplotlib only -- no Tkinter -- so figures can be produced headlessly (Agg) for verification.
 """
@@ -24,8 +24,8 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
 from . import interpret
-from .model import (DerivedResults, PickState, closure_uninterpretable, porepressure_skipped,
-                    stiffness_skipped)
+from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
+                    skipped_steps)
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -743,7 +743,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     """Step 8: relative system stiffness (semilog-y) vs effective pressure (URTeC-2019-123
     A.8/A.9) -- the upturn where the fracture walls come into contact gives a fourth,
     comparison-only Shmin estimate. Needs the min-dP/dG pick and a pore-pressure estimate (the
-    h-function's Pres term); skipped end to end under PC-F (model.stiffness_skipped), which
+    h-function's Pres term); skipped end to end under PC-F (model.skipped_steps), which
     never yields one. state.stiffness_no_upturn records the negative finding "no slope change
     apparent" -- the curve still draws, but no pick vline/marker and a title saying so."""
     ax.clear()
@@ -831,74 +831,94 @@ RENDERERS = {
 }
 
 
+@dataclass
+class ViewState:
+    """The resolved (non-optional) view actually applied to a step's Axes: primary xlim/ylim,
+    and the twin axes' ylim if that step has one."""
+    xlim: tuple[float, float]
+    ylim: tuple[float, float]
+    y2lim: Optional[tuple[float, float]] = None
+
+
+@dataclass
+class StepView:
+    """What ``apply_step_view`` resolved and applied. ``full_*`` are the outer (slider) ranges;
+    ``twin`` is the step's secondary-y Axes (never the d2P/dG2 axis), or None."""
+    view: ViewState
+    full_x: tuple[float, float]
+    full_y: tuple[float, float]
+    full_y2: Optional[tuple[float, float]]
+    twin: Optional[object]
+
+
+def apply_step_view(step_key: str, ax, defaults: ViewDefaults,
+                    stored: Optional[ViewState] = None) -> StepView:
+    """Resolve and apply a step's view to ``ax`` and its twins. Call right after the renderer,
+    before any other Axes (sliders) are added to the figure.
+
+    Outer ranges start from the renderer's autoscale. A concrete ``defaults.ylim``/``y2lim`` is
+    unioned in, so a default reaching outside the autoscale (Overview's y-min 0, the 3x rate
+    ceiling) stays inside a slider's range; otherwise the slider's valinit clamping snaps the view
+    off the default on first touch. Gfunction instead REPLACES full_y with ``defaults.ylim``
+    (the effective-ISIP tangent extension can swing the Axes' autoscale to extreme psi) and
+    clamps full_y2 to 0..``DPDG_VIEW_MAX`` after the union.
+
+    The view is ``stored`` unchanged when given (pan/zoom survives a recompute), else each axis's
+    default, falling back to its outer range. The d2P/dG2 axis gets ``defaults.y3lim`` fresh
+    every call and is never part of the stored view (decision D3)."""
+    def union(a, b):
+        return (min(a[0], b[0]), max(a[1], b[1]))
+
+    others = [a for a in ax.figure.axes if a is not ax]
+    twin = next((a for a in others if a.get_gid() != D2_AXIS_GID), None)
+    d2 = next((a for a in others if a.get_gid() == D2_AXIS_GID), None)
+    gfunction = step_key == "gfunction"
+
+    full_x = ax.get_xlim()
+    full_y = ax.get_ylim()
+    if defaults.ylim is not None:
+        full_y = defaults.ylim if gfunction else union(full_y, defaults.ylim)
+    full_y2 = twin.get_ylim() if twin is not None else None
+    if full_y2 is not None:
+        if defaults.y2lim is not None:
+            full_y2 = union(full_y2, defaults.y2lim)
+        if gfunction:
+            full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], DPDG_VIEW_MAX))
+
+    view = stored if stored is not None else ViewState(
+        xlim=defaults.xlim if defaults.xlim is not None else full_x,
+        ylim=defaults.ylim if defaults.ylim is not None else full_y,
+        y2lim=defaults.y2lim if defaults.y2lim is not None else full_y2,
+    )
+    ax.set_xlim(view.xlim)
+    ax.set_ylim(view.ylim)
+    if twin is not None and view.y2lim is not None:
+        twin.set_ylim(view.y2lim)
+    if d2 is not None and defaults.y3lim is not None:
+        d2.set_ylim(defaults.y3lim)
+    return StepView(view=view, full_x=full_x, full_y=full_y, full_y2=full_y2, twin=twin)
+
+
 def render_step_figure(step_key: str, td: TestData, state: PickState, res: DerivedResults,
                        stored_view: Optional[tuple] = None,
                        figsize: tuple[float, float] = (9, 6)) -> Figure:
-    """Render one step onto an offscreen ``Figure`` with the same view-resolution logic
-    ``ui.refresh()``/``ui._resolve_view`` apply to the live canvas, so an exported PNG matches
-    what the analyst was looking at (stored_view) or the renderer's own default.
+    """Render one step onto an offscreen ``Figure`` through ``apply_step_view``, the same
+    view resolution ui.refresh uses, so an exported PNG matches what the analyst was looking at
+    (``stored_view`` as an ``(xlim, ylim, y2lim)`` tuple) or the renderer's own default.
 
     No Tkinter -- this and ``save_all_step_pngs`` are called by ``ui._finish`` but could equally
     run headlessly for tests, per the module-level invariant.
     """
     fig = Figure(figsize=figsize)
     ax = fig.add_subplot(111)
-    # Overview's tail-trim line is a live-canvas control, not part of the interpretation --
-    # render_step_figure (the only caller of save_all_step_pngs) always opts out explicitly,
-    # mirroring the step_key == "gfunction" special cases just below, so an exported PNG never
-    # carries a line the analyst can't actually drag.
+    # Overview's tail-trim line is a live-canvas control, not part of the interpretation, so an
+    # exported PNG never carries a line the analyst can't actually drag.
     kwargs = {"interactive": False} if step_key == "overview" else {}
     defaults = RENDERERS[step_key](ax, td, state, res, **kwargs)
+    stored = ViewState(*stored_view) if stored_view is not None else None
+    apply_step_view(step_key, ax, defaults, stored)
 
-    full_x = ax.get_xlim()
-    full_y = ax.get_ylim()
-    if defaults.ylim is not None:
-        # There is no slider on this offscreen Figure -- full_y here only feeds this function's
-        # own stored_view-is-None fallback a few lines down, nothing in ui.py. This union/replace
-        # split is kept in textual lockstep with the near-identical block in ui.refresh anyway
-        # (deliberately, so the two view-resolution paths can't silently drift apart), even
-        # though the REPLACE-vs-slider reasoning that motivates it there (shielding the y-slider
-        # from the effective-ISIP tangent's dashed extension) doesn't apply here, and the
-        # gfunction branch specifically is moot for "overview" (the case this split was added
-        # for). Every non-gfunction step still UNIONS so a concrete ViewDefaults.ylim that
-        # reaches outside the autoscaled extent (e.g. Overview's pinned y-min 0 against a
-        # converted-BHP trace) survives into the fallback instead of being silently dropped.
-        full_y = (defaults.ylim if step_key == "gfunction"
-                 else (min(full_y[0], defaults.ylim[0]), max(full_y[1], defaults.ylim[1])))
-    # Exclude the d2P/dG2 axis (D2_AXIS_GID) from the twin lookup -- it gets no slider/persisted
-    # view of its own (decision D3) and must never be mistaken for the dP/dG twin here.
-    twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)
-    full_y2 = twin.get_ylim() if twin is not None else None
-    if step_key != "gfunction" and full_y2 is not None and defaults.y2lim is not None:
-        # Same union as full_y above (kept in lockstep with ui.refresh): the rate axis's 3x
-        # default reaches outside its autoscaled extent.
-        full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
-    if step_key == "gfunction" and full_y2 is not None:
-        # UNION the renderer's own y2 default in first (kept in textual lockstep with the
-        # near-identical block in ui.refresh), then hard-clamp to 0-500 -- see that block for
-        # the full reasoning.
-        if defaults.y2lim is not None:
-            full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
-        full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], DPDG_VIEW_MAX))
-
-    if stored_view is not None:
-        xlim, ylim, y2lim = stored_view
-    else:
-        xlim = defaults.xlim if defaults.xlim is not None else full_x
-        ylim = defaults.ylim if defaults.ylim is not None else full_y
-        y2lim = defaults.y2lim if defaults.y2lim is not None else full_y2
-
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    if twin is not None and y2lim is not None:
-        twin.set_ylim(y2lim)
-
-    # The d2 axis is never part of stored_view (D3) -- always apply the renderer's fresh default.
-    d2_axis = next((a for a in fig.axes if a.get_gid() == D2_AXIS_GID), None)
-    d2_on = d2_axis is not None
-    if d2_axis is not None and defaults.y3lim is not None:
-        d2_axis.set_ylim(defaults.y3lim)
-
+    d2_on = any(a.get_gid() == D2_AXIS_GID for a in fig.axes)
     right = 0.80 if (step_key == "gfunction" and d2_on) else 0.90
     fig.subplots_adjust(left=0.10, right=right, bottom=0.16, top=0.90)
     return fig
@@ -906,19 +926,15 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
 
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
-    """Render every step's current view to a numbered PNG in ``out_dir`` (RENDERERS' insertion
-    order: overview -> injection -> isip -> gfunction -> tangent -> loglog -> porepressure ->
-    stiffness). Returns the written paths in that order. Two independent skips, each PC-F-gated
-    (porepressure_skipped/stiffness_skipped): "porepressure" (no postclosure line, nothing to
-    render) and "stiffness" (no pore-pressure estimate for the h-function) -- the numbering from
-    ``enumerate`` still runs over all of RENDERERS so the other filenames are unaffected; the
-    skipped ones are simply absent. Used by ``ui._finish``, but headless/Tkinter-free like the
-    rest of this module."""
+    """Render every step's current view to a numbered PNG in ``out_dir``, in ``STEP_KEYS``
+    order. Returns the written paths in that order. Steps the workflow leaves out
+    (``skipped_steps``; PC-F drops porepressure and stiffness) are omitted, but the numbering
+    still runs over every step so the other filenames are unaffected. Used by ``ui._finish``,
+    but headless/Tkinter-free like the rest of this module."""
     paths = []
-    skip_pp = porepressure_skipped(state)
-    skip_stiff = stiffness_skipped(state)
-    for i, key in enumerate(RENDERERS, start=1):
-        if (key == "porepressure" and skip_pp) or (key == "stiffness" and skip_stiff):
+    skipped = skipped_steps(state)
+    for i, key in enumerate(STEP_KEYS, start=1):
+        if key in skipped:
             continue
         fig = render_step_figure(key, td, state, res, views.get(key))
         path = os.path.join(out_dir, f"{i}_{key}.png")

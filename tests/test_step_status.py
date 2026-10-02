@@ -8,16 +8,9 @@ import json
 
 import pytest
 
-from dfit_tool.model import PickState, TangentPick, infer_step_status
-from dfit_tool.ui import (
-    FIELD_STEP,
-    PANEL_FIELDS,
-    STEPS,
-    first_not_visited_step,
-    next_step,
-    prev_step,
-    step_index,
-)
+from dfit_tool.model import (STEPS, PickState, TangentPick, first_not_visited_step,
+                             infer_step_status, next_step, prev_step, step_index)
+from dfit_tool.ui import FIELD_STEP, PANEL_FIELDS
 
 
 # --------------------------------------------------------------------------------------------------

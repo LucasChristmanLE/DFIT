@@ -99,7 +99,6 @@ def _nav_stub(step, state):
     stub.refresh = lambda: setattr(stub, "res",
                                    DerivedResults(blockers=blocking_issues(stub.state)))
     stub._overview_gate = types.MethodType(DfitApp._overview_gate, stub)
-    stub._last_step = types.MethodType(DfitApp._last_step, stub)
     stub._advance = types.MethodType(DfitApp._advance, stub)
     stub._next = types.MethodType(DfitApp._next, stub)
     stub._skip = types.MethodType(DfitApp._skip, stub)
