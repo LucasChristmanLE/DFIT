@@ -288,6 +288,12 @@ Closure scenarios (`picks.apply_closure_scenario`):
 | C-D rapid | monotonic, concave-up | apparent ISIP − 175 psi (`shmin_rapid`) |
 | C-X uninterpretable | can't be read (bad data) | none; also blanks Shmin stiffness |
 
+Auto C-A: `picks.seed_gfunction` sets "C-A clear" (and runs `apply_closure_scenario`) only when
+it seeds a fresh min-dP/dG pick, the scenario is blank, and `interpret.is_clear_closure` holds:
+a genuine interior local min (not the suggester's fallback), a rise of `CLEAR_RISE_FRAC` (10%)
+reached at or before the hump, held for `CLEAR_RISE_MIN_POINTS` (3) samples. Nothing records
+that it was automatic (no state field, no log column); the hint shows once, after the seed.
+
 C-C, C-D, and C-X (`model.NO_CONTACT_SCENARIOS`) clear the contact pick, so none gets a
 compliance Shmin or compliance effective ISIP. C-X logs `closure_quality = "uninterpretable"`.
 The tangent step's independent negative finding is the `tangent_uninterpretable` checkbox

@@ -35,6 +35,8 @@ CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hu
                                        # real hump, which would otherwise win on G*dP/dG alone.
 INJECTION_MIN_RUN_FRAC = 0.10  # suggest_injection_window: a rate-on run smaller than this
                                # fraction of the largest run's size is dropped as a pulse/blip.
+CLEAR_RISE_FRAC = 0.10  # C-A contact: dP/dG rise above the min-dP/dG value
+CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must hold
 
 
 # --------------------------------------------------------------------------------------------------
@@ -501,7 +503,7 @@ def min_index_in_window(G: np.ndarray, dPdG: np.ndarray, lo: float, hi: float) -
 
 
 def suggest_contact_clear_index(
-    dPdG: np.ndarray, min_idx: int, rise_frac: float = 0.10
+    dPdG: np.ndarray, min_idx: int, rise_frac: float = CLEAR_RISE_FRAC
 ) -> Optional[int]:
     """C-A "clear" contact rule (URTeC-2019-123 3.1.2): the contact is the first sample right
     of the min-dP/dG pick where dP/dG has risen ``rise_frac`` (10%) above the min value.
@@ -514,6 +516,35 @@ def suggest_contact_clear_index(
         if np.isfinite(y[i]) and y[i] >= threshold:
             return int(i)
     return None
+
+
+def is_clear_closure(G: np.ndarray, dPdG: np.ndarray, min_idx: int) -> bool:
+    """True when dP/dG shows a clean C-A signature at ``min_idx``: the gate for auto-assigning
+    C-A on the gfunction seed (picks.seed_gfunction).
+      - ``min_idx`` is a genuine interior local min (the neighbor test suggest_min_dpdg_index
+        uses), not its global-min fallback for a curve with no interior min;
+      - dP/dG first reaches CLEAR_RISE_FRAC above the min at or before the hump
+        (suggest_hump_index), so a late-tail rise does not count;
+      - it stays at or above that level for CLEAR_RISE_MIN_POINTS consecutive samples from
+        that crossing, so a single noisy sample does not count."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    if not 0 < min_idx < len(y) - 1:
+        return False
+    trio = y[min_idx - 1:min_idx + 2]
+    if not (np.isfinite(trio).all() and trio[1] < trio[0] and trio[1] <= trio[2]):
+        return False
+    if trio[1] <= 0:  # a fractional rise above a min <= 0 is not a rise
+        return False
+    hump = suggest_hump_index(G, y)
+    if hump is None or hump <= min_idx:
+        return False
+    c = suggest_contact_clear_index(y, min_idx)
+    if c is None or c > hump:
+        return False
+    run = y[c:c + CLEAR_RISE_MIN_POINTS]
+    threshold = y[min_idx] * (1.0 + CLEAR_RISE_FRAC)
+    return len(run) == CLEAR_RISE_MIN_POINTS and bool(np.all(run >= threshold))
 
 
 def suggest_contact_inflection_index(

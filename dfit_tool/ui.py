@@ -1360,15 +1360,19 @@ class DfitApp:
         blocked = step != "overview" and bool(blocking_issues(self.state))
         if blocked:
             step = "overview"
+        seed_hint = None
         if self.state.step_status.get(step, "not_visited") == "not_visited":
-            self._seed_step(step)
+            seed_hint = self._seed_step(step)
             self.state.step_status[step] = "visited"
         self.step = step
         self.refresh()
+        if seed_hint:
+            # After refresh(): _attach_controllers resets the step's default hint.
+            self.hint_lbl.config(text=seed_hint)
         if blocked:
             self.gate_lbl.config(text=step_gate_error(self.state, "overview"))
 
-    def _seed_step(self, key: str) -> None:
+    def _seed_step(self, key: str) -> Optional[str]:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
         ``picks.SEEDERS``. "overview" and "injection" need ``self.td`` too (seed_overview just
         delegates to seed_injection); "isip" needs both; the rest take only (state, res).
@@ -1376,9 +1380,12 @@ class DfitApp:
         "overview" additionally seeds the tail-trim line (picks.seed_tail_trim, not in SEEDERS)
         once the window exists: the ``res`` computed below predates seed_overview on a fresh file
         (no start_idx/shutin_idx yet, so te_s/resampled_full/guard_dt are all None), so it must be
-        recomputed after seed_overview runs before the trim seeder has anything to see."""
+        recomputed after seed_overview runs before the trim seeder has anything to see.
+
+        Returns a one-shot hint when the seed auto-set a scenario ("gfunction" auto C-A), for
+        _goto to show after its refresh; else None."""
         if self.td is None:
-            return
+            return None
         res = compute_all(self.state, self.td)
         seeder = picks.SEEDERS[key]
         if key in ("overview", "injection"):
@@ -1389,10 +1396,15 @@ class DfitApp:
         elif key == "isip":
             seeder(self.state, self.td, res)
         else:
-            seeder(self.state, res)
+            hint = seeder(self.state, res)
+            if key == "gfunction":
+                # seed_gfunction may auto-assign C-A, which the combobox doesn't see on its own.
+                self.var_cscen.set(self.state.closure_scenario)
+                return hint
             if key == "loglog":
                 # seed_loglog may auto-assign PC-A, which the combobox doesn't see on its own.
                 self.var_pcscen.set(self.state.postclosure_scenario)
+        return None
 
     def _next(self):
         """Mark the current step done and advance. next_step() clamps at the last step, so at

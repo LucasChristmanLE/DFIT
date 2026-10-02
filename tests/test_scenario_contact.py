@@ -405,7 +405,9 @@ def _spike_hump_curve():
 def test_seed_gfunction_contact_at_hump_not_spike():
     G, dPdG = _spike_hump_curve()
     res = _res_with_resampled(G, dPdG)
-    state = PickState()
+    # A preset scenario keeps the auto C-A seed (tests/test_closure_autoassign.py) from moving
+    # the contact to the +10% point: this pins the hump placeholder itself.
+    state = PickState(closure_scenario="C-B adequate")
     picks.seed_gfunction(state, res)
     assert abs(state.min_dpdg_G - 0.55) < 0.15
     assert abs(state.contact_G - 3.5) < 0.3

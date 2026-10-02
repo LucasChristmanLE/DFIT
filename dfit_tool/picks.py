@@ -1453,21 +1453,36 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
     state.isip_tangent = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
 
 
-def seed_gfunction(state: PickState, res: DerivedResults) -> None:
+def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
     """The min-dP/dG point (a diagnostic pick), plus the compliance contact pick at the dP/dG
     hump -- the contact pick feeds the derived effective-ISIP tangent, see
-    model.compute_all/DerivedResults.eff_isip_line_compliance."""
+    model.compute_all/DerivedResults.eff_isip_line_compliance.
+
+    When the min is freshly seeded, the scenario is blank, and interpret.is_clear_closure holds,
+    also sets "C-A clear" and applies its +10% contact rule (apply_closure_scenario), returning
+    closure_auto_hint(). Nothing records that it was automatic. Otherwise returns None."""
     if state.min_dpdg_G is not None and state.contact_G is not None:
-        return
+        return None
     dg = res.diagnostics
     if dg is None or res.resampled is None or len(dg.G) <= 5:
-        return
+        return None
+    fresh_idx = None
     if state.min_dpdg_G is None:
-        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
-        state.min_dpdg_G = float(dg.G[idx])
+        fresh_idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        state.min_dpdg_G = float(dg.G[fresh_idx])
     if state.contact_G is None:
         hump = interpret.suggest_hump_index(dg.G, dg.dPdG)
         state.contact_G = float(dg.G[hump]) if hump is not None else float(dg.G[-1])
+    if (fresh_idx is not None and not state.closure_scenario
+            and interpret.is_clear_closure(dg.G, dg.dPdG, fresh_idx)):
+        state.closure_scenario = "C-A clear"
+        apply_closure_scenario(state, res)
+        return closure_auto_hint()
+    return None
+
+
+def closure_auto_hint() -> str:
+    return "Clear min with a sustained 10% rise: scenario auto-set to C-A. Change it if needed."
 
 
 def seed_tangent(state: PickState, res: DerivedResults) -> None:
