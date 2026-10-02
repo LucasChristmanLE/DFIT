@@ -79,6 +79,9 @@ LOG_COLUMNS = [
     # "Tangent closure uninterpretable" negative finding (tangent step) -- tail-appended per the
     # append-only convention.
     "tangent_uninterpretable",
+    # How the apparent ISIP was taken: "tangent" or "shutin" (BHP at the shut-in sample) --
+    # tail-appended per the append-only convention.
+    "apparent_isip_method",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -542,4 +545,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "stiffness_no_upturn": "" if model.stiffness_skipped(state) else state.stiffness_no_upturn,
         "tail_guard_override": state.tail_guard_override,
         "tangent_uninterpretable": state.tangent_uninterpretable,
+        "apparent_isip_method": res.apparent_isip_method,
     }

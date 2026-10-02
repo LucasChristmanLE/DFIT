@@ -95,6 +95,10 @@ class PickState:
 
     # --- step 3: apparent ISIP tangent (BHP vs time-seconds axis) ---
     isip_tangent: Optional[TangentPick] = None
+    # Take the apparent ISIP as the BHP at the shut-in sample instead of the tangent (tests with
+    # no water hammer). The tangent pick is left in state so unchecking restores it. Old saves
+    # take the default via _decode's known-field filter, no migration needed.
+    isip_at_shutin: bool = False
 
     # --- step 5: min-dP/dG point (P vs G axis; a diagnostic pick) + compliance contact (feeds
     # the derived effective-ISIP tangent, see DerivedResults.eff_isip_line) ---
@@ -233,7 +237,7 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     # pre-step_status saves, which predate the "overview" step entirely.
     if state.start_idx is not None or state.shutin_idx is not None:
         status["injection"] = "done"
-    if state.isip_tangent is not None:
+    if state.isip_tangent is not None or state.isip_at_shutin:
         status["isip"] = "done"
     if state.min_dpdg_G is not None or state.contact_G is not None:
         status["gfunction"] = "done"
@@ -291,6 +295,7 @@ class DerivedResults:
 
     # pressures
     apparent_isip: Optional[float] = None
+    apparent_isip_method: str = ""  # "tangent" / "shutin" / "" (no shut-in pick)
     effective_isip_compliance: Optional[float] = None
     effective_isip_tangent: Optional[float] = None
     effective_isip_variable: Optional[float] = None
@@ -560,10 +565,13 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 res.warnings.append(
                     "te = pump duration (shut-in - start); no usable rate for Vinj/qmax")
 
-    # Apparent ISIP (needs shut-in time)
-    if state.isip_tangent and res.t_shutin_s is not None:
+    # Apparent ISIP (needs shut-in time). The at-shut-in branch needs res.dropout_mask, so it
+    # is evaluated just after the mask is built below. apparent_isip_method is set only when a
+    # value results, so the log never pairs a method with a blank ISIP.
+    if state.isip_tangent and res.t_shutin_s is not None and not state.isip_at_shutin:
         tg = state.isip_tangent
         res.apparent_isip = interpret.apparent_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
+        res.apparent_isip_method = "tangent"
 
     # Pressure dropouts: detect momentary near-zero gauge glitches after shut-in, on the raw
     # mapped pressure channel (before any hydrostatic offset -- "near zero" means near zero on
@@ -608,6 +616,17 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     f"{len(res.dropouts)} pressure dropouts masked (first at "
                     f"{_min_label(first.dt_start)} min after shut-in) -- treated as gauge "
                     "glitches")
+
+    if state.isip_at_shutin and res.t_shutin_s is not None and state.shutin_idx is not None:
+        p_shutin = (float(res.bhp_all[state.shutin_idx])
+                    if res.bhp_all is not None else float("nan"))
+        if res.dropout_mask[state.shutin_idx] or not np.isfinite(p_shutin):
+            res.apparent_isip = None
+            res.warnings.append(
+                "Apparent ISIP at shut-in: BHP at the shut-in sample is missing/masked")
+        else:
+            res.apparent_isip = p_shutin
+            res.apparent_isip_method = "shutin"
 
     # Resample + diagnostics (needs te). Resample the full post-shut-in record first
     # (stop_at_guard=False, so resampled_full/G_full always span the whole record, guard or no

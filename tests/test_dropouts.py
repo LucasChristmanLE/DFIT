@@ -639,7 +639,7 @@ def test_render_isip_draws_dropout_masked_and_breaks_main_trace():
     plots.render_isip(ax, td, st, res)
 
     assert any(l.get_gid() == "dropout_masked" for l in ax.get_lines())
-    main = next(l for l in ax.get_lines() if l.get_gid() is None and l.get_color() == "black")
+    main = ax.get_lines()[0]  # the pressure trace is drawn first
 
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)

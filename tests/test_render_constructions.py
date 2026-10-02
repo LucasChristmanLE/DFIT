@@ -55,10 +55,11 @@ def test_render_tangent_pressure_primary_gdpdg_secondary_mirrors_gfunction():
     defaults = plots.render_tangent(ax, td, st, res)
 
     press_line = ax.get_lines()[0]
-    assert press_line.get_color() == "black"
+    assert press_line.get_color() == ("black" if res.pressure_is_bhp else "tab:red")
     assert press_line.get_lw() == pytest.approx(1.2)
     assert press_line.get_marker() == "."
-    assert press_line.get_label() == "BHP"
+    # Fixture is an unconverted surface channel, so the trace is never called BHP.
+    assert press_line.get_label() == ("Bottomhole Pressure" if res.pressure_is_bhp else "Surface Pressure")
 
     twins = [a for a in fig.axes if a is not ax]
     assert len(twins) == 1

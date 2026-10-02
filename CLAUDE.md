@@ -172,6 +172,9 @@ Preserve these when changing the code.
   `_make_range_slider`'s valinit clamping snaps the view off the default on first touch.
   Gfunction replaces `full_y` instead; its dP/dG slider range is the twin autoscale unioned with
   the default, then clamped to `(0, DPDG_VIEW_MAX)`.
+  Rate axes (overview, injection, isip) default to 0..3x the max rate plotted on that step
+  (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
+  `full_y2` on every non-gfunction step, in `ui.refresh` and `render_step_figure` alike.
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`** (a `twinx` owns `inaxes`
   over the shared region). Use `_axes_contains_pixel`/`_data_from_pixel`.
 - **Slider `on_changed` callbacks never call `refresh()`.** `refresh()` calls `fig.clf()`, which
@@ -212,7 +215,7 @@ Per-test deliverables (all computed in `compute_all`):
 
 | Value | Construction |
 |---|---|
-| Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step) |
+| Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step), or, with `state.isip_at_shutin` ("Use shut-in pressure", for tests with no water hammer), `bhp_all[shutin_idx]`; blank with a warning when that sample is NaN or dropout-masked. The tangent pick is kept in state. Method logged as `apparent_isip_method` (`tangent`/`shutin`) |
 | Effective ISIP | P-vs-G straight line extrapolated to G = 0 |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
 | Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |

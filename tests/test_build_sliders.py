@@ -565,5 +565,5 @@ def test_render_gfunction_returns_black_and_red_colors():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, td, st, res)
-    assert defaults.y_color == "black"
+    assert defaults.y_color == ("black" if res.pressure_is_bhp else "tab:red")
     assert defaults.y2_color == "tab:red"

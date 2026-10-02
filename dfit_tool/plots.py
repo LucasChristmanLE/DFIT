@@ -37,6 +37,8 @@ _ISIP_TANGENT_HALF_MIN = 0.75
 
 D2_AXIS_GID = "d2pdg2_axis"  # gid on the gfunction step's optional third (d2P/dG2) twin axes
 
+RATE_VIEW_FACTOR = 3.0  # default rate-axis ceiling = this x the max rate plotted on that step, so
+                        # the rate trace rides in the bottom third, clear of the pressure trace
 DPDG_VIEW_MAX = 500.0   # hard ceiling on the gfunction dP/dG axis: default view AND slider range
 Y2_SCALE_G_MIN = 1.0    # G below this is the water-hammer spike -- excluded from the autoscale
 
@@ -58,6 +60,18 @@ class ViewDefaults:
     y3lim: Optional[tuple[float, float]] = None
     y_color: Optional[str] = None
     y2_color: Optional[str] = None
+
+
+def _rate_y2lim(rate_plotted) -> Optional[tuple[float, float]]:
+    """Default rate-axis range (0, RATE_VIEW_FACTOR x max) over the rate actually plotted on a
+    step, or None when there is no finite positive rate."""
+    if rate_plotted is None:
+        return None
+    r = np.asarray(rate_plotted, dtype=float)
+    r = r[np.isfinite(r)]
+    if r.size == 0 or r.max() <= 0:
+        return None
+    return (0.0, RATE_VIEW_FACTOR * float(r.max()))
 
 
 def _decimate(x: np.ndarray, *ys: np.ndarray):
@@ -185,8 +199,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
-    press_color = "black" if res.pressure_is_bhp else "tab:red"
-    press_label = "bottomhole pressure" if res.pressure_is_bhp else "pressure"
+    press_color, press_ylabel, press_label = _pressure_style(res)
 
     has_trim_context = (res.resampled_full is not None and res.t_shutin_s is not None
                         and len(res.resampled_full.dt))
@@ -212,7 +225,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     if ps is not None:
         ps_clean, _ = _split_dropouts(ps, res.dropout_mask)
         xst, xsp = _decimate(t_h[kept], ps_clean[kept])
-        ax.plot(xst, xsp, color="tab:red", lw=0.5, label="surface pressure", gid="surface_pressure")
+        ax.plot(xst, xsp, color="tab:red", lw=0.5, label="Surface Pressure", gid="surface_pressure")
+        press_ylabel = "Pressure (psi)"  # the axis now carries both traces
         if excluded.any():
             xste, xspe = _decimate(t_h[excluded], ps_clean[excluded])
             ax.plot(xste, xspe, color="0.75", lw=0.5, gid="surface_tail_excluded")
@@ -222,8 +236,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     masked_idx = np.flatnonzero(np.isfinite(p_masked))
     _plot_dropout_markers(ax, t_h[masked_idx], p_masked[masked_idx])
 
-    ax.set_xlabel("time from file start (h)")
-    ax.set_ylabel("pressure (psi)", color=press_color)
+    ax.set_xlabel("Time from File Start (h)")
+    ax.set_ylabel(press_ylabel, color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
@@ -231,7 +245,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         ax2 = ax.twinx()
         xrt, xr = _decimate(t_h, res.rate_all)
         ax2.plot(xrt, xr, color="tab:blue", lw=0.7, alpha=0.7)
-        ax2.set_ylabel("rate (bpm)", color="tab:blue")
+        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
         ax2.tick_params(axis="y", labelcolor="tab:blue")
 
     if state.start_idx is not None:
@@ -264,7 +278,8 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     p_lo, p_hi = float(np.nanmin(p[finite_p])), float(np.nanmax(p[finite_p]))
     pad = 0.05 * max(p_hi - p_lo, 1.0)
     y2_color = "tab:blue" if res.rate_all is not None else None
-    return ViewDefaults(ylim=(0.0, p_hi + pad), y_color=press_color, y2_color=y2_color)
+    return ViewDefaults(ylim=(0.0, p_hi + pad), y2lim=_rate_y2lim(res.rate_all),
+                        y_color=press_color, y2_color=y2_color)
 
 
 def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -287,11 +302,10 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
     m = (t_h <= t_end_h) if t_end_h is not None else np.ones_like(t_h, dtype=bool)
 
     xt, xp = _decimate(t_h[m], p[m])
-    press_color = "black" if res.pressure_is_bhp else "tab:red"
-    ax.plot(xt, xp, color=press_color, lw=0.8,
-            label="bottomhole pressure" if res.pressure_is_bhp else "pressure")
-    ax.set_xlabel("time from file start (h)")
-    ax.set_ylabel("BHP (psi)" if res.pressure_is_bhp else "pressure (psi)", color=press_color)
+    press_color, press_ylabel, press_label = _pressure_style(res)
+    ax.plot(xt, xp, color=press_color, lw=0.8, label=press_label)
+    ax.set_xlabel("Time from File Start (h)")
+    ax.set_ylabel(press_ylabel, color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
@@ -299,7 +313,7 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
         ax2 = ax.twinx()
         _, xr = _decimate(t_h[m], res.rate_all[m])
         ax2.plot(xt, xr, color="tab:blue", lw=0.7, alpha=0.7)
-        ax2.set_ylabel("rate (bpm)", color="tab:blue")
+        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
         ax2.tick_params(axis="y", labelcolor="tab:blue")
 
     if state.start_idx is not None:
@@ -332,7 +346,17 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
     y2_color = "tab:blue" if res.rate_all is not None else None
-    return ViewDefaults(xlim=xlim, y_color=press_color, y2_color=y2_color)
+    y2lim = _rate_y2lim(res.rate_all[m]) if res.rate_all is not None else None
+    return ViewDefaults(xlim=xlim, y2lim=y2lim, y_color=press_color, y2_color=y2_color)
+
+
+def _pressure_style(res: DerivedResults) -> tuple[str, str, str]:
+    """(color, y-axis label, legend label) for the primary pressure trace. Unconverted surface
+    pressure (res.pressure_is_bhp False: surface channel without both density and TVD) is red
+    and never called BHP, on every step."""
+    if res.pressure_is_bhp:
+        return "black", "Bottomhole Pressure (psi)", "Bottomhole Pressure"
+    return "tab:red", "Surface Pressure (psi)", "Surface Pressure"
 
 
 def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -353,15 +377,37 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     m = (t_min >= -5.0) & (t_min <= 15.0)
     p_clean, p_masked = _split_dropouts(res.bhp_all, res.dropout_mask)
     xt, xp = _decimate(t_min[m], p_clean[m])
-    ax.plot(xt, xp, color="black", lw=0.9)
+    press_color, press_ylabel, _ = _pressure_style(res)
+    ax.plot(xt, xp, color=press_color, lw=0.9)
     masked_idx = np.flatnonzero(m & np.isfinite(p_masked))
     _plot_dropout_markers(ax, t_min[masked_idx], p_masked[masked_idx])
     ax.axvline(0.0, color="tab:red", lw=1.2, label="shut-in")
-    ax.set_xlabel("time from shut-in (min)")
-    ax.set_ylabel("BHP (psi)")
+    ax.set_xlabel("Time from Shut-In (min)")
+    ax.set_ylabel(press_ylabel, color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
+    y2lim = None
+    y2_color = None
+    if res.rate_all is not None:
+        ax2 = ax.twinx()
+        xrt, xr = _decimate(t_min[m], res.rate_all[m])
+        ax2.plot(xrt, xr, color="tab:blue", lw=0.7, alpha=0.7)
+        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
+        ax2.tick_params(axis="y", labelcolor="tab:blue")
+        y2lim = _rate_y2lim(res.rate_all[m])
+        y2_color = "tab:blue"
+
     tg = state.isip_tangent
+    if state.isip_at_shutin:
+        # No tangent: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
+        if res.apparent_isip is not None:
+            ax.plot(0.0, res.apparent_isip, "o", color="tab:purple", gid="isip_shutin_dot")
+            ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi (at shut-in)", fontsize=10)
+        else:
+            ax.set_title("Apparent ISIP (at shut-in) -- no BHP at the shut-in sample", fontsize=10)
+        ax.legend(loc="upper right", fontsize=8)
+        return ViewDefaults(xlim=(-1.0, 3.0), y2lim=y2lim, y_color=press_color, y2_color=y2_color)
     if tg is not None:
         # tg lives on the seconds-since-file-start / psi-per-second convention td.t_s uses; this
         # axes plots minutes-from-shut-in, so convert before drawing -- ui.py's controller wiring
@@ -381,7 +427,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     else:
         ax.set_title("Apparent ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=(-1.0, 3.0), y_color="black")
+    return ViewDefaults(xlim=(-1.0, 3.0), y2lim=y2lim, y_color=press_color, y2_color=y2_color)
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -411,9 +457,11 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if res.guard_excluded_G is not None and len(res.guard_excluded_G):
         ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
                 gid="guard_excluded", zorder=0.5)
-    ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
-    ax.set_xlabel("G-time")
-    ax.set_ylabel("BHP (psi)")
+    press_color, press_ylabel, press_label = _pressure_style(res)
+    ax.plot(dg.G, rs.p, color=press_color, lw=1.2, marker=".", ms=3, label=press_label)
+    ax.set_xlabel("G-Time")
+    ax.set_ylabel(press_ylabel, color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
     # The pressure axis must scale from the BHP data only -- the effective-ISIP tangent's dashed
@@ -512,7 +560,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     title += f"   ({state.closure_scenario or '?'})"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
-    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim, y_color="black", y2_color="tab:red")
+    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim, y_color=press_color,
+                        y2_color="tab:red")
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -526,9 +575,11 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
         return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
-    ax.plot(dg.G, rs.p, color="black", lw=1.2, marker=".", ms=3, label="BHP")
-    ax.set_xlabel("G-time")
-    ax.set_ylabel("BHP (psi)")
+    press_color, press_ylabel, press_label = _pressure_style(res)
+    ax.plot(dg.G, rs.p, color=press_color, lw=1.2, marker=".", ms=3, label=press_label)
+    ax.set_xlabel("G-Time")
+    ax.set_ylabel(press_ylabel, color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
 
     ax2 = ax.twinx()
@@ -560,7 +611,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
             title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
-    return ViewDefaults(y2lim=y2lim, y_color="black", y2_color="tab:red")
+    return ViewDefaults(y2lim=y2lim, y_color=press_color, y2_color="tab:red")
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -575,7 +626,7 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
     tgood = (dg.t > 0) & (dg.tdpdt > 0)
     ax.loglog(dg.t[tgood], dg.tdpdt[tgood], color="tab:red", lw=1.0, marker=".", ms=3,
               label="t*dP/dt")
-    ax.set_xlabel("shut-in time (s)")
+    ax.set_xlabel("Shut-In Time (s)")
     ax.set_ylabel("dp, t*dP/dt (psi)")
     ax.grid(True, which="both", alpha=0.3)
 
@@ -603,9 +654,11 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     dg = res.diagnostics
     expo = -0.5 if state.pp_axis == "tm12" else -1.0
     x = dg.t ** expo
-    ax.plot(x, dg.p, color="black", lw=1.0, marker=".", ms=3)
+    press_color, press_ylabel, _ = _pressure_style(res)
+    ax.plot(x, dg.p, color=press_color, lw=1.0, marker=".", ms=3)
     ax.set_xlabel("t^(-1/2)" if state.pp_axis == "tm12" else "t^(-1)")
-    ax.set_ylabel("BHP (psi)")
+    ax.set_ylabel(press_ylabel, color=press_color)
+    ax.tick_params(axis="y", labelcolor=press_color)
     ax.grid(True, alpha=0.3)
     xmax = float(np.nanmax(x)) if x.size else 1.0
 
@@ -636,7 +689,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
-    return ViewDefaults(xlim=(0.0, xhi), y_color="black")
+    return ViewDefaults(xlim=(0.0, xhi), y_color=press_color)
 
 
 def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -670,8 +723,8 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         return ViewDefaults()
     ax.plot(p_eff, S, color="black", lw=1.0, marker=".", ms=3)
     ax.set_yscale("log")
-    ax.set_xlabel("effective pressure (psi)")
-    ax.set_ylabel("relative stiffness")
+    ax.set_xlabel("Effective Pressure (psi)")
+    ax.set_ylabel("Relative Stiffness")
     ax.grid(True, which="both", alpha=0.3)
 
     if closure_uninterpretable(state):
@@ -769,6 +822,10 @@ def render_step_figure(step_key: str, td: TestData, state: PickState, res: Deriv
     # view of its own (decision D3) and must never be mistaken for the dP/dG twin here.
     twin = next((a for a in fig.axes if a is not ax and a.get_gid() != D2_AXIS_GID), None)
     full_y2 = twin.get_ylim() if twin is not None else None
+    if step_key != "gfunction" and full_y2 is not None and defaults.y2lim is not None:
+        # Same union as full_y above (kept in lockstep with ui.refresh): the rate axis's 3x
+        # default reaches outside its autoscaled extent.
+        full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
     if step_key == "gfunction" and full_y2 is not None:
         # UNION the renderer's own y2 default in first (kept in textual lockstep with the
         # near-identical block in ui.refresh), then hard-clamp to 0-500 -- see that block for

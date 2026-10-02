@@ -540,6 +540,14 @@ class DfitApp:
                         variable=self.var_tangent_uninterpretable,
                         command=self._on_tangent_uninterpretable).pack(anchor="w")
 
+        # ISIP step's "use shut-in pressure" option (no water hammer) -- same pattern, shown only
+        # on "isip".
+        self.frm_isip = ttk.Frame(panel)
+        self.var_isip_at_shutin = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_isip, text="Use shut-in pressure (no tangent)",
+                        variable=self.var_isip_at_shutin,
+                        command=self._on_isip_at_shutin).pack(anchor="w")
+
         self.sep_before_notes = ttk.Separator(panel)
         self.sep_before_notes.pack(fill="x", pady=6)
         ttk.Label(panel, text="Notes").pack(anchor="w")
@@ -644,6 +652,7 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
+        self.var_isip_at_shutin.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -886,6 +895,7 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
+        self.var_isip_at_shutin.set(False)
         self._views = {k: None for k, _ in STEPS}
         self._goto("overview")
 
@@ -1124,6 +1134,12 @@ class DfitApp:
         self.state.tangent_uninterpretable = self.var_tangent_uninterpretable.get()
         if not self.state.tangent_uninterpretable and self.state.closure_G is None:
             picks.seed_tangent(self.state, self.res)
+        self.refresh()
+
+    def _on_isip_at_shutin(self):
+        """Toggle taking the apparent ISIP at the shut-in sample instead of the tangent. The
+        tangent pick stays in state (hidden), so unchecking restores it."""
+        self.state.isip_at_shutin = self.var_isip_at_shutin.get()
         self.refresh()
 
     # ---- interpretation guide window --------------------------------------------------------------
@@ -1367,6 +1383,11 @@ class DfitApp:
                      else (min(full_y[0], defaults.ylim[0]), max(full_y[1], defaults.ylim[1])))
         twin = self._twin_axes()
         full_y2 = twin.get_ylim() if twin is not None else None
+        if self.step != "gfunction" and full_y2 is not None and defaults.y2lim is not None:
+            # Same union as full_y above (kept in lockstep with plots.render_step_figure): the
+            # rate axis's 3x default reaches outside its autoscaled extent, and
+            # _make_range_slider's valinit pinning would snap the view off it on first touch.
+            full_y2 = (min(full_y2[0], defaults.y2lim[0]), max(full_y2[1], defaults.y2lim[1]))
         if self.step == "gfunction" and full_y2 is not None:
             # UNION the renderer's own y2 default in, same reasoning as full_y above: the default is
             # the G>=1-masked max of dP/dG, while this range is the twin's raw autoscale (which the
@@ -1441,9 +1462,13 @@ class DfitApp:
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
         self.frm_tangent.pack_forget()
+        self.frm_isip.pack_forget()
         self.frm_stiffness.pack_forget()
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
+        if self.step == "isip":
+            self.var_isip_at_shutin.set(self.state.isip_at_shutin)
+            self.frm_isip.pack(fill="x", before=self.sep_before_notes)
         if self.step == "tangent":
             self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
             self.frm_tangent.pack(fill="x", before=self.sep_before_notes)
@@ -1872,7 +1897,8 @@ class DfitApp:
         elif step == "isip":
             res = self.res
             step_ctrls = []
-            if res.bhp_all is not None and res.t_shutin_s is not None:
+            if (res.bhp_all is not None and res.t_shutin_s is not None
+                    and not self.state.isip_at_shutin):
                 t_min = (self.td.t_s - res.t_shutin_s) / 60.0
                 gate = picks._CaptureGate()
 
@@ -1899,9 +1925,14 @@ class DfitApp:
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(
-                text="Drag the anchor along the curve, the body to pan, or an end to rotate "
-                     "the ISIP tangent.")
+            if self.state.isip_at_shutin:
+                self.hint_lbl.config(
+                    text="Apparent ISIP is the pressure at the shut-in line. Move shut-in on the "
+                         "Injection step to change it.")
+            else:
+                self.hint_lbl.config(
+                    text="Drag the anchor along the curve, the body to pan, or an end to rotate "
+                         "the ISIP tangent.")
         elif step == "gfunction":
             res = self.res
             ax2 = self._twin_axes()
@@ -2248,6 +2279,7 @@ class DfitApp:
         self.var_showd2.set(self.state.show_d2pdg2)
         self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
         self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
+        self.var_isip_at_shutin.set(self.state.isip_at_shutin)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
