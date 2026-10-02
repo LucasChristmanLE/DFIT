@@ -215,10 +215,10 @@ Per-test deliverables (all computed in `compute_all`):
 | Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step) |
 | Effective ISIP | P-vs-G straight line extrapolated to G = 0 |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
-| Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point |
-| Shmin variable | BHP at the G-time midpoint of contact and closure picks |
-| Shmin Liberty | BHP at the anchor pick − 200 psi (`LIBERTY_OFFSET_PSI`); anchor is the min-dP/dG pick for C-A/blank, the contact pick for C-B; requires `contact_G` set; blank for C-C/C-D. Comparison only. |
-| Shmin stiffness | stiffness-step pick − 75 psi. Comparison only. Blank when "No slope change apparent" (`state.stiffness_no_upturn`) is checked |
+| Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
+| Shmin variable | BHP at the G-time midpoint of contact and closure picks. Blank when either is unavailable (C-C/C-D/C-X, or the tangent checkbox) |
+| Shmin Liberty | BHP at the anchor pick − 200 psi (`LIBERTY_OFFSET_PSI`); anchor is the min-dP/dG pick for C-A/blank, the contact pick for C-B; requires `contact_G` set; blank for C-C/C-D/C-X. Comparison only. |
+| Shmin stiffness | stiffness-step pick − 75 psi. Comparison only. Blank when "No slope change apparent" (`state.stiffness_no_upturn`) is checked or under C-X |
 | Shmin rapid | C-D only: apparent ISIP − 175 psi (`RAPID_CLOSURE_OFFSET_PSI`) |
 | Net pressure | shared reference ISIP − that method's Shmin (compliance, tangent, variable) |
 | NWB complexity | apparent ISIP − shared reference ISIP; negative reported as-is |
@@ -267,9 +267,13 @@ Closure scenarios (`picks.apply_closure_scenario`):
 | C-B adequate | monotonic with inflection | contact at the inflection, − 75 psi |
 | C-C no-contact | monotonic, no inflection | none (no Shmin) |
 | C-D rapid | monotonic, concave-up | apparent ISIP − 175 psi (`shmin_rapid`) |
+| C-X uninterpretable | can't be read (bad data) | none; also blanks Shmin stiffness |
 
-C-C and C-D both clear the contact pick, so neither gets a compliance Shmin or compliance
-effective ISIP. Panel labels get a trailing `*` when a fallback fed the value
+C-C, C-D, and C-X (`model.NO_CONTACT_SCENARIOS`) clear the contact pick, so none gets a
+compliance Shmin or compliance effective ISIP. C-X logs `closure_quality = "uninterpretable"`.
+The tangent step's independent negative finding is the `tangent_uninterpretable` checkbox
+(logged in the tail column of the same name); with both set there is no shared reference ISIP,
+so net pressure and complexity are blank. Panel labels get a trailing `*` when a fallback fed the value
 (`"Shmin compliance*"`/its gradient when showing `shmin_rapid`; `"NWB complexity*"` when the
 reference is the tangent effective ISIP). The asterisk gate must match whatever makes the value
 column show a number, so an asterisk never sits next to `"-"`.

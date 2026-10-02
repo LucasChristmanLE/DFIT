@@ -24,7 +24,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
 from . import interpret
-from .model import DerivedResults, PickState, TangentPick
+from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick
 from .io_load import TestData
 
 
@@ -1142,8 +1142,9 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
       - C-B adequate: contact = the dP/dG inflection (flattest point of the decline). Also seeds
         ``state.min_dpdg_G`` if unset -- for this scenario the triangle is the inflection *seed*,
         not a rel-min pick (decision 4), and it must exist for the marker to be drawn/draggable.
-      - C-C no-contact / C-D rapid: no contact pick -> Shmin(compliance) and the *compliance*
-        effective ISIP become None downstream (model.compute_all). The tangent effective ISIP
+      - C-C no-contact / C-D rapid / C-X uninterpretable: no contact pick -> Shmin(compliance)
+        and the *compliance* effective ISIP become None downstream (model.compute_all). The
+        tangent effective ISIP
         is unaffected -- it builds off ``closure_G``, so it still feeds the shared
         net-pressure/complexity reference.
 
@@ -1153,7 +1154,7 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
     scen = state.closure_scenario
     if not scen:
         return None
-    if scen.startswith(("C-C", "C-D")):
+    if scen.startswith(NO_CONTACT_SCENARIOS):
         state.contact_G = None
         return None
     dg = res.diagnostics
@@ -1180,13 +1181,13 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
 
       - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there.
       - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed.
-      - blank / C-C / C-D / missing min pick or diagnostics: no-op (nothing to re-derive).
+      - blank / C-C / C-D / C-X / missing min pick or diagnostics: no-op (nothing to re-derive).
 
     Returns a user-facing hint string on failure (same convention as ``apply_closure_scenario``),
     else None.
     """
     scen = state.closure_scenario
-    if not scen or scen.startswith(("C-C", "C-D")) or state.min_dpdg_G is None:
+    if not scen or scen.startswith(NO_CONTACT_SCENARIOS) or state.min_dpdg_G is None:
         return None
     dg = res.diagnostics
     if dg is None or len(dg.G) < 3:
@@ -1234,7 +1235,8 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         (``interpret.suggest_contact_inflection_index`` with ``g_range``) IS the contact -- both
         picks are set to it directly, with no further re-derive over the (possibly sub-1.0)
         window.
-      - blank / C-C / C-D / missing diagnostics: no-op (the controller isn't wired then anyway).
+      - blank / C-C / C-D / C-X / missing diagnostics: no-op (the controller isn't wired then
+        anyway).
 
     Returns a user-facing hint string when the window (or, for C-A, the rise rule from the
     window's min) holds nothing usable, else None. On a C-A rise-rule failure, ``min_dpdg_G`` is
@@ -1243,7 +1245,7 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
     afterward; this function is the whole commit.
     """
     scen = state.closure_scenario
-    if not scen or scen.startswith(("C-C", "C-D")):
+    if not scen or scen.startswith(NO_CONTACT_SCENARIOS):
         return None
     dg = res.diagnostics
     if dg is None or len(dg.G) < 3:
@@ -1285,7 +1287,10 @@ def gfunction_hint_text(scenario: str) -> str:
     if scenario.startswith("C-B"):
         return ("The triangle is the inflection seed; drag it to re-find the nearest inflection."
                 + _MIN_DPDG_WINDOW_HINT)
-    if scenario.startswith(("C-C", "C-D")):
+    if scenario.startswith("C-X"):
+        return ("G-function marked uninterpretable: no compliance, Liberty, variable, or "
+                "stiffness Shmin is reported.")
+    if scenario.startswith(NO_CONTACT_SCENARIOS):
         return "No contact pick applies for this closure scenario."
     return _GFUNCTION_HINT_DEFAULT
 

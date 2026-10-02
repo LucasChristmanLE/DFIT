@@ -696,10 +696,9 @@ def test_status_for_all_eight_steps_done_is_done():
 # store.LOG_COLUMNS / build_log_row: Shmin_stiffness + Shmin_stiffness_gradient, tail-appended.
 # --------------------------------------------------------------------------------------------------
 def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
-    # "stiffness_no_upturn" and then "tail_guard_override" were appended after these two later
-    # still (see test_log_row_has_stiffness_no_upturn_column_at_the_tail below), so this checks
-    # the -4:-2 slice rather than the very tail.
-    assert store.LOG_COLUMNS[-4:-2] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+    # "stiffness_no_upturn", "tail_guard_override", and "tangent_uninterpretable" were appended
+    # after these two later still, so this checks the -5:-3 slice rather than the very tail.
+    assert store.LOG_COLUMNS[-5:-3] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
 
 
 def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
@@ -878,9 +877,9 @@ def test_missing_key_decodes_to_false(tmp_path):
 
 
 def test_log_row_has_stiffness_no_upturn_column_at_the_tail(tmp_path):
-    # "tail_guard_override" was appended after this one later still -- see
+    # "tail_guard_override" and "tangent_uninterpretable" were appended after this one -- see
     # tests/test_tail_trim.py's test_log_columns_tail_is_tail_guard_override.
-    assert store.LOG_COLUMNS[-2] == "stiffness_no_upturn"
+    assert store.LOG_COLUMNS[-3] == "stiffness_no_upturn"
 
     td, st, res = _state_with_pore_pressure()
     st.stiffness_no_upturn = True
@@ -1034,8 +1033,10 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.frm_cscen = _FakeFrame()
     stub.frm_pcscen = _FakeFrame()
     stub.frm_stiffness = _FakeFrame()
+    stub.frm_tangent = _FakeFrame()
     stub.sep_before_notes = object()
     stub.var_stiffness_no_upturn = _Var()
+    stub.var_tangent_uninterpretable = _Var()
     stub.state = PickState(stiffness_no_upturn=stiffness_no_upturn)
     stub._update_ppaxis_enabled = lambda: None
     stub._update_panel_visibility = types.MethodType(DfitApp._update_panel_visibility, stub)

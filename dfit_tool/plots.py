@@ -23,7 +23,8 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from . import interpret
-from .model import DerivedResults, PickState, porepressure_skipped, stiffness_skipped
+from .model import (DerivedResults, PickState, closure_uninterpretable, porepressure_skipped,
+                    stiffness_skipped)
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -540,18 +541,23 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
         hi = np.percentile(dg.GdPdG[finite], 95)
         y2lim = (0, max(hi * 1.5, 1.0))
 
-    if state.closure_slope is not None:
-        gg = np.array([0.0, float(dg.G.max())])
-        ax2.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
-                label="through-origin", gid="closure_line_segment")
-    if state.closure_G is not None:
-        yv = float(np.interp(state.closure_G, dg.G, rs.p))
-        ax.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
-                gid="closure_point")
-        ax.axvline(state.closure_G, color="black", ls=":", lw=1.2, gid="closure_vline")
-    title = "Tangent method"
-    if res.shmin_tangent is not None:
-        title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
+    if state.tangent_uninterpretable:
+        # Explicit negative finding, same precedent as render_stiffness's stiffness_no_upturn:
+        # the curves stay as evidence, but no line/marker, and shmin_tangent is None.
+        title = "Tangent method -- uninterpretable (Shmin not reported)"
+    else:
+        if state.closure_slope is not None:
+            gg = np.array([0.0, float(dg.G.max())])
+            ax2.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
+                    label="through-origin", gid="closure_line_segment")
+        if state.closure_G is not None:
+            yv = float(np.interp(state.closure_G, dg.G, rs.p))
+            ax.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
+                    gid="closure_point")
+            ax.axvline(state.closure_G, color="black", ls=":", lw=1.2, gid="closure_vline")
+        title = "Tangent method"
+        if res.shmin_tangent is not None:
+            title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
     return ViewDefaults(y2lim=y2lim, y_color="black", y2_color="tab:red")
@@ -653,7 +659,9 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # UserWarning ("Data has no positive values..."). Guard branch instead, same style as
         # the missing-arrays branch above.
         title = "Stiffness -- no positive relative-stiffness samples to plot"
-        if state.stiffness_no_upturn:
+        if closure_uninterpretable(state):
+            title += " -- G-function uninterpretable (Shmin not reported)"
+        elif state.stiffness_no_upturn:
             # The recorded finding still belongs in the title even though there is nothing to
             # plot -- otherwise this branch silently drops it and looks like a data problem
             # rather than the analyst's own "no slope change apparent" call.
@@ -666,7 +674,12 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.set_ylabel("relative stiffness")
     ax.grid(True, which="both", alpha=0.3)
 
-    if state.stiffness_no_upturn:
+    if closure_uninterpretable(state):
+        # C-X: the min-dP/dG anchor of this curve can't be trusted, so shmin_stiffness is None
+        # (model.compute_all). Same no-vline/no-marker treatment as stiffness_no_upturn.
+        ax.set_title("Relative stiffness -- G-function uninterpretable (Shmin not reported)",
+                     fontsize=10)
+    elif state.stiffness_no_upturn:
         # Explicit negative finding, same precedent as closure scenario C-C's "no contact ->
         # no Shmin": the curve is still evidence (kept on the plot and in PNG exports), but
         # there is no upturn to mark, so no vline/marker -- and shmin_stiffness is None

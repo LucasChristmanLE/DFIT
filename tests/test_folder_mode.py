@@ -446,6 +446,7 @@ def _apply_stub():
     stub.var_volume_unit = _Var()
     stub.var_showd2 = _Var()
     stub.var_stiffness_no_upturn = _Var()
+    stub.var_tangent_uninterpretable = _Var()
     stub.quest_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.txt_notes = _Text()
     stub._views = {"stale": "leftover"}
@@ -713,6 +714,7 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     stub.var_ppaxis = _Var("tm1")
     stub.var_showd2 = _Var(True)
     stub.var_stiffness_no_upturn = _Var(True)
+    stub.var_tangent_uninterpretable = _Var(True)
     stub._views = {"gfunction": "stale"}
     stub._goto_calls = []
     stub._goto = lambda step: stub._goto_calls.append(step)
@@ -729,6 +731,7 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     assert stub.var_ppaxis.value == "tm12"
     assert stub.var_showd2.value is False
     assert stub.var_stiffness_no_upturn.value is False
+    assert stub.var_tangent_uninterpretable.value is False
     assert stub._views == {k: None for k, _ in STEPS}
     assert stub._goto_calls == ["overview"]
 

@@ -76,10 +76,14 @@ LOG_COLUMNS = [
     # PickState.tail_guard_override) -- tail-appended per the append-only convention rather than
     # sitting next to tail_trim_reason above.
     "tail_guard_override",
+    # "Tangent closure uninterpretable" negative finding (tangent step) -- tail-appended per the
+    # append-only convention.
+    "tangent_uninterpretable",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
     "C-A": "clear", "C-B": "adequate", "C-C": "no-contact", "C-D": "rapid",
+    "C-X": "uninterpretable",
 }
 _POSTCLOSURE_TREND_BY_PREFIX = {
     "PC-A": "linear", "PC-B": "false-radial", "PC-C": "mixed", "PC-D": "mixed",
@@ -493,7 +497,9 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "contact_pressure": res.contact_pressure,
         "Shmin_compliance": res.shmin_compliance,
         "Shmin_tangent": res.shmin_tangent,
-        "tangent_Gc": state.closure_G,
+        # A suppressed pick (tangent_uninterpretable) is kept in the picks JSON so unchecking
+        # restores it, but must not read as a real closure pick in the log.
+        "tangent_Gc": None if state.tangent_uninterpretable else state.closure_G,
         "postclosure_scenario": state.postclosure_scenario,
         "postclosure_trend": _POSTCLOSURE_TREND_BY_PREFIX.get(postclosure_scenario[:4], ""),
         "pore_pressure": res.pore_pressure,
@@ -535,4 +541,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         # output going blank for a test whose stiffness curve never existed under PC-F.
         "stiffness_no_upturn": "" if model.stiffness_skipped(state) else state.stiffness_no_upturn,
         "tail_guard_override": state.tail_guard_override,
+        "tangent_uninterpretable": state.tangent_uninterpretable,
     }

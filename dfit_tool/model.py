@@ -23,6 +23,17 @@ from .gfunction import g_time
 from .io_load import ChannelConfig, TestData
 
 
+# Closure scenarios with no contact pick, so no compliance Shmin/effective ISIP, no Liberty, no
+# variable. C-X ("uninterpretable") is the analyst's explicit "this G-function can't be read" --
+# it additionally blanks Shmin(stiffness), whose curve is anchored on the min-dP/dG pick.
+NO_CONTACT_SCENARIOS = ("C-C", "C-D", "C-X")
+
+
+def closure_uninterpretable(state: "PickState") -> bool:
+    """C-X: the G-function step was marked uninterpretable."""
+    return state.closure_scenario.startswith("C-X")
+
+
 # --------------------------------------------------------------------------------------------------
 # pick state (serializable)
 # --------------------------------------------------------------------------------------------------
@@ -95,6 +106,11 @@ class PickState:
     # --- step 6: tangent-method closure (G*dP/dG through-origin departure) ---
     closure_G: Optional[float] = None
     closure_slope: Optional[float] = None
+    # Explicit negative finding: the tangent method can't be read on this test. Same pattern as
+    # stiffness_no_upturn: suppresses only the reported tangent values (Shmin tangent, tangent
+    # effective ISIP, and the variable method, which needs closure_G) in compute_all; the pick is
+    # left in state so unchecking restores it. Old saves take the default via _decode. ---
+    tangent_uninterpretable: bool = False
 
     # --- step 7-8: log-log window + postclosure + pore pressure ---
     loglog_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
@@ -221,7 +237,7 @@ def infer_step_status(state: PickState) -> dict[str, str]:
         status["isip"] = "done"
     if state.min_dpdg_G is not None or state.contact_G is not None:
         status["gfunction"] = "done"
-    if state.closure_G is not None:
+    if state.closure_G is not None or state.tangent_uninterpretable:
         status["tangent"] = "done"
     if state.loglog_window is not None:
         status["loglog"] = "done"
@@ -816,8 +832,13 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # plausible number for a pick that now lies beyond the trimmed tail.
     if state.tail_trim_dt is not None and res.diagnostics is not None and len(res.diagnostics.G):
         edge = res.diagnostics.G[-1]
-        stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", state.min_dpdg_G),
-                                      ("closure", state.closure_G)) if g is not None and g > edge]
+        # Picks suppressed by an uninterpretable finding report nothing, so they can't be stale:
+        # C-X blanks everything the min-dP/dG pick feeds (Liberty, stiffness), and
+        # tangent_uninterpretable blanks everything closure_G feeds.
+        min_g = None if closure_uninterpretable(state) else state.min_dpdg_G
+        closure_g = None if state.tangent_uninterpretable else state.closure_G
+        stale = [name for name, g in (("contact", state.contact_G), ("min dP/dG", min_g),
+                                      ("closure", closure_g)) if g is not None and g > edge]
         # stiffness_pick_P is stored in pressure, not G, so it can't be compared against
         # edge -- compare against the trimmed record's lowest kept pressure instead. rs.p is no
         # longer monotonic (a sustained rise is kept too, same as a decline), so its lowest kept
@@ -827,6 +848,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         # A suppressed pick (stiffness_no_upturn) reports no value at all, so it can't be
         # reported stale -- there's nothing downstream for a clamp to silently corrupt.
         if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
+                and not closure_uninterpretable(state)
                 and res.resampled is not None
                 and len(res.resampled.p)
                 and state.stiffness_pick_P < np.nanmin(res.resampled.p)):
@@ -880,7 +902,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # record with no interior rel-min) -- the same states that blank the compliance row. Display +
     # log only: never feeds net pressure or the shared reference ISIP.
     if (state.contact_G is not None and res.diagnostics is not None
-            and not state.closure_scenario.startswith(("C-C", "C-D"))):
+            and not state.closure_scenario.startswith(NO_CONTACT_SCENARIOS)):
         anchor_G = (state.contact_G if state.closure_scenario.startswith("C-B")
                     else state.min_dpdg_G)
         if anchor_G is not None:
@@ -894,8 +916,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if state.closure_scenario.startswith("C-D") and res.apparent_isip is not None:
         res.shmin_rapid = interpret.shmin_rapid(res.apparent_isip)
 
-    # Tangent closure -> Shmin
-    if state.closure_G is not None and res.diagnostics is not None:
+    # Tangent closure -> Shmin. tangent_uninterpretable blanks this, the tangent effective ISIP,
+    # and the variable method below; the pick itself stays in state.
+    tangent_ok = state.closure_G is not None and not state.tangent_uninterpretable
+    if tangent_ok and res.diagnostics is not None:
         res.closure_pressure = float(np.interp(state.closure_G, res.diagnostics.G, res.resampled.p))
         res.shmin_tangent = interpret.shmin_tangent(res.closure_pressure)
         res.closure_time_tangent_s = float(np.interp(state.closure_G, res.diagnostics.G,
@@ -903,7 +927,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
 
     # Effective ISIP (tangent method): same construction as the compliance block above, anchored
     # at state.closure_G instead of state.contact_G.
-    if state.closure_G is not None and res.diagnostics is not None and res.resampled is not None:
+    if tangent_ok and res.diagnostics is not None and res.resampled is not None:
         dg = res.diagnostics
         idx = int(np.nanargmin(np.abs(dg.G - state.closure_G)))
         x, y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx, half=4)
@@ -912,7 +936,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # Variable compliance method: average the raw contact/closure picks in G-time, then read
     # Shmin (variable) off the P-vs-G curve at that midpoint and build its own effective ISIP the
     # same way as the other two methods. Guarded on both picks being present.
-    if (state.contact_G is not None and state.closure_G is not None
+    if (state.contact_G is not None and tangent_ok
             and res.diagnostics is not None and res.resampled is not None):
         dg = res.diagnostics
         G_var = (state.contact_G + state.closure_G) / 2.0
@@ -977,8 +1001,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.stiffness_S = interpret.relative_stiffness(res.stiffness_p_eff, h)
         # stiffness_no_upturn is an explicit negative finding ("no slope change apparent") --
         # it blanks only the reported value; the pick itself is left in state so unchecking
-        # restores it rather than losing it.
-        if state.stiffness_pick_P is not None and not state.stiffness_no_upturn:
+        # restores it rather than losing it. C-X (G-function uninterpretable) blanks it the same
+        # way: the curve is anchored on the min-dP/dG pick, which C-X says can't be trusted.
+        if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
+                and not closure_uninterpretable(state)):
             res.shmin_stiffness = interpret.shmin_compliance(state.stiffness_pick_P)
 
     _resolve_gradients(state, res)

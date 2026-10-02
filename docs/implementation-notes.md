@@ -773,6 +773,23 @@ Per-test deliverables:
   left alone in the picks JSON on purpose (switching back off PC-F revives it) rather than
   cleared, so the log row must blank it itself, matching every other stiffness output going
   blank under PC-F.
+- **Uninterpretable G-function / tangent** follow the same negative-finding pattern.
+  - Closure scenario **C-X uninterpretable** (`model.NO_CONTACT_SCENARIOS` with C-C/C-D;
+    `model.closure_uninterpretable`): `picks.apply_closure_scenario` clears `contact_G`, so
+    compliance Shmin/effective ISIP, Liberty, and variable blank exactly as under C-C. It also
+    blanks `shmin_stiffness`, because the stiffness curve is anchored on the min-dP/dG pick; the
+    stiffness arrays still compute and the curve still renders, titled "G-function
+    uninterpretable (Shmin not reported)", with no pick line or drag controller. The
+    min-dP/dG pick and stiffness pick stay in state. `closure_quality` logs `"uninterpretable"`.
+  - **`state.tangent_uninterpretable`** (checkbox on the tangent step): `compute_all` gates the
+    tangent closure, tangent effective ISIP, and variable blocks on it (`tangent_ok`). The
+    `closure_G`/`closure_slope` picks stay in state; unchecking restores them, or seeds them via
+    `picks.seed_tangent` if none exist (`ui._on_tangent_uninterpretable`). `render_tangent`
+    draws the curves but no line or marker, and the tangent step attaches no controllers.
+    `infer_step_status` counts the flag as "done". Logged as the tail column
+    `tangent_uninterpretable`; `tangent_Gc` logs blank while it is set, so the kept pick never
+    reads as a real closure pick.
+  - Both set: no shared reference ISIP, so all net pressures and complexity are blank.
 - **Near-wellbore complexity** — apparent ISIP − the shared reference effective ISIP. The
   near-wellbore friction and tortuosity that is in the early-decline extrapolation but has
   dissipated by the time the P-vs-G line is fit. Shown as the "NWB complexity" panel row and

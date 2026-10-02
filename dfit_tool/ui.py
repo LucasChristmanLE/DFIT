@@ -23,8 +23,9 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from . import guide_content, interpret, io_load, picks, plots, sliders, store
-from .model import (PickState, TangentPick, compute_all, infer_step_status,
-                    porepressure_skipped, step_gate_error, stiffness_skipped)
+from .model import (NO_CONTACT_SCENARIOS, PickState, TangentPick, closure_uninterpretable,
+                    compute_all, infer_step_status, porepressure_skipped, step_gate_error,
+                    stiffness_skipped)
 from .plots import D2_AXIS_GID, ViewDefaults
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -75,7 +76,8 @@ STEPS = [
     ("porepressure", "Pore pressure"),
     ("stiffness", "Stiffness"),
 ]
-CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid"]
+CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid",
+                     "C-X uninterpretable"]
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
                          "PC-C false radial to genuine linear",
                          "PC-D genuine linear to genuine radial",
@@ -530,6 +532,14 @@ class DfitApp:
                         variable=self.var_stiffness_no_upturn,
                         command=self._on_stiffness_no_upturn).pack(anchor="w")
 
+        # Tangent step's "uninterpretable" negative finding -- same pattern, shown only on
+        # "tangent".
+        self.frm_tangent = ttk.Frame(panel)
+        self.var_tangent_uninterpretable = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_tangent, text="Tangent closure uninterpretable",
+                        variable=self.var_tangent_uninterpretable,
+                        command=self._on_tangent_uninterpretable).pack(anchor="w")
+
         self.sep_before_notes = ttk.Separator(panel)
         self.sep_before_notes.pack(fill="x", pady=6)
         ttk.Label(panel, text="Notes").pack(anchor="w")
@@ -633,6 +643,7 @@ class DfitApp:
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
+        self.var_tangent_uninterpretable.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -874,6 +885,7 @@ class DfitApp:
         self.var_ppaxis.set("tm12")
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
+        self.var_tangent_uninterpretable.set(False)
         self._views = {k: None for k, _ in STEPS}
         self._goto("overview")
 
@@ -1104,6 +1116,14 @@ class DfitApp:
         self.state.stiffness_no_upturn = self.var_stiffness_no_upturn.get()
         if not self.state.stiffness_no_upturn and self.state.stiffness_pick_P is None:
             picks.seed_stiffness(self.state, self.res)
+        self.refresh()
+
+    def _on_tangent_uninterpretable(self):
+        """Toggle the tangent step's negative finding. On UNCHECK, seed a pick if none exists
+        (same reason as _on_stiffness_no_upturn)."""
+        self.state.tangent_uninterpretable = self.var_tangent_uninterpretable.get()
+        if not self.state.tangent_uninterpretable and self.state.closure_G is None:
+            picks.seed_tangent(self.state, self.res)
         self.refresh()
 
     # ---- interpretation guide window --------------------------------------------------------------
@@ -1415,14 +1435,18 @@ class DfitApp:
 
     def _update_panel_visibility(self):
         """Show the closure-scenario widgets only on "gfunction", the postclosure/pp-axis
-        widgets only on "loglog"/"porepressure", and the stiffness "no slope change apparent"
-        checkbox only on "stiffness" -- each packed relative to sep_before_notes so re-showing
-        never reorders the panel."""
+        widgets only on "loglog"/"porepressure", the tangent "uninterpretable" checkbox only on
+        "tangent", and the stiffness "no slope change apparent" checkbox only on "stiffness" --
+        each packed relative to sep_before_notes so re-showing never reorders the panel."""
         self.frm_cscen.pack_forget()
         self.frm_pcscen.pack_forget()
+        self.frm_tangent.pack_forget()
         self.frm_stiffness.pack_forget()
         if self.step == "gfunction":
             self.frm_cscen.pack(fill="x", before=self.sep_before_notes)
+        if self.step == "tangent":
+            self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
+            self.frm_tangent.pack(fill="x", before=self.sep_before_notes)
         if self.step in ("loglog", "porepressure"):
             self.frm_pcscen.pack(fill="x", before=self.sep_before_notes)
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
@@ -1928,7 +1952,7 @@ class DfitApp:
                     step_ctrls.append(picks.DraggablePointController(
                         self.canvas, ax2, "min_dpdg_point", G, dPdG, commit_fn=commit_min_dpdg,
                         gate=gate))
-                if not scenario.startswith(("C-C", "C-D")):
+                if not scenario.startswith(NO_CONTACT_SCENARIOS):
                     step_ctrls.append(picks.DraggablePointController(
                         self.canvas, self.ax, "contact_point", G, p, commit_fn=commit_point,
                         gate=gate))
@@ -1940,6 +1964,11 @@ class DfitApp:
             res = self.res
             ax2 = self._twin_axes()
             step_ctrls = []
+            if self.state.tangent_uninterpretable:
+                # No line or marker to drag -- same treatment as stiffness_no_upturn below.
+                self.hint_lbl.config(
+                    text="Tangent marked uninterpretable -- uncheck to restore the pick.")
+                return
             if res.diagnostics is not None and res.resampled is not None and ax2 is not None:
                 dg = res.diagnostics
                 gate = picks._CaptureGate()
@@ -1987,7 +2016,11 @@ class DfitApp:
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
         elif step == "stiffness":
             res = self.res
-            if self.state.stiffness_no_upturn:
+            if closure_uninterpretable(self.state):
+                self.hint_lbl.config(
+                    text="G-function marked uninterpretable (C-X) -- no stiffness Shmin is "
+                         "reported.")
+            elif self.state.stiffness_no_upturn:
                 # No line to drag -- the option is an explicit "there is no upturn to pick".
                 self.hint_lbl.config(
                     text="No slope change apparent -- uncheck to restore the pick line.")
@@ -2214,6 +2247,7 @@ class DfitApp:
         self.var_ppaxis.set(self.state.pp_axis)
         self.var_showd2.set(self.state.show_d2pdg2)
         self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
+        self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
