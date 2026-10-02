@@ -70,7 +70,7 @@ def test_render_tangent_pressure_primary_gdpdg_secondary_mirrors_gfunction():
     dg = res.diagnostics
     finite = np.isfinite(dg.GdPdG)
     hi = np.percentile(dg.GdPdG[finite], 95)
-    assert defaults.y2lim == pytest.approx((0, max(hi * 1.5, 1.0)))
+    assert defaults.y2lim == pytest.approx(plots.nice_limits(0.0, max(hi * 1.5, 1.0)))
 
 
 def test_render_tangent_closure_point_on_primary_line_segment_on_twin():

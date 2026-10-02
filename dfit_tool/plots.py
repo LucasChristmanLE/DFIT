@@ -21,6 +21,7 @@ from typing import Optional
 
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator
 
 from . import interpret
 from .model import (DerivedResults, PickState, closure_uninterpretable, porepressure_skipped,
@@ -62,16 +63,54 @@ class ViewDefaults:
     y2_color: Optional[str] = None
 
 
+_NICE_LOCATOR = MaxNLocator(nbins=10,steps=[1, 2, 2.5, 5, 10])
+
+
+def nice_limits(lo: float, hi: float) -> tuple[float, float]:
+    """Round a linear default range outward to tick-aligned values (1/2/2.5/5 x 10^k steps).
+    Non-finite or empty ranges pass through unchanged."""
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+        return (lo, hi)
+    ticks = _NICE_LOCATOR.tick_values(lo, hi)  # first tick <= lo, last >= hi
+    tol = 1e-9 * (hi - lo)
+    below, above = ticks[ticks <= lo + tol], ticks[ticks >= hi - tol]
+    if not (below.size and above.size):
+        return (lo, hi)
+    return (float(below.max()), float(above.min()))
+
+
+def nice_log_limits(lo: float, hi: float) -> tuple[float, float]:
+    """Round a positive log-axis default range outward to whole decades."""
+    if not (np.isfinite(lo) and np.isfinite(hi)) or lo <= 0 or hi <= lo:
+        return (lo, hi)
+    return (10.0 ** np.floor(np.log10(lo) + 1e-9), 10.0 ** np.ceil(np.log10(hi) - 1e-9))
+
+
+_ISIP_DEFAULT_XLIM = (-1.0, 3.0)  # ISIP first-visit view, minutes from shut-in
+
+
+def _pressure_ylim(p_plotted) -> Optional[tuple[float, float]]:
+    """Default pressure-axis range over the pressure actually plotted on a step: 5% pad, then
+    rounded outward to ticks. None when nothing finite is plotted."""
+    p = np.asarray(p_plotted, dtype=float)
+    p = p[np.isfinite(p)]
+    if p.size == 0:
+        return None
+    p_lo, p_hi = float(p.min()), float(p.max())
+    pad = 0.05 * max(p_hi - p_lo, 1.0)
+    return nice_limits(p_lo - pad, p_hi + pad)
+
+
 def _rate_y2lim(rate_plotted) -> Optional[tuple[float, float]]:
     """Default rate-axis range (0, RATE_VIEW_FACTOR x max) over the rate actually plotted on a
-    step, or None when there is no finite positive rate."""
+    step, rounded up to a tick, or None when there is no finite positive rate."""
     if rate_plotted is None:
         return None
     r = np.asarray(rate_plotted, dtype=float)
     r = r[np.isfinite(r)]
     if r.size == 0 or r.max() <= 0:
         return None
-    return (0.0, RATE_VIEW_FACTOR * float(r.max()))
+    return nice_limits(0.0, RATE_VIEW_FACTOR * float(r.max()))
 
 
 def _decimate(x: np.ndarray, *ys: np.ndarray):
@@ -278,7 +317,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     p_lo, p_hi = float(np.nanmin(p[finite_p])), float(np.nanmax(p[finite_p]))
     pad = 0.05 * max(p_hi - p_lo, 1.0)
     y2_color = "tab:blue" if res.rate_all is not None else None
-    return ViewDefaults(ylim=(0.0, p_hi + pad), y2lim=_rate_y2lim(res.rate_all),
+    return ViewDefaults(ylim=nice_limits(0.0, p_hi + pad), y2lim=_rate_y2lim(res.rate_all),
                         y_color=press_color, y2_color=y2_color)
 
 
@@ -347,7 +386,8 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.legend(loc="upper right", fontsize=8)
     y2_color = "tab:blue" if res.rate_all is not None else None
     y2lim = _rate_y2lim(res.rate_all[m]) if res.rate_all is not None else None
-    return ViewDefaults(xlim=xlim, y2lim=y2lim, y_color=press_color, y2_color=y2_color)
+    return ViewDefaults(xlim=xlim, ylim=_pressure_ylim(p[m]), y2lim=y2lim, y_color=press_color,
+                        y2_color=y2_color)
 
 
 def _pressure_style(res: DerivedResults) -> tuple[str, str, str]:
@@ -398,6 +438,15 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         y2lim = _rate_y2lim(res.rate_all[m])
         y2_color = "tab:blue"
 
+    # The pressure default fits the default -1..3 min view, not the whole -5..15 min clamp:
+    # injection pressure before -1 min would otherwise set the ceiling. The apparent-ISIP dot
+    # is included so it is always on screen. The slider's outer range still spans everything.
+    in_view = m & (t_min >= _ISIP_DEFAULT_XLIM[0]) & (t_min <= _ISIP_DEFAULT_XLIM[1])
+    p_view = p_clean[in_view] if np.isfinite(p_clean[in_view]).any() else p_clean[m]
+    if res.apparent_isip is not None:
+        p_view = np.append(p_view, res.apparent_isip)
+    ylim = _pressure_ylim(p_view)
+
     tg = state.isip_tangent
     if state.isip_at_shutin:
         # No tangent: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
@@ -407,7 +456,8 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         else:
             ax.set_title("Apparent ISIP (at shut-in) -- no BHP at the shut-in sample", fontsize=10)
         ax.legend(loc="upper right", fontsize=8)
-        return ViewDefaults(xlim=(-1.0, 3.0), y2lim=y2lim, y_color=press_color, y2_color=y2_color)
+        return ViewDefaults(xlim=_ISIP_DEFAULT_XLIM, ylim=ylim, y2lim=y2lim,
+                            y_color=press_color, y2_color=y2_color)
     if tg is not None:
         # tg lives on the seconds-since-file-start / psi-per-second convention td.t_s uses; this
         # axes plots minutes-from-shut-in, so convert before drawing -- ui.py's controller wiring
@@ -427,7 +477,8 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     else:
         ax.set_title("Apparent ISIP -- place the tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    return ViewDefaults(xlim=(-1.0, 3.0), y2lim=y2lim, y_color=press_color, y2_color=y2_color)
+    return ViewDefaults(xlim=_ISIP_DEFAULT_XLIM, ylim=ylim, y2lim=y2lim,
+                        y_color=press_color, y2_color=y2_color)
 
 
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -467,12 +518,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # The pressure axis must scale from the BHP data only -- the effective-ISIP tangent's dashed
     # extension (drawn below, on this same Axes) can swing to extreme psi values far outside the
     # real data, and the Axes' own autoscale would otherwise pick that up too.
-    finite_p = np.isfinite(rs.p)
-    ylim = None
-    if finite_p.any():
-        p_lo, p_hi = float(np.nanmin(rs.p[finite_p])), float(np.nanmax(rs.p[finite_p]))
-        pad = 0.05 * max(p_hi - p_lo, 1.0)
-        ylim = (p_lo - pad, p_hi + pad)
+    ylim = _pressure_ylim(rs.p)
 
     ax2 = ax.twinx()
     ax2.plot(dg.G, dg.dPdG, color="tab:red", lw=1.0, label="dP/dG")
@@ -488,7 +534,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         finite = np.isfinite(dg.dPdG)
     if finite.any():
         hi = float(np.nanmax(dg.dPdG[finite]))
-        y2lim = (0, min(max(hi * 1.10, 1.0), DPDG_VIEW_MAX))
+        y2lim = (0.0, min(nice_limits(0.0, max(hi * 1.10, 1.0))[1], DPDG_VIEW_MAX))
 
     y3lim = None
     if state.show_d2pdg2:
@@ -511,7 +557,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         if finite_d2.any():
             lo, hi = np.percentile(dg.d2PdG2[finite_d2], [5, 95])
             pad = 0.10 * max(hi - lo, 1e-9)
-            y3lim = (lo - pad, hi + pad)
+            y3lim = nice_limits(lo - pad, hi + pad)
 
     if res.eff_isip_line_compliance is not None and res.effective_isip_compliance is not None:
         ln = res.eff_isip_line_compliance
@@ -590,7 +636,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     finite = np.isfinite(dg.GdPdG)
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
         hi = np.percentile(dg.GdPdG[finite], 95)
-        y2lim = (0, max(hi * 1.5, 1.0))
+        y2lim = nice_limits(0.0, max(hi * 1.5, 1.0))
 
     if state.tangent_uninterpretable:
         # Explicit negative finding, same precedent as render_stiffness's stiffness_no_upturn:
@@ -611,7 +657,8 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
             title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
-    return ViewDefaults(y2lim=y2lim, y_color=press_color, y2_color="tab:red")
+    return ViewDefaults(ylim=_pressure_ylim(rs.p), y2lim=y2lim, y_color=press_color,
+                        y2_color="tab:red")
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -689,7 +736,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
-    return ViewDefaults(xlim=(0.0, xhi), y_color=press_color)
+    return ViewDefaults(xlim=(0.0, xhi), ylim=_pressure_ylim(dg.p), y_color=press_color)
 
 
 def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -768,7 +815,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         xlim = (p_lo - pad, p_hi + pad)
     # finite_pos is already known non-empty -- the all-non-positive case returned above.
     y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
-    ylim = (y_lo * 0.5, y_hi * 2.0)  # log-safe floor/pad
+    ylim = nice_log_limits(y_lo * 0.8, y_hi * 1.25)  # log-safe pad, then whole decades
     return ViewDefaults(xlim=xlim, ylim=ylim, y_color="black")
 
 

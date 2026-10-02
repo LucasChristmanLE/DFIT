@@ -63,7 +63,7 @@ def test_gfunction_leaves_twin_axes_unclipped_but_returns_autoscaled_y2lim():
     if not masked.any():
         masked = finite_all
     hi = float(np.nanmax(dg.dPdG[masked]))
-    expected_clip = (0, min(max(hi * 1.10, 1.0), plots.DPDG_VIEW_MAX))
+    expected_clip = (0, min(plots.nice_limits(0.0, max(hi * 1.10, 1.0))[1], plots.DPDG_VIEW_MAX))
 
     assert defaults.y2lim == pytest.approx(expected_clip)
 
@@ -92,7 +92,7 @@ def test_gfunction_y2lim_default_excludes_early_g_spike():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, None, PickState(), res)
-    assert defaults.y2lim[1] == pytest.approx(5.5)
+    assert defaults.y2lim[1] == pytest.approx(6.0)  # 5.0 x 1.10, rounded up to a tick
 
 
 def test_gfunction_y2lim_default_no_longer_capped_at_50():
@@ -110,7 +110,7 @@ def test_gfunction_y2lim_default_no_longer_capped_at_50():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, None, PickState(), res)
-    assert defaults.y2lim[1] == pytest.approx(330.0)
+    assert defaults.y2lim[1] == pytest.approx(350.0)  # 300 x 1.10, rounded up to a tick
 
 
 def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
@@ -146,7 +146,7 @@ def test_gfunction_y2lim_falls_back_to_all_finite_when_whole_record_below_g_min(
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, None, PickState(), res)
     assert defaults.y2lim is not None
-    assert defaults.y2lim[1] == pytest.approx(44.0)
+    assert defaults.y2lim[1] == pytest.approx(45.0)  # 40 x 1.10, rounded up to a tick
 
 
 def test_porepressure_does_not_force_axes_xlim_to_zero():
@@ -177,7 +177,8 @@ def test_render_overview_plots_full_dataset_unmasked():
     press_line = ax.get_lines()[0]
     assert press_line.get_xdata().max() == pytest.approx(float(t_h[-1]))
     assert defaults.xlim is None
-    assert defaults.y2lim == (0.0, plots.RATE_VIEW_FACTOR * float(np.nanmax(res.rate_all)))
+    assert defaults.y2lim == plots.nice_limits(
+        0.0, plots.RATE_VIEW_FACTOR * float(np.nanmax(res.rate_all)))
     assert defaults.ylim[0] == 0.0
 
     gids = {ln.get_gid() for ln in ax.get_lines()}
@@ -271,11 +272,11 @@ def test_gfunction_ylim_default_scales_from_pressure_data_only():
     p_lo, p_hi = float(np.nanmin(rs.p[finite_p])), float(np.nanmax(rs.p[finite_p]))
     pad = 0.05 * max(p_hi - p_lo, 1.0)
 
-    assert defaults.ylim == pytest.approx((p_lo - pad, p_hi + pad))
+    assert defaults.ylim == pytest.approx(plots.nice_limits(p_lo - pad, p_hi + pad))
     # The tangent construction is drawn on this same Axes, so its dashed extension really can
     # push the Axes' own autoscale far outside the pressure-data-only ylim above.
     actual = ax.get_ylim()
-    assert actual[0] < defaults.ylim[0] or actual[1] > defaults.ylim[1]
+    assert actual[0] < p_lo - pad or actual[1] > p_hi + pad
 
 
 # --------------------------------------------------------------------------------------------------

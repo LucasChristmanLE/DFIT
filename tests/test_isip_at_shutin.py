@@ -143,13 +143,13 @@ def _render(fn, td, st, res):
 def test_overview_y2lim_is_3x_max_rate():
     td, st, res = _seeded()
     _, _, d = _render(plots.render_overview, td, st, res)
-    assert d.y2lim == (0.0, 3.0 * float(np.nanmax(res.rate_all)))
+    assert d.y2lim == plots.nice_limits(0.0, 3.0 * float(np.nanmax(res.rate_all)))
 
 
 def test_injection_y2lim_is_3x_max_plotted_rate():
     td, st, res = _seeded()
     _, _, d = _render(plots.render_injection, td, st, res)
-    assert d.y2lim == (0.0, 3.0 * float(np.nanmax(res.rate_all)))
+    assert d.y2lim == plots.nice_limits(0.0, 3.0 * float(np.nanmax(res.rate_all)))
 
 
 def test_isip_y2lim_uses_rate_in_window_only():
@@ -157,7 +157,7 @@ def test_isip_y2lim_uses_rate_in_window_only():
     _, _, d = _render(plots.render_isip, td, st, res)
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)
-    assert d.y2lim == (0.0, 3.0 * float(np.nanmax(res.rate_all[m])))
+    assert d.y2lim == plots.nice_limits(0.0, 3.0 * float(np.nanmax(res.rate_all[m])))
     assert d.y2_color == "tab:blue"
 
 

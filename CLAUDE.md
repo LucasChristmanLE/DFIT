@@ -175,6 +175,8 @@ Preserve these when changing the code.
   Rate axes (overview, injection, isip) default to 0..3x the max rate plotted on that step
   (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
   `full_y2` on every non-gfunction step, in `ui.refresh` and `render_step_figure` alike.
+  Default y-limits round outward to tick values (`plots.nice_limits`, 1/2/2.5/5 x 10^k steps;
+  `nice_log_limits` rounds the stiffness log axis to decades).
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`** (a `twinx` owns `inaxes`
   over the shared region). Use `_axes_contains_pixel`/`_data_from_pixel`.
 - **Slider `on_changed` callbacks never call `refresh()`.** `refresh()` calls `fig.clf()`, which
