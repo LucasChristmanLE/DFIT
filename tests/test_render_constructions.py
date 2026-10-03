@@ -596,8 +596,8 @@ def test_gfunction_triangle_drag_rederives_contact_for_cb():
 
     new_seed = 6.5  # drag the seed near the true inflection at G=6
     min_dpdg_ctrl.commit_fn(new_seed)
-    assert st.min_dpdg_G == pytest.approx(new_seed)
     assert st.contact_G == pytest.approx(6.0, abs=0.2)
+    assert st.min_dpdg_G == st.contact_G  # the triangle snaps onto the inflection it found
 
 
 def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():

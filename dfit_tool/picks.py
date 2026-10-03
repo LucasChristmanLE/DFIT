@@ -1244,6 +1244,9 @@ def commit_stiffness_point(state: PickState, x: float) -> None:
     state.stiffness_pick_P = float(x)
 
 
+_CA_NO_RISE_HINT = "dP/dG never rises 10% above the min -- no contact (consider C-B or C-C)."
+
+
 def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:
     """Re-suggest the contact pick from the just-selected closure scenario (an explicit user
     action, so it may overwrite a previous contact pick). Pure state mutation -- no matplotlib.
@@ -1261,8 +1264,8 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
         is unaffected -- it builds off ``closure_G``, so it still feeds the shared
         net-pressure/complexity reference.
 
-    Returns a user-facing hint string when the rule finds nothing (picks left unchanged),
-    else None. Degrades to a no-op when diagnostics aren't ready.
+    Returns a user-facing hint string when the rule finds nothing, else None. A failed C-A rule
+    clears ``contact_G`` (see ``re_derive_contact_from_min``); a failed C-B leaves it unchanged. Degrades to a no-op when diagnostics aren't ready.
     """
     scen = state.closure_scenario
     if not scen:
@@ -1281,7 +1284,7 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
 
 def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optional[str]:
     """Re-derive the contact pick from the current ``state.min_dpdg_G`` under the active closure
-    scenario, without moving the min-dP/dG marker itself.
+    scenario. Under C-A the min-dP/dG marker stays put; under C-B it snaps onto the inflection.
 
     This is the rule engine shared by ``apply_closure_scenario`` (scenario just picked) and the
     triangle-drag commit path (ui.py's gfunction wiring, decision D4): dragging the triangle
@@ -1292,8 +1295,11 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
     from a hand-picked window instead of a g_min-masked search or a dragged seed, and is the
     complete commit for that gesture -- ui.py does not call this function afterward.
 
-      - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there.
-      - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed.
+      - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there. When
+        dP/dG never rises 10%, ``contact_G`` is cleared: a leftover seed (the hump) would
+        otherwise report a compliance Shmin the rule rejected (Arkansas 1BH, a 1.9% rise).
+      - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed. Both the
+        contact and the triangle move to it; on no inflection, neither moves.
       - blank / C-C / C-D / C-X / missing min pick or diagnostics: no-op (nothing to re-derive).
 
     Returns a user-facing hint string on failure (same convention as ``apply_closure_scenario``),
@@ -1309,8 +1315,8 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         min_idx = _nearest(dg.G, state.min_dpdg_G)
         idx = interpret.suggest_contact_clear_index(dg.dPdG, min_idx)
         if idx is None:
-            return ("dP/dG never rises 10% above the min -- not a clear contact "
-                    "(consider C-B or C-C).")
+            state.contact_G = None
+            return _CA_NO_RISE_HINT
         state.contact_G = float(dg.G[idx])
         return None
     if scen.startswith("C-B"):
@@ -1318,7 +1324,9 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
             dg.G, dg.dPdG, seed=state.min_dpdg_G, d2=dg.d2PdG2)
         if idx is None:
             return "No inflection found on dP/dG -- drag the contact marker manually."
-        state.contact_G = float(dg.G[idx])
+        # The triangle snaps onto the inflection it seeded, as handle_min_dpdg_window does;
+        # otherwise it stays at a C-A rel-min one sample short of the contact (Arkansas 1BH).
+        state.contact_G = state.min_dpdg_G = float(dg.G[idx])
         return None
     return None
 
@@ -1353,7 +1361,7 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
 
     Returns a user-facing hint string when the window (or, for C-A, the rise rule from the
     window's min) holds nothing usable, else None. On a C-A rise-rule failure, ``min_dpdg_G`` is
-    still moved to the window's min (``contact_G`` is left unchanged) -- same partial-failure
+    still moved to the window's min (``contact_G`` is cleared) -- same partial-failure
     shape as the triangle-drag path. The caller (ui.py) does not need to re-derive the contact
     afterward; this function is the whole commit.
     """
@@ -1370,8 +1378,8 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         state.min_dpdg_G = float(dg.G[idx])
         contact_idx = interpret.suggest_contact_clear_index(dg.dPdG, idx)
         if contact_idx is None:
-            return ("dP/dG never rises 10% above the min -- not a clear contact "
-                    "(consider C-B or C-C).")
+            state.contact_G = None
+            return _CA_NO_RISE_HINT
         state.contact_G = float(dg.G[contact_idx])
         return None
     if scen.startswith("C-B"):

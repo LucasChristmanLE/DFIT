@@ -297,7 +297,9 @@ is drawn (and draggable) on the stiffness step only.
   crash spike (`interpret.terminal_spike_start`: |dP/dG| > 10x the median over G <= 95% of the
   last G). Each mask applies only if >= 6 samples survive. The auto-seed is never below G = 1
   unless the record barely reaches it; manual picks are not limited. Dragging re-derives the contact
-  (`re_derive_contact_from_min`). Shift+drag selects a window (`handle_min_dpdg_window`).
+  (`re_derive_contact_from_min`). Shift+drag selects a window (`handle_min_dpdg_window`). Under
+  C-B, all three paths (select, drag, Shift+drag) snap the triangle onto the inflection found.
+  Under C-A, a min that never rises 10% clears `contact_G`, so no compliance Shmin is reported.
 
 Closure scenarios (`picks.apply_closure_scenario`):
 

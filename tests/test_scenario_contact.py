@@ -151,7 +151,7 @@ def test_scenario_ca_hints_when_no_rise():
     state = PickState(closure_scenario="C-A clear", contact_G=3.0)
     hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
     assert hint is not None
-    assert state.contact_G == 3.0  # left unchanged
+    assert state.contact_G is None  # a rejected rule leaves no contact to report Shmin from
 
 
 def test_scenario_cb_sets_contact_at_inflection():
@@ -222,6 +222,27 @@ def test_re_derive_contact_from_min_cb_follows_dragged_seed():
     assert picks.re_derive_contact_from_min(state_high, res) is None
     assert abs(state_low.contact_G - 3.0) < abs(state_high.contact_G - 3.0)
     assert abs(state_high.contact_G - 9.0) < abs(state_low.contact_G - 9.0)
+    # the triangle snaps onto the inflection it found, same as the Shift+drag window path
+    assert state_low.min_dpdg_G == state_low.contact_G
+    assert state_high.min_dpdg_G == state_high.contact_G
+
+
+def test_scenario_cb_moves_triangle_onto_inflection():
+    """Arkansas 1BH: selecting C-B with the triangle left at a C-A rel-min (G=25.1) moved only
+    the contact (to the inflection at 27.7), leaving the triangle one sample short of it."""
+    G, dPdG = _decline_with_inflection()
+    state = PickState(closure_scenario="C-B adequate", min_dpdg_G=5.0)
+    assert picks.apply_closure_scenario(state, _res_with(G, dPdG)) is None
+    assert abs(state.contact_G - 6.0) < 0.2
+    assert state.min_dpdg_G == state.contact_G
+
+
+def test_cb_no_inflection_leaves_triangle():
+    G, dPdG = _monotonic_decline()
+    state = PickState(closure_scenario="C-B adequate", min_dpdg_G=5.0, contact_G=3.0)
+    assert picks.re_derive_contact_from_min(state, _res_with(G, dPdG)) is not None
+    assert state.min_dpdg_G == 5.0
+    assert state.contact_G == 3.0
 
 
 def test_re_derive_contact_from_min_no_op_cases():
@@ -251,7 +272,24 @@ def test_re_derive_contact_from_min_ca_hints_when_no_rise():
     state = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0, contact_G=1.0)
     hint = picks.re_derive_contact_from_min(state, _res_with(G, dPdG))
     assert hint is not None
-    assert state.contact_G == 1.0
+    assert state.contact_G is None
+
+
+def test_failed_ca_rule_blanks_compliance_results():
+    """Arkansas 1BH: a min whose dP/dG never rises 10% must not report a compliance Shmin or
+    effective ISIP from the leftover hump seed."""
+    from tests.helpers import injection_state, make_testdata
+    from dfit_tool.model import compute_all
+    td = make_testdata()
+    state = injection_state(td)
+    res = compute_all(state, td)
+    picks.seed_gfunction(state, res)
+    assert state.contact_G is not None  # the seed placed one
+    state.closure_scenario = "C-A clear"
+    assert picks.apply_closure_scenario(state, res) is not None
+    res = compute_all(state, td)
+    assert res.shmin_compliance is None
+    assert res.effective_isip_compliance is None
 
 
 from dfit_tool.resample import Resampled
@@ -432,17 +470,16 @@ def test_handle_min_dpdg_window_ca_finds_argmin_in_window_and_sets_contact():
     assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1
 
 
-def test_handle_min_dpdg_window_ca_never_rises_hints_and_leaves_contact():
+def test_handle_min_dpdg_window_ca_never_rises_hints_and_clears_contact():
     """C-A window finds a min but the rise rule never clears -- min still moves (matching the
-    drag path's partial-failure shape), contact is left untouched, and the hint is the same
+    drag path's partial-failure shape), the contact is cleared, and the hint is the same
     re-derive failure string used elsewhere."""
     G, dPdG = _monotonic_decline()
     state = PickState(closure_scenario="C-A clear", min_dpdg_G=1.0, contact_G=99.0)
     hint = picks.handle_min_dpdg_window(state, _res_with(G, dPdG), 4.0, 6.0)
-    assert hint == ("dP/dG never rises 10% above the min -- not a clear contact "
-                    "(consider C-B or C-C).")
+    assert hint == "dP/dG never rises 10% above the min -- no contact (consider C-B or C-C)."
     assert state.min_dpdg_G != 1.0  # moved to the window's min
-    assert state.contact_G == 99.0  # unchanged
+    assert state.contact_G is None
 
 
 def test_handle_min_dpdg_window_cb_finds_inflection_in_window():
