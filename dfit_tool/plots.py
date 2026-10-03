@@ -553,7 +553,14 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # out by G-time (same g_min convention as interpret.suggest_min_dpdg_index and the d2P/dG2
     # block below). A percentile over all samples was dominated by the spike (the resampled grid
     # is densest there), and the old hard 50 cap squashed any record whose real dP/dG ran higher.
+    # The decay can still run past G=1, so its leading run is cut too (interpret.leading_spike_end),
+    # as is a trailing end-of-record crash spike (interpret.terminal_spike_start).
     finite = np.isfinite(dg.dPdG) & (dg.G >= Y2_SCALE_G_MIN)
+    idx = np.arange(len(dg.dPdG))
+    trimmed = (finite & (idx >= interpret.leading_spike_end(dg.G, dg.dPdG, Y2_SCALE_G_MIN))
+               & (idx < interpret.terminal_spike_start(dg.G, dg.dPdG)))
+    if trimmed.any():
+        finite = trimmed
     if not finite.any():        # whole record sits below G=1 -- scale from everything finite
         finite = np.isfinite(dg.dPdG)
     if finite.any():

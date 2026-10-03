@@ -132,6 +132,46 @@ def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
     assert defaults.y2lim[1] == pytest.approx(plots.DPDG_VIEW_MAX)
 
 
+def _gfunction_defaults(G, dPdG):
+    n = len(G)
+    p = np.linspace(5000.0, 4000.0, n)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, n), p=p, n_raw=n)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, n),
+                                  p=p, dp=np.zeros(n), tdpdt=np.zeros(n))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    return plots.render_gfunction(ax, None, PickState(), res)
+
+
+def test_gfunction_y2lim_default_excludes_water_hammer_decay_past_g_min():
+    """The water-hammer decay can still run in the thousands past G=1 (field record: dP/dG > 500
+    out to G ~ 3 over a ~5-10 plateau). That leading run is excluded from the default scale."""
+    G = np.linspace(0.1, 120.0, 200)
+    dPdG = np.full(200, 8.0)
+    early = G < 4.0
+    dPdG[early] = 8.0 + 5000.0 * np.exp(-G[early])  # still ~1800 at G=1, ~100 at G=4
+    defaults = _gfunction_defaults(G, dPdG)
+    assert defaults.y2lim[1] <= 50.0
+
+
+def test_gfunction_y2lim_default_excludes_terminal_crash_spike():
+    G = np.linspace(0.1, 120.0, 200)
+    dPdG = np.full(200, 8.0)
+    dPdG[-2:] = 3000.0  # record ends mid-bleed-off
+    defaults = _gfunction_defaults(G, dPdG)
+    assert defaults.y2lim[1] == pytest.approx(9.0)  # 8 x 1.10, rounded up to a tick
+
+
+def test_gfunction_y2lim_default_keeps_a_c_a_hump():
+    """A C-A hump (here 3x the plateau) is never mistaken for the leading spike."""
+    G = np.linspace(1.0, 120.0, 200)
+    dPdG = 5.0 + 10.0 * np.exp(-((G - 40.0) / 8.0) ** 2)
+    defaults = _gfunction_defaults(G, dPdG)
+    assert defaults.y2lim[1] >= 15.0
+
+
 def test_gfunction_y2lim_falls_back_to_all_finite_when_whole_record_below_g_min():
     """A record whose entire G range sits below Y2_SCALE_G_MIN has nothing surviving the mask,
     so the default falls back to scaling from all finite dP/dG instead of returning None."""

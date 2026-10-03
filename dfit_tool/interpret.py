@@ -34,6 +34,8 @@ TERMINAL_SPIKE_FACTOR = 10.0  # terminal_spike_start: trailing dP/dG beyond this
 TERMINAL_SPIKE_MAX_GAP = 2  # terminal_spike_start: small samples it steps over inside a spike
 TERMINAL_SPIKE_REF_G_FRAC = 0.95  # terminal_spike_start: the reference median uses G up to this
                                   # fraction of the last G, so the crash itself is left out
+LEADING_SPIKE_FACTOR = 5.0  # leading_spike_end: early dP/dG beyond this x the median over
+                            # G >= SEED_MIN_G is the water-hammer decay
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
@@ -447,6 +449,22 @@ def terminal_spike_start(G: np.ndarray, dPdG: np.ndarray,
             continue
         break
     return start
+
+
+def leading_spike_end(G: np.ndarray, dPdG: np.ndarray, g_min: float = SEED_MIN_G,
+                      factor: float = LEADING_SPIKE_FACTOR) -> int:
+    """First index at G >= ``g_min`` past the leading water-hammer decay, i.e. the first finite
+    sample whose |dP/dG| is <= ``factor`` x the median |dP/dG| over G >= ``g_min``. The decay can
+    still run 100x the settled curve past G = 1; a C-A hump (10-100% rise) or a concave-up C-D
+    decline never trips the threshold. Returns ``len(dPdG)`` when nothing qualifies."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    fin = np.isfinite(y) & np.isfinite(G) & (G >= g_min)
+    if not fin.any():
+        return len(y)
+    med = float(np.median(np.abs(y[fin])))
+    ok = np.flatnonzero(fin & (np.abs(y) <= factor * med))
+    return int(ok[0]) if ok.size else len(y)
 
 
 def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> int:
