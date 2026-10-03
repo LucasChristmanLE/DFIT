@@ -21,7 +21,8 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from . import guide_content, interpret, io_load, picks, plots, sliders, store, summary
+from . import (colors as C, guide_content, interpret, io_load, picks, plots, sliders, store,
+               summary)
 from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
                     closure_uninterpretable, compute_all, first_not_visited_step,
                     infer_step_status, last_step, next_step, prev_step, resolve_step,
@@ -37,7 +38,7 @@ _SLIDER_GID = "slider"
 _FALLBACK_OVERHANG_PX = 60.0
 # Neutral fallback for a slider with no ViewDefaults.y_color/y2_color (a horizontal slider, or
 # a step with no single dominant color for that axis, e.g. log-log's two same-axis series).
-_SLIDER_NEUTRAL_COLOR = "0.45"
+_SLIDER_NEUTRAL_COLOR = C.UI_MUTED
 # _layout_sliders measure->apply passes to let the d2P/dG2 axis's overhang settle (its spine
 # sits at a FRACTION of the primary Axes' own width, ("axes", 1.12) -- so its absolute pixel
 # overhang moves every time subplots_adjust changes that width, and a single measure-then-apply
@@ -188,9 +189,9 @@ def _isip_minutes_to_seconds(anchor_x_min: float, slope_per_min: float,
 _QUEST_WARNING_PREFIX = "Warning: "
 
 ISSUE_LEVELS = [
-    ("blockers", "Blocking", "blocking issue", "red", "Blocking: "),
-    ("warnings", "Warnings", "warning", "#b35c00", ""),
-    ("notes", "Notes", "note", "gray", "Note: "),
+    ("blockers", "Blocking", "blocking issue", C.UI_ERROR, "Blocking: "),
+    ("warnings", "Warnings", "warning", C.UI_WARNING, ""),
+    ("notes", "Notes", "note", C.UI_MUTED, "Note: "),
 ]
 
 
@@ -321,7 +322,7 @@ class DfitApp:
             c = ttk.Combobox(parent, textvariable=var, values=values, width=8, state="readonly")
             c.pack(side="left", padx=(2, 0))
             c.bind("<<ComboboxSelected>>", lambda e: self._on_unit_change(kind))
-            lbl = ttk.Label(parent, text="", foreground="gray")
+            lbl = ttk.Label(parent, text="", foreground=C.UI_MUTED)
             lbl.pack(side="left", padx=(2, 0))
             return c, lbl
 
@@ -399,10 +400,10 @@ class DfitApp:
         self.queue_tree.bind("<<TreeviewSelect>>", self._on_queue_select)
         # Status is always readable as text (the "status" column); these tags are a secondary
         # color cue only, never the sole signal.
-        self.queue_tree.tag_configure("done", foreground="#137333")
-        self.queue_tree.tag_configure("skipped", foreground="gray")
-        self.queue_tree.tag_configure("in_progress", foreground="#b35c00")
-        self.queue_tree.tag_configure("new", foreground="black")
+        self.queue_tree.tag_configure("done", foreground=C.UI_DONE)
+        self.queue_tree.tag_configure("skipped", foreground=C.UI_MUTED)
+        self.queue_tree.tag_configure("in_progress", foreground=C.UI_WARNING)
+        self.queue_tree.tag_configure("new", foreground=C.UI_TEXT)
 
         # center: canvas
         center = ttk.Frame(body)
@@ -429,9 +430,9 @@ class DfitApp:
         # Expanded results window), never on the warnings, Notes, or step controls. On Overview
         # the issues list is packed ahead of Notes instead (_update_panel_visibility), so there
         # Notes is squeezed first. First-packed side="bottom" is bottommost: hint, warn, notes.
-        self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground="gray")
+        self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground=C.UI_MUTED)
         self.hint_lbl.pack(side="bottom", anchor="w", pady=(6, 0))
-        self.warn_lbl = ttk.Label(panel, text="", foreground="red", wraplength=300,
+        self.warn_lbl = ttk.Label(panel, text="", foreground=C.UI_ERROR, wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
         self.frm_notes = ttk.Frame(panel)
@@ -600,7 +601,7 @@ class DfitApp:
         self.next_btn = ttk.Button(bar, text="Next >", command=self._advance)
         self.next_btn.pack(side="left", padx=2)
         ttk.Button(bar, text="Skip >", command=self._skip).pack(side="left", padx=2)
-        self.gate_lbl = ttk.Label(bar, text="", foreground="red")
+        self.gate_lbl = ttk.Label(bar, text="", foreground=C.UI_ERROR)
         self.gate_lbl.pack(side="left", padx=8)
 
     # ---- data / config --------------------------------------------------------------------------
@@ -1311,13 +1312,13 @@ class DfitApp:
                     ttk.Label(inner, image=img).pack(anchor="w", padx=10, pady=(0, 2))
                 else:
                     ttk.Label(inner, text=f"[figure unavailable: {fig.image}]",
-                              foreground="red").pack(anchor="w", padx=10, pady=(0, 2))
+                              foreground=C.UI_ERROR).pack(anchor="w", padx=10, pady=(0, 2))
                 ttk.Label(inner, text=fig.caption, wraplength=900, justify="left",
-                          font=("", 8, "italic"), foreground="gray").pack(
+                          font=("", 8, "italic"), foreground=C.UI_MUTED).pack(
                     anchor="w", padx=10, pady=(0, 10))
 
         ttk.Label(inner, text=guide.source, wraplength=900, justify="left",
-                  foreground="gray").pack(anchor="w", padx=10, pady=(6, 10))
+                  foreground=C.UI_MUTED).pack(anchor="w", padx=10, pady=(6, 10))
 
     def _load_guide_image(self, name: str):
         try:
@@ -2257,7 +2258,7 @@ class DfitApp:
         ttk.Label(self.frm_issues, text="Data checks", font=("", 10, "bold"),
                   wraplength=wrap).pack(anchor="w")
         if not self._issue_sections:
-            ttk.Label(self.frm_issues, text="No warnings.", foreground="gray",
+            ttk.Label(self.frm_issues, text="No warnings.", foreground=C.UI_MUTED,
                       wraplength=wrap).pack(anchor="w")
         colors = {title: color for _, title, _, color, _ in ISSUE_LEVELS}
         for title, msgs in self._issue_sections:
@@ -2267,7 +2268,7 @@ class DfitApp:
                 ttk.Label(self.frm_issues, text=f"\u2022 {m}", wraplength=wrap,
                           justify="left").pack(anchor="w", fill="x")
         if self._quest_lines:
-            ttk.Label(self.frm_issues, text="Questionnaire", foreground="gray",
+            ttk.Label(self.frm_issues, text="Questionnaire", foreground=C.UI_MUTED,
                       font=("", 9, "bold"), wraplength=wrap).pack(anchor="w", pady=(6, 0))
             warn_color = next(c for key, _, _, c, _ in ISSUE_LEVELS if key == "warnings")
             for line in self._quest_lines:

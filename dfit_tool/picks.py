@@ -23,7 +23,7 @@ from matplotlib.backend_tools import Cursors
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
-from . import interpret
+from . import colors as C, interpret
 from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick
 from .io_load import TestData
 
@@ -128,7 +128,7 @@ class SpanController:
         self.on_span = on_span
         self.selector = SpanSelector(
             ax, self._handle, "horizontal", useblit=True,
-            props=dict(alpha=0.2, facecolor="tab:orange"), interactive=True,
+            props=dict(alpha=C.WINDOW_ALPHA, facecolor=C.WINDOW), interactive=True,
         )
 
     def _handle(self, xmin, xmax):
@@ -206,7 +206,7 @@ class ModifierSpanController:
         x, _ = _data_from_pixel(self.ax, event)
         self._press_x = x
 
-        self._patch = Rectangle((x, 0.0), 0.0, 1.0, alpha=0.2, facecolor="tab:orange")
+        self._patch = Rectangle((x, 0.0), 0.0, 1.0, alpha=C.WINDOW_ALPHA, facecolor=C.WINDOW)
         self._patch.set_transform(self.ax.get_xaxis_transform(which="grid"))
         # Mirror Axes.axvspan: adding an xaxis-transformed Rectangle can otherwise perturb
         # dataLim's y-interval, so snapshot/restore it around add_patch.

@@ -23,6 +23,7 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
+from . import colors as C
 from . import interpret, summary
 from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
                     skipped_steps)
@@ -158,7 +159,7 @@ def _plot_dropout_markers(ax, x: np.ndarray, y: np.ndarray) -> None:
     if not len(x):
         return
     saved_points = ax.dataLim.get_points().copy()
-    ax.plot(x, y, color="magenta", marker="o", ms=3, ls="none", label="masked dropout",
+    ax.plot(x, y, color=C.DROPOUT, marker="o", ms=3, ls="none", label="masked dropout",
             gid="dropout_masked", scalex=False, scaley=False)
     ax.dataLim.set_points(saved_points)
 
@@ -258,17 +259,19 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     excluded = ~kept
     if excluded.any():
         xte, xpe = _decimate(t_h[excluded], p_clean[excluded])
-        ax.plot(xte, xpe, color="0.75", lw=0.8, gid="tail_excluded")
+        ax.plot(xte, xpe, color=C.EXCLUDED, alpha=C.EXCLUDED_ALPHA, lw=0.8, gid="tail_excluded")
     # Converted-BHP record: overlay the raw surface pressure it came from, thin red, same axis.
     ps = res.p_surface_all if res.pressure_is_bhp else None
     if ps is not None:
         ps_clean, _ = _split_dropouts(ps, res.dropout_mask)
         xst, xsp = _decimate(t_h[kept], ps_clean[kept])
-        ax.plot(xst, xsp, color="tab:red", lw=0.5, label="Surface Pressure", gid="surface_pressure")
+        ax.plot(xst, xsp, color=C.SURFACE_PRESSURE, lw=0.5, label="Surface Pressure",
+                gid="surface_pressure")
         press_ylabel = "Pressure (psi)"  # the axis now carries both traces
         if excluded.any():
             xste, xspe = _decimate(t_h[excluded], ps_clean[excluded])
-            ax.plot(xste, xspe, color="0.75", lw=0.5, gid="surface_tail_excluded")
+            ax.plot(xste, xspe, color=C.EXCLUDED, alpha=C.EXCLUDED_ALPHA, lw=0.5,
+                    gid="surface_tail_excluded")
     # Masked dropouts as their own markers, not decimated with the main trace -- a handful of
     # masked samples inside a record with 10^5+ points would almost certainly fall between the
     # main trace's decimation stride and never get drawn.
@@ -283,15 +286,15 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     if res.rate_all is not None:
         ax2 = ax.twinx()
         xrt, xr = _decimate(t_h, res.rate_all)
-        ax2.plot(xrt, xr, color="tab:blue", lw=0.7, alpha=0.7)
-        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
-        ax2.tick_params(axis="y", labelcolor="tab:blue")
+        ax2.plot(xrt, xr, color=C.RATE, lw=0.7, alpha=0.7)
+        ax2.set_ylabel("Rate (bpm)", color=C.RATE)
+        ax2.tick_params(axis="y", labelcolor=C.RATE)
 
     if state.start_idx is not None:
-        ax.axvline(t_h[state.start_idx], color="tab:orange", ls=":", lw=1.0, alpha=0.6,
+        ax.axvline(t_h[state.start_idx], color=C.INJECTION_START, ls=":", lw=1.0, alpha=0.6,
                    label="injection start", gid="start_ref")
     if state.shutin_idx is not None:
-        ax.axvline(t_h[state.shutin_idx], color="tab:red", ls=":", lw=1.0, alpha=0.6,
+        ax.axvline(t_h[state.shutin_idx], color=C.SHUTIN, ls=":", lw=1.0, alpha=0.6,
                    label="shut-in", gid="shutin_ref")
 
     if interactive and has_trim_context:
@@ -301,7 +304,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         # ungrayed data to its right, implying a cut that isn't in effect. Releasing a drag at
         # that raw edge still clears (ui's commit clears at idx >= len(dt_full) - 1).
         trim_x_h = (cut_dt + res.t_shutin_s) / 3600.0 if cut_dt is not None else t_h[-1]
-        ax.axvline(trim_x_h, color="tab:blue", ls="--", lw=1.4, gid="tail_trim")
+        ax.axvline(trim_x_h, color=C.TAIL_TRIM, ls="--", lw=1.8, gid="tail_trim")
 
     ax.set_title("Overview — entire dataset", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
@@ -316,7 +319,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         return ViewDefaults()
     p_lo, p_hi = float(np.nanmin(p[finite_p])), float(np.nanmax(p[finite_p]))
     pad = 0.05 * max(p_hi - p_lo, 1.0)
-    y2_color = "tab:blue" if res.rate_all is not None else None
+    y2_color = C.RATE if res.rate_all is not None else None
     return ViewDefaults(ylim=nice_limits(0.0, p_hi + pad), y2lim=_rate_y2lim(res.rate_all),
                         y_color=press_color, y2_color=y2_color)
 
@@ -351,15 +354,15 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if res.rate_all is not None:
         ax2 = ax.twinx()
         _, xr = _decimate(t_h[m], res.rate_all[m])
-        ax2.plot(xt, xr, color="tab:blue", lw=0.7, alpha=0.7)
-        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
-        ax2.tick_params(axis="y", labelcolor="tab:blue")
+        ax2.plot(xt, xr, color=C.RATE, lw=0.7, alpha=0.7)
+        ax2.set_ylabel("Rate (bpm)", color=C.RATE)
+        ax2.tick_params(axis="y", labelcolor=C.RATE)
 
     if state.start_idx is not None:
-        ax.axvline(t_h[state.start_idx], color="tab:orange", ls="--", lw=1.6,
+        ax.axvline(t_h[state.start_idx], color=C.INJECTION_START, ls="--", lw=1.6,
                    label="injection start", gid="start")
     if state.shutin_idx is not None:
-        ax.axvline(t_h[state.shutin_idx], color="tab:red", ls="-", lw=1.8,
+        ax.axvline(t_h[state.shutin_idx], color=C.SHUTIN, ls="-", lw=1.8,
                    label="shut-in", gid="shutin")
 
     # The default view zooms to the active injection region (the falloff tail can be weeks long);
@@ -384,7 +387,7 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
             title += f"   qmax={res.qmax_bpm:.2f} bpm"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
-    y2_color = "tab:blue" if res.rate_all is not None else None
+    y2_color = C.RATE if res.rate_all is not None else None
     y2lim = _rate_y2lim(res.rate_all[m]) if res.rate_all is not None else None
     return ViewDefaults(xlim=xlim, ylim=_pressure_ylim(p[m]), y2lim=y2lim, y_color=press_color,
                         y2_color=y2_color)
@@ -395,8 +398,8 @@ def _pressure_style(res: DerivedResults) -> tuple[str, str, str]:
     pressure (res.pressure_is_bhp False: surface channel without both density and TVD) is red
     and never called BHP, on every step."""
     if res.pressure_is_bhp:
-        return "black", "Bottomhole Pressure (psi)", "Bottomhole Pressure"
-    return "tab:red", "Surface Pressure (psi)", "Surface Pressure"
+        return C.PRESSURE, "Bottomhole Pressure (psi)", "Bottomhole Pressure"
+    return C.SURFACE_PRESSURE, "Surface Pressure (psi)", "Surface Pressure"
 
 
 def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -421,7 +424,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     ax.plot(xt, xp, color=press_color, lw=0.9)
     masked_idx = np.flatnonzero(m & np.isfinite(p_masked))
     _plot_dropout_markers(ax, t_min[masked_idx], p_masked[masked_idx])
-    ax.axvline(0.0, color="tab:red", lw=1.2, label="shut-in")
+    ax.axvline(0.0, color=C.SHUTIN, lw=1.2, label="shut-in")
     ax.set_xlabel("Time from Shut-In (min)")
     ax.set_ylabel(press_ylabel, color=press_color)
     ax.tick_params(axis="y", labelcolor=press_color)
@@ -432,11 +435,11 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     if res.rate_all is not None:
         ax2 = ax.twinx()
         xrt, xr = _decimate(t_min[m], res.rate_all[m])
-        ax2.plot(xrt, xr, color="tab:blue", lw=0.7, alpha=0.7)
-        ax2.set_ylabel("Rate (bpm)", color="tab:blue")
-        ax2.tick_params(axis="y", labelcolor="tab:blue")
+        ax2.plot(xrt, xr, color=C.RATE, lw=0.7, alpha=0.7)
+        ax2.set_ylabel("Rate (bpm)", color=C.RATE)
+        ax2.tick_params(axis="y", labelcolor=C.RATE)
         y2lim = _rate_y2lim(res.rate_all[m])
-        y2_color = "tab:blue"
+        y2_color = C.RATE
 
     # The pressure default fits the default -1..3 min view, not the whole -5..15 min clamp:
     # injection pressure before -1 min would otherwise set the ceiling. The apparent-ISIP dot
@@ -451,7 +454,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     if state.isip_at_shutin:
         # No tangent: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
         if res.apparent_isip is not None:
-            ax.plot(0.0, res.apparent_isip, "o", color="tab:purple", gid="isip_shutin_dot")
+            ax.plot(0.0, res.apparent_isip, "o", color=C.ISIP_LINE, gid="isip_shutin_dot")
             ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi (at shut-in)", fontsize=10)
         else:
             ax.set_title("Apparent ISIP (at shut-in) -- no BHP at the shut-in sample", fontsize=10)
@@ -467,11 +470,11 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         y_span = float(np.nanmax(xp) - np.nanmin(xp)) if xp.size else max(abs(tg.anchor_y), 1.0)
         _draw_tangent_construction(
             ax, anchor_x_min, tg.anchor_y, slope_per_min, ref_x=0.0, half=_ISIP_TANGENT_HALF_MIN,
-            color="tab:purple",
+            color=C.ISIP_LINE,
             gids={"segment": "isip_tangent_segment", "tick": "isip_tangent_tick",
                   "extension": "isip_tangent_extension"},
             tick_half_y=0.04 * y_span, label="ISIP tangent")
-        ax.plot(0.0, res.apparent_isip, "o", color="tab:purple", gid="isip_value_dot")
+        ax.plot(0.0, res.apparent_isip, "o", color=C.ISIP_LINE, gid="isip_value_dot")
     if res.apparent_isip is not None:
         ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi", fontsize=10)
     else:
@@ -494,8 +497,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # draw its excluded-tail preview the same as the main path, so it isn't silent just
         # because there were too few points left to diagnose.
         if res.guard_excluded_G is not None and len(res.guard_excluded_G):
-            ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
-                    gid="guard_excluded", zorder=0.5)
+            ax.plot(res.guard_excluded_G, res.guard_excluded_p, color=C.EXCLUDED,
+                    alpha=C.GUARD_EXCLUDED_ALPHA, lw=0.8, gid="guard_excluded", zorder=0.5)
         return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
@@ -506,8 +509,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # resumes there), but either way it's excluded here. Left in autoscale on purpose -- the
     # 2x-G cap applied in compute_all is what bounds a runaway tail, not a view-limit clamp here.
     if res.guard_excluded_G is not None and len(res.guard_excluded_G):
-        ax.plot(res.guard_excluded_G, res.guard_excluded_p, color="0.85", alpha=0.5, lw=0.8,
-                gid="guard_excluded", zorder=0.5)
+        ax.plot(res.guard_excluded_G, res.guard_excluded_p, color=C.EXCLUDED,
+                alpha=C.GUARD_EXCLUDED_ALPHA, lw=0.8, gid="guard_excluded", zorder=0.5)
     press_color, press_ylabel, press_label = _pressure_style(res)
     ax.plot(dg.G, rs.p, color=press_color, lw=1.2, marker=".", ms=3, label=press_label)
     ax.set_xlabel("G-Time")
@@ -521,9 +524,9 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ylim = _pressure_ylim(rs.p)
 
     ax2 = ax.twinx()
-    ax2.plot(dg.G, dg.dPdG, color="tab:red", lw=1.0, label="dP/dG")
-    ax2.set_ylabel("dP/dG", color="tab:red")
-    ax2.tick_params(axis="y", labelcolor="tab:red")
+    ax2.plot(dg.G, dg.dPdG, color=C.DERIVATIVE, lw=1.0, label="dP/dG")
+    ax2.set_ylabel("dP/dG", color=C.DERIVATIVE)
+    ax2.tick_params(axis="y", labelcolor=C.DERIVATIVE)
     y2lim = None
     # Autoscale the default view to the real derivative, masking the early water-hammer spike
     # out by G-time (same g_min convention as interpret.suggest_min_dpdg_index and the d2P/dG2
@@ -544,10 +547,10 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         ax3 = ax.twinx()
         ax3.set_gid(D2_AXIS_GID)
         ax3.spines["right"].set_position(("axes", 1.12))
-        ax3.plot(dg.G, dg.d2PdG2, color="tab:purple", lw=0.9, label="d2P/dG2",
+        ax3.plot(dg.G, dg.d2PdG2, color=C.SECOND_DERIVATIVE, lw=0.9, label="d2P/dG2",
                  gid="d2pdg2_curve")
-        ax3.set_ylabel("d2P/dG2", color="tab:purple")
-        ax3.tick_params(axis="y", labelcolor="tab:purple")
+        ax3.set_ylabel("d2P/dG2", color=C.SECOND_DERIVATIVE)
+        ax3.tick_params(axis="y", labelcolor=C.SECOND_DERIVATIVE)
         # Scale from G >= 1 only (same g_min convention as interpret.suggest_min_dpdg_index):
         # the resampled grid is densest across the early water-hammer spike, so percentiles
         # over all samples would still be dominated by its huge |d2| values.
@@ -566,16 +569,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                  else max(abs(ln.anchor_y), 1.0))
         _draw_tangent_construction(
             ax, ln.anchor_x, ln.anchor_y, ln.slope, ref_x=0.0, half=max(0.06 * g_span, 1e-6),
-            color="tab:green",
+            color=C.ISIP_LINE,
             gids={"segment": "eff_isip_segment", "tick": "eff_isip_tick",
                   "extension": "eff_isip_extension"},
             tick_half_y=0.04 * y_span, label="effective-ISIP line", draw_tick=False)
-        ax.plot(0.0, res.effective_isip_compliance, "o", color="tab:green")
+        ax.plot(0.0, res.effective_isip_compliance, "o", color=C.ISIP_LINE)
     # The triangle is only meaningful for C-A (rel-min anchor) / C-B (inflection seed) -- C-C/C-D
     # have no contact rule and blank leaves it hidden until a scenario is chosen (decision 4).
     if state.min_dpdg_G is not None and state.closure_scenario.startswith(("C-A", "C-B")):
         y = float(np.interp(state.min_dpdg_G, dg.G, dg.dPdG))
-        ax2.plot(state.min_dpdg_G, y, marker="v", color="tab:red", ms=8, label="min dP/dG",
+        ax2.plot(state.min_dpdg_G, y, marker="v", color=C.DERIVATIVE, ms=8, label="min dP/dG",
                 gid="min_dpdg_point")
     # C-A only: if dP/dG never rises 10% above the picked min, suggest_contact_clear_index finds
     # no contact -- draw the 110% threshold it's checking against so the analyst can see the
@@ -587,14 +590,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # already returns None for it (never rises), but drawing an axhline at NaN leaves an
         # invisible line with a visible "never reached" label, so gate on finiteness too.
         if np.isfinite(threshold) and interpret.suggest_contact_clear_index(dg.dPdG, min_idx) is None:
-            ax2.axhline(threshold, ls="--", color="tab:red", alpha=0.6, gid="clear_threshold_line")
+            ax2.axhline(threshold, ls="--", color=C.DERIVATIVE, alpha=0.6,
+                        gid="clear_threshold_line")
             ax2.text(0.02, 0.02, "min +10% -- never reached; consider C-B",
-                     transform=ax2.transAxes, fontsize=7, color="tab:red", va="bottom", ha="left")
+                     transform=ax2.transAxes, fontsize=7, color=C.DERIVATIVE, va="bottom",
+                     ha="left")
     if state.contact_G is not None and res.contact_pressure is not None:
-        ax.plot(state.contact_G, res.contact_pressure, "s", color="black", ms=7, label="contact",
+        ax.plot(state.contact_G, res.contact_pressure, "s", color=C.PICK, ms=7, label="contact",
                gid="contact_point")
     if state.contact_G is not None:
-        ax.axvline(state.contact_G, color="black", ls=":", lw=1.2, gid="contact_vline")
+        ax.axvline(state.contact_G, color=C.PICK, ls=":", lw=1.2, gid="contact_vline")
 
     title = "G-function"
     if res.effective_isip_compliance is not None:
@@ -607,7 +612,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
     return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim, y_color=press_color,
-                        y2_color="tab:red")
+                        y2_color=C.DERIVATIVE)
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -629,9 +634,9 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     ax.grid(True, alpha=0.3)
 
     ax2 = ax.twinx()
-    ax2.plot(dg.G, dg.GdPdG, color="tab:red", lw=1.0, marker=".", ms=3, label="G*dP/dG")
-    ax2.set_ylabel("G*dP/dG", color="tab:red")
-    ax2.tick_params(axis="y", labelcolor="tab:red")
+    ax2.plot(dg.G, dg.GdPdG, color=C.DERIVATIVE, lw=1.0, marker=".", ms=3, label="G*dP/dG")
+    ax2.set_ylabel("G*dP/dG", color=C.DERIVATIVE)
+    ax2.tick_params(axis="y", labelcolor=C.DERIVATIVE)
     y2lim = None
     finite = np.isfinite(dg.GdPdG)
     if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
@@ -645,20 +650,20 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     else:
         if state.closure_slope is not None:
             gg = np.array([0.0, float(dg.G.max())])
-            ax2.plot(gg, state.closure_slope * gg, color="tab:gray", ls="--", lw=1.2,
+            ax2.plot(gg, state.closure_slope * gg, color=C.GUIDE, ls="--", lw=1.2,
                     label="through-origin", gid="closure_line_segment")
         if state.closure_G is not None:
             yv = float(np.interp(state.closure_G, dg.G, rs.p))
-            ax.plot(state.closure_G, yv, "o", color="black", ms=7, label="closure",
+            ax.plot(state.closure_G, yv, "o", color=C.PICK, ms=7, label="closure",
                     gid="closure_point")
-            ax.axvline(state.closure_G, color="black", ls=":", lw=1.2, gid="closure_vline")
+            ax.axvline(state.closure_G, color=C.PICK, ls=":", lw=1.2, gid="closure_vline")
         title = "Tangent method"
         if res.shmin_tangent is not None:
             title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
     return ViewDefaults(ylim=_pressure_ylim(rs.p), y2lim=y2lim, y_color=press_color,
-                        y2_color="tab:red")
+                        y2_color=C.DERIVATIVE)
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -669,9 +674,9 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
         return ViewDefaults()
     dg = res.diagnostics
     good = (dg.t > 0) & (dg.dp > 0)
-    ax.loglog(dg.t[good], dg.dp[good], color="tab:blue", lw=1.0, marker=".", ms=3, label="dp")
+    ax.loglog(dg.t[good], dg.dp[good], color=C.PRESSURE, lw=1.0, marker=".", ms=3, label="dp")
     tgood = (dg.t > 0) & (dg.tdpdt > 0)
-    ax.loglog(dg.t[tgood], dg.tdpdt[tgood], color="tab:red", lw=1.0, marker=".", ms=3,
+    ax.loglog(dg.t[tgood], dg.tdpdt[tgood], color=C.DERIVATIVE, lw=1.0, marker=".", ms=3,
               label="t*dP/dt")
     ax.set_xlabel("Shut-In Time (s)")
     ax.set_ylabel("dp, t*dP/dt (psi)")
@@ -679,7 +684,7 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
 
     if state.loglog_window is not None:
         lo, hi = state.loglog_window
-        ax.axvspan(lo, hi, color="tab:orange", alpha=0.15)
+        ax.axvspan(lo, hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
         s = "?" if res.loglog_slope is None else f"{res.loglog_slope:.2f}"
         ax.set_title(f"Log-log   window slope={s}   ({state.postclosure_scenario or '?'})",
                      fontsize=10)
@@ -710,7 +715,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
         lo, hi = state.pp_window
         x_lo = 0.0 if not np.isfinite(hi) else hi ** expo
         x_hi = lo ** expo if lo > 0 else xmax
-        ax.axvspan(x_lo, x_hi, color="tab:orange", alpha=0.15)
+        ax.axvspan(x_lo, x_hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
 
     if state.pp_window is not None and res.pore_pressure is not None:
         lo, hi = state.pp_window
@@ -719,8 +724,8 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             from .interpret import fit_line
             slope, intercept = fit_line(x[m], dg.p[m])
             xr = np.array([0.0, x[m].max()])
-            ax.plot(xr, intercept + slope * xr, color="tab:green", ls="--", lw=1.3)
-            ax.plot(0.0, res.pore_pressure, "o", color="tab:green")
+            ax.plot(xr, intercept + slope * xr, color=C.PORE_PRESSURE, ls="--", lw=1.3)
+            ax.plot(0.0, res.pore_pressure, "o", color=C.PORE_PRESSURE)
             pmin = float(dg.p[m].min())
             if res.pore_pressure >= pmin:
                 ax.set_title(
@@ -765,7 +770,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
             title += " -- no slope change apparent (Shmin not reported)"
         ax.set_title(title, fontsize=10)
         return ViewDefaults()
-    ax.plot(p_eff, S, color="black", lw=1.0, marker=".", ms=3)
+    ax.plot(p_eff, S, color=C.PRESSURE, lw=1.0, marker=".", ms=3)
     ax.set_yscale("log")
     ax.set_xlabel("Effective Pressure (psi)")
     ax.set_ylabel("Relative Stiffness")
@@ -784,7 +789,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         ax.set_title("Relative stiffness -- no slope change apparent (Shmin not reported)",
                      fontsize=10)
     elif state.stiffness_pick_P is not None:
-        ax.axvline(state.stiffness_pick_P, color="tab:blue", ls="--", lw=1.4,
+        ax.axvline(state.stiffness_pick_P, color=C.STIFFNESS_PICK, ls="--", lw=1.4,
                    gid="stiffness_pick")
         # A small non-draggable marker at the curve intersection, for readability only. p_eff is
         # no longer monotonic (rs.p can rise as well as fall), so np.interp -- which needs an
@@ -795,7 +800,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         if finite_eff.any():
             i_near = int(np.argmin(np.abs(p_eff[finite_eff] - state.stiffness_pick_P)))
             s_at_pick = float(S[finite_eff][i_near])
-            ax.plot(state.stiffness_pick_P, s_at_pick, "o", color="tab:blue", ms=5)
+            ax.plot(state.stiffness_pick_P, s_at_pick, "o", color=C.STIFFNESS_PICK, ms=5)
         if res.shmin_stiffness is not None:
             ax.set_title(f"Stiffness   Shmin(stiffness)={res.shmin_stiffness:.0f} psi",
                          fontsize=10)
@@ -813,7 +818,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # finite_pos is already known non-empty -- the all-non-positive case returned above.
     y_lo, y_hi = float(np.nanmin(S[finite_pos])), float(np.nanmax(S[finite_pos]))
     ylim = nice_log_limits(y_lo * 0.8, y_hi * 1.25)  # log-safe pad, then whole decades
-    return ViewDefaults(xlim=xlim, ylim=ylim, y_color="black")
+    return ViewDefaults(xlim=xlim, ylim=ylim, y_color=C.PRESSURE)
 
 
 RENDERERS = {
@@ -931,23 +936,23 @@ def _summary_ladder(ax, cv) -> bool:
                           if cv.shmin_compliance is not None or cv.shmin_rapid is None
                           else ("Shmin rapid", cv.shmin_rapid))
     entries = [  # (label, value, color)
-        ("apparent ISIP", cv.apparent_isip, "tab:purple"),
-        ("eff ISIP compliance", cv.eff_isip_compliance, "tab:purple"),
-        ("eff ISIP tangent", cv.eff_isip_tangent, "tab:purple"),
-        ("eff ISIP variable", cv.eff_isip_variable, "tab:purple"),
-        (shmin_label, shmin, "tab:red"),
-        ("Shmin tangent", cv.shmin_tangent, "tab:red"),
-        ("Shmin variable", cv.shmin_variable, "tab:red"),
-        ("Shmin Liberty", cv.shmin_liberty, "tab:red"),
-        ("Shmin stiffness", cv.shmin_stiffness, "tab:red"),
-        ("pore pressure", cv.pore_pressure, "tab:green"),
+        ("apparent ISIP", cv.apparent_isip, C.ISIP_LINE),
+        ("eff ISIP compliance", cv.eff_isip_compliance, C.ISIP_LINE),
+        ("eff ISIP tangent", cv.eff_isip_tangent, C.ISIP_LINE),
+        ("eff ISIP variable", cv.eff_isip_variable, C.ISIP_LINE),
+        (shmin_label, shmin, C.LBRT_RED),
+        ("Shmin tangent", cv.shmin_tangent, C.LBRT_RED),
+        ("Shmin variable", cv.shmin_variable, C.LBRT_RED),
+        ("Shmin Liberty", cv.shmin_liberty, C.LBRT_RED),
+        ("Shmin stiffness", cv.shmin_stiffness, C.LBRT_RED),
+        ("pore pressure", cv.pore_pressure, C.PORE_PRESSURE),
     ]
     entries = [e for e in entries if e[1] is not None]
     ax.set_gid("summary_ladder")
     ax.set_title("Reported pressures", fontsize=10, pad=36)
     if not entries:
         ax.text(0.5, 0.5, "no pressures yet", ha="center", va="center",
-                transform=ax.transAxes, color="0.5")
+                transform=ax.transAxes, color=C.MID_GREY)
         ax.set_xticks([]); ax.set_yticks([])
         return False
     ys = np.arange(len(entries))[::-1]
@@ -983,20 +988,20 @@ def _summary_breakdown(ax, cv) -> bool:
             rows.append((name, shmin, net))
     if not rows:
         ax.text(0.5, 0.5, "no net pressure yet", ha="center", va="center",
-                transform=ax.transAxes, color="0.5")
+                transform=ax.transAxes, color=C.MID_GREY)
         ax.set_xticks([]); ax.set_yticks([])
         return False
     cx = cv.complexity
     ys = np.arange(len(rows))[::-1]
     lo = hi = None
     for y, (name, shmin, net) in zip(ys, rows):
-        ax.barh(y, net, left=shmin, height=0.5, color="tab:blue",
+        ax.barh(y, net, left=shmin, height=0.5, color=C.NET_PRESSURE,
                 label="net pressure" if y == ys[0] else None)
         ax.text(shmin + net / 2, y, f"{net:.0f}", ha="center", va="center", fontsize=8,
                 color="white")
         edges = [shmin, shmin + net]
         if cx is not None:
-            ax.barh(y, cx, left=shmin + net, height=0.5, color="tab:orange",
+            ax.barh(y, cx, left=shmin + net, height=0.5, color=C.COMPLEXITY,
                     label="complexity" if y == ys[0] else None)
             ax.text(shmin + net + cx / 2, y, f"{cx:.0f}", ha="center", va="center",
                     fontsize=8)
@@ -1020,19 +1025,19 @@ def _summary_closure(ax, cv) -> bool:
     sits below the curve; the others are read off the curve."""
     ax.set_gid("summary_closure")
     ax.set_title("Closure picks in G-time", fontsize=10)
-    entries = [("min dP/dG", cv.min_dpdg_G, cv.min_dpdg_p, cv.min_dpdg_tc_s, "tab:gray"),
+    entries = [("min dP/dG", cv.min_dpdg_G, cv.min_dpdg_p, cv.min_dpdg_tc_s, C.MID_GREY),
                ("compliance (contact - 75)", cv.G_compliance, cv.shmin_compliance,
-                cv.tc_compliance_s, "tab:red"),
-               ("variable", cv.G_variable, cv.shmin_variable, cv.tc_variable_s, "tab:orange"),
-               ("tangent closure", cv.G_tangent, cv.shmin_tangent, cv.tc_tangent_s, "tab:blue")]
+                cv.tc_compliance_s, C.LBRT_RED),
+               ("variable", cv.G_variable, cv.shmin_variable, cv.tc_variable_s, C.LBRT_DEEP_RED),
+               ("tangent closure", cv.G_tangent, cv.shmin_tangent, cv.tc_tangent_s, C.RATE_BLUE)]
     entries = [e for e in entries if e[1] is not None and e[2] is not None]
     if cv.curve_G is None and not entries:
         ax.text(0.5, 0.5, "no closure picks yet", ha="center", va="center",
-                transform=ax.transAxes, color="0.5")
+                transform=ax.transAxes, color=C.MID_GREY)
         ax.set_xticks([]); ax.set_yticks([])
         return False
     if cv.curve_G is not None:
-        ax.plot(cv.curve_G, cv.curve_p, "-", color="0.35", lw=1.2, label="BHP")
+        ax.plot(cv.curve_G, cv.curve_p, "-", color=C.PRESSURE, lw=1.2, label="BHP")
     for name, G, p, tc_s, color in entries:
         ax.plot([G], [p], "o", color=color, ms=8, label=name, zorder=3)
         text = f"G = {G:.2f}" + (f", tc = {tc_s / 60.0:.2f} min" if tc_s is not None else "")
@@ -1055,7 +1060,7 @@ def render_summary(fig: Figure, state: PickState, res: DerivedResults) -> None:
     cv = summary.chart_values(state, res)
     if not cv.has_any():
         fig.text(0.5, 0.5, "No results yet", ha="center", va="center", fontsize=14,
-                 color="0.5")
+                 color=C.MID_GREY)
         return
     # Constrained layout sizes the margins to the tick labels and titles, so the charts fit
     # whatever width the results window gives the canvas (fixed fractions clipped the labels).

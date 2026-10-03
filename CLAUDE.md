@@ -57,11 +57,15 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
     resample → gfunction
     store → model, questionnaire
     io_load, questionnaire → units
+    ui, picks, plots → colors
 
 - **Leaf math (numpy only).** `gfunction.py`: Nolte G-function and G-time (α=1 default, α=0.5
   option). `interpret.py`: te, apparent/effective ISIP, Shmin variants, net pressure, pore
   pressure, gradients, h-function/stiffness, and the `suggest_*` auto-pick helpers. `units.py`:
-  conversion constants and header/alias unit tokens, no `dfit_tool` imports.
+  conversion constants and header/alias unit tokens, no `dfit_tool` imports. `colors.py`: the
+  Liberty brand palette and plot/UI color roles (`PRESSURE`, `DERIVATIVE`, `RATE`, `ISIP_LINE`,
+  `WINDOW`, …), no imports. Renderers and the shell use the role names; no color literals
+  elsewhere. Gold is 1.7:1 on white; it carries the windows, tail trim, and ISIP lines.
 - **Compute core.** `resample.py`: 30-psi pressure-increment resampling, diagnostic derivatives
   (dP/dG, G·dP/dG, d²P/dG², t·dP/dt), the tail guard, and dropout detection. `model.py`:
   `PickState` (the serializable interpreter choices), `DerivedResults`, and

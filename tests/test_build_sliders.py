@@ -18,6 +18,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from dfit_tool import plots
+from dfit_tool import colors as C
 from dfit_tool.model import compute_all
 from dfit_tool.sliders import (PanRangeSlider, TRACK_PX, bottom_margin_layout,
                                right_margin_layout, to_log_bounds)
@@ -547,7 +548,7 @@ def test_render_overview_returns_rate_blue_y2_color_when_rate_present():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_overview(ax, td, st, res)
-    assert defaults.y2_color == "tab:blue"
+    assert defaults.y2_color == C.RATE
 
 
 def test_render_gfunction_returns_black_and_red_colors():
@@ -557,5 +558,5 @@ def test_render_gfunction_returns_black_and_red_colors():
     fig = Figure()
     ax = fig.add_subplot(111)
     defaults = plots.render_gfunction(ax, td, st, res)
-    assert defaults.y_color == ("black" if res.pressure_is_bhp else "tab:red")
-    assert defaults.y2_color == "tab:red"
+    assert defaults.y_color == (C.PRESSURE if res.pressure_is_bhp else C.SURFACE_PRESSURE)
+    assert defaults.y2_color == C.DERIVATIVE

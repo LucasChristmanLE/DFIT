@@ -11,6 +11,7 @@ import pytest
 from matplotlib.figure import Figure
 
 from dfit_tool import model, picks, plots, store
+from dfit_tool import colors as C
 from dfit_tool.model import PickState, compute_all, infer_step_status
 from dfit_tool.ui import DfitApp
 from tests.helpers import SHUTIN_IDX, injection_state, make_testdata
@@ -158,7 +159,7 @@ def test_isip_y2lim_uses_rate_in_window_only():
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)
     assert d.y2lim == plots.nice_limits(0.0, 3.0 * float(np.nanmax(res.rate_all[m])))
-    assert d.y2_color == "tab:blue"
+    assert d.y2_color == C.RATE
 
 
 @pytest.mark.parametrize("fn", [plots.render_overview, plots.render_injection, plots.render_isip])

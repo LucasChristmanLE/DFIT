@@ -16,6 +16,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backend_bases import MouseEvent
 
 from dfit_tool import picks, plots, resample, ui
+from dfit_tool import colors as C
 from dfit_tool.model import DerivedResults, PickState, TangentPick, compute_all
 from dfit_tool.ui import DfitApp
 from tests.helpers import make_testdata, injection_state, pre_crash_trim_dt
@@ -55,7 +56,7 @@ def test_render_tangent_pressure_primary_gdpdg_secondary_mirrors_gfunction():
     defaults = plots.render_tangent(ax, td, st, res)
 
     press_line = ax.get_lines()[0]
-    assert press_line.get_color() == ("black" if res.pressure_is_bhp else "tab:red")
+    assert press_line.get_color() == (C.PRESSURE if res.pressure_is_bhp else C.SURFACE_PRESSURE)
     assert press_line.get_lw() == pytest.approx(1.2)
     assert press_line.get_marker() == "."
     # Fixture is an unconverted surface channel, so the trace is never called BHP.
@@ -65,7 +66,7 @@ def test_render_tangent_pressure_primary_gdpdg_secondary_mirrors_gfunction():
     assert len(twins) == 1
     ax2 = twins[0]
     gdpdg = next(l for l in ax2.get_lines() if l.get_label() == "G*dP/dG")
-    assert gdpdg.get_color() == "tab:red"
+    assert gdpdg.get_color() == C.DERIVATIVE
 
     dg = res.diagnostics
     finite = np.isfinite(dg.GdPdG)
@@ -144,7 +145,7 @@ def test_render_isip_tangent_construction_gids_colors_and_extension_reaches_shut
     tick = _gid(ax, "isip_tangent_tick")
     ext = _gid(ax, "isip_tangent_extension")
     for line in (seg, tick, ext):
-        assert line.get_color() == "tab:purple"
+        assert line.get_color() == C.ISIP_LINE
     assert ext.get_linestyle() == "--"
     assert 0.0 in ext.get_xdata()  # dashed extension reaches the shut-in vertical (x=0 minutes)
 
@@ -219,7 +220,7 @@ def test_render_gfunction_eff_isip_construction_gids_and_extension_reaches_g_zer
     ext = _gid(ax, "eff_isip_extension")
     contact = _gid(ax, "contact_point")
     for line in (seg, ext):
-        assert line.get_color() == "tab:green"
+        assert line.get_color() == C.ISIP_LINE
     assert ext.get_linestyle() == "--"
     assert 0.0 in ext.get_xdata()
     assert contact.get_xdata()[0] == pytest.approx(st.contact_G)
@@ -244,7 +245,7 @@ def test_render_gfunction_min_dpdg_point_gid_on_twin_axis():
     marker = _gid(ax2, "min_dpdg_point")
     assert marker.get_xdata()[0] == pytest.approx(st.min_dpdg_G)
     assert marker.get_marker() == "v"
-    assert marker.get_color() == "tab:red"
+    assert marker.get_color() == C.DERIVATIVE
 
 
 # --------------------------------------------------------------------------------------------------
