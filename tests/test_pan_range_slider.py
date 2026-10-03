@@ -107,6 +107,74 @@ def test_vertical_orientation_pans_too():
 
 
 # --------------------------------------------------------------------------------------------------
+# thumb grab zone extends past the track's own Axes (a thumb at an end is half outside it)
+# --------------------------------------------------------------------------------------------------
+def _narrow(orientation, valinit=(0.0, 10.0)):
+    """A slider sized like ui.py's: a 14 px vertical column or an 18 px horizontal strip, at
+    100 dpi so pixel offsets read as nominal."""
+    fig = Figure(figsize=(6.0, 4.0), dpi=100)
+    if orientation == "vertical":
+        ax = fig.add_axes([0.9, 0.2, 14.0 / 600.0, 0.6])
+    else:
+        ax = fig.add_axes([0.1, 0.05, 0.7, 18.0 / 400.0])
+    canvas = FigureCanvasAgg(fig)
+    slider = PanRangeSlider(ax, "", 0.0, 10.0, valinit=valinit, orientation=orientation)
+    canvas.draw()
+    return canvas, slider
+
+
+def test_press_just_past_top_end_grabs_hi_thumb_at_valmax():
+    canvas, slider = _narrow("vertical")
+    bb = slider.ax.bbox
+    cx = (bb.x0 + bb.x1) / 2.0
+    slider._update(_event("button_press_event", canvas, cx, bb.y1 + 5.0))
+    assert slider.drag_active is True
+    assert slider.val == pytest.approx((0.0, 10.0))  # the press itself moves nothing
+    _, y = _px_for_value(slider, 7.0)
+    slider._update(_event("motion_notify_event", canvas, cx, y))
+    assert slider.val[1] == pytest.approx(7.0, abs=0.05)
+    assert slider.val[0] == pytest.approx(0.0)
+
+
+def test_press_just_past_left_end_grabs_lo_thumb_at_valmin():
+    canvas, slider = _narrow("horizontal")
+    bb = slider.ax.bbox
+    cy = (bb.y0 + bb.y1) / 2.0
+    slider._update(_event("button_press_event", canvas, bb.x0 - 5.0, cy))
+    assert slider.drag_active is True
+    x, _ = _px_for_value(slider, 3.0)
+    slider._update(_event("motion_notify_event", canvas, x, cy))
+    assert slider.val[0] == pytest.approx(3.0, abs=0.05)
+    assert slider.val[1] == pytest.approx(10.0)
+
+
+def test_press_beside_narrow_vertical_track_at_thumb_grabs_it():
+    canvas, slider = _narrow("vertical", valinit=(2.0, 8.0))
+    _, y = _px_for_value(slider, 8.0)
+    slider._update(_event("button_press_event", canvas, slider.ax.bbox.x1 + 5.0, y))
+    assert slider.drag_active is True
+    _, y2 = _px_for_value(slider, 6.0)
+    slider._update(_event("motion_notify_event", canvas, slider.ax.bbox.x1 + 5.0, y2))
+    assert slider.val == pytest.approx((2.0, 6.0), abs=0.05)
+
+
+def test_press_far_outside_track_is_ignored():
+    canvas, slider = _narrow("vertical")
+    bb = slider.ax.bbox
+    slider._update(_event("button_press_event", canvas, (bb.x0 + bb.x1) / 2.0, bb.y1 + 40.0))
+    assert slider.drag_active is False
+    assert slider.val == pytest.approx((0.0, 10.0))
+
+
+def test_outside_press_beside_track_away_from_thumbs_is_ignored():
+    canvas, slider = _narrow("vertical", valinit=(2.0, 8.0))
+    _, y = _px_for_value(slider, 5.0)
+    slider._update(_event("button_press_event", canvas, slider.ax.bbox.x1 + 5.0, y))
+    assert slider.drag_active is False
+    assert slider._pan_active is False
+
+
+# --------------------------------------------------------------------------------------------------
 # log-space helper (pure, used by ui.py for the loglog step)
 # --------------------------------------------------------------------------------------------------
 def test_log_bounds_round_trip():

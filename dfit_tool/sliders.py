@@ -148,6 +148,10 @@ class PanRangeSlider(RangeSlider):
     #: presses within this many pixels of a thumb defer entirely to stock thumb-drag/jump.
     THUMB_TOL_PX = 8.0
 
+    #: a press outside the track's Axes within this many nominal (100 dpi) pixels of a thumb
+    #: grabs it (see ``_outside_thumb_hit``).
+    HANDLE_GRAB_PX = 10.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._pan_active = False
@@ -232,6 +236,33 @@ class PanRangeSlider(RangeSlider):
         lo_px, hi_px = self._thumb_pixels()
         return (lo_px + self.THUMB_TOL_PX) < p < (hi_px - self.THUMB_TOL_PX)
 
+    def _outside_thumb_hit(self, event):
+        """The thumb handle a press OUTSIDE this slider's Axes grabs, or None.
+
+        Stock ``RangeSlider`` only reacts to presses inside its Axes, but a thumb at either end
+        of the track is drawn half past it, and the tracks are only ~14-18 px across, so much of
+        a thumb's visible marker is dead. A press counts if it is within ``HANDLE_GRAB_PX``
+        (dpi-scaled) of a thumb along the track and of the track's own extent across it."""
+        if event.x is None or event.y is None:
+            return None
+        tol = self.HANDLE_GRAB_PX * self.ax.figure.dpi / 100.0
+        bb = self.ax.bbox
+        if self.orientation == "horizontal":
+            along, across, lo_edge, hi_edge = event.x, event.y, bb.y0, bb.y1
+        else:
+            along, across, lo_edge, hi_edge = event.y, event.x, bb.x0, bb.x1
+        if not (lo_edge - tol <= across <= hi_edge + tol):
+            return None
+        lo, hi = self.val
+        axis = 0 if self.orientation == "horizontal" else 1
+        best, best_d = None, tol
+        for handle, v in zip(self._handles, (lo, hi)):
+            pt = (v, 0.0) if axis == 0 else (0.0, v)
+            d = abs(self.ax.transData.transform(pt)[axis] - along)
+            if d <= best_d:
+                best, best_d = handle, d
+        return best
+
     # -- event handling --------------------------------------------------------------------------
     @_call_with_reparented_event
     def _update(self, event):
@@ -247,6 +278,17 @@ class PanRangeSlider(RangeSlider):
             self._pan_ref_pos = self._press_pos(event)
             event.canvas.grab_mouse(self.ax)
             return
+
+        if (event.name == "button_press_event" and not self._pan_active
+                and not self.drag_active and not self.ax.contains(event)[0]):
+            handle = self._outside_thumb_hit(event)
+            if handle is not None:
+                # Start a stock thumb drag without moving the value on the press itself; the
+                # following motion/release events go through stock ``_update`` as usual.
+                self.drag_active = True
+                self._active_handle = handle
+                event.canvas.grab_mouse(self.ax)
+                return
 
         if not self._pan_active:
             super()._update(event)
