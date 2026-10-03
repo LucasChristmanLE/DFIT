@@ -19,7 +19,7 @@ def _set_windows_app_id() -> None:
         return
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Liberty.DFITTool")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Liberty.FracClosure")
     except Exception:
         pass
 

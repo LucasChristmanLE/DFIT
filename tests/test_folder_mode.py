@@ -263,7 +263,7 @@ def test_load_wrapper_exits_folder_mode_and_delegates_to_load_common():
     assert stub.queue_entries == []
     assert stub._hide_calls == [True]
     assert stub.queue_tree.deleted == ("a", "b")
-    assert titles == ["DFIT interpretation (first build)"]
+    assert titles == ["FracClosure"]
     assert stub._load_common_calls == ["some/path.csv"]
     assert stub._update_folder_controls_calls == [True]
 

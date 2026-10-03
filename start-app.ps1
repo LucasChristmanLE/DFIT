@@ -1,4 +1,4 @@
-# Starts the DFIT Interpretation Tool with no file loaded.
+# Starts FracClosure with no file loaded.
 # Run:  right-click start-app.cmd > open,  OR  from a shell:  .\start-app.ps1
 
 $venvDir = 'C:\Users\LucasChristman\.venvs\dfit'
@@ -33,7 +33,7 @@ try {
     }
 
     Set-Location $projectRoot
-    Write-Host "Starting DFIT tool (no file loaded)..."
+    Write-Host "Starting FracClosure (no file loaded)..."
     & $python -m dfit_tool.app
     $code = $LASTEXITCODE
 

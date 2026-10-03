@@ -21,6 +21,7 @@ from tkinter import ttk, filedialog, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
+from . import APP_NAME
 from . import (colors as C, guide_content, interpret, io_load, picks, plots, sliders, store,
                summary)
 from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
@@ -224,7 +225,7 @@ def format_warnings_text(sections: list[tuple[str, list[str]]], expanded: bool) 
 class DfitApp:
     def __init__(self, root: tk.Tk, path: str | None = None):
         self.root = root
-        self.root.title("DFIT interpretation (first build)")
+        self.root.title(APP_NAME)
         self.root.geometry("1400x850")
         self.root.state("zoomed")
 
@@ -674,7 +675,7 @@ class DfitApp:
         self.queue_entries = []
         self._hide_queue()
         self.queue_tree.delete(*self.queue_tree.get_children())
-        self.root.title("DFIT interpretation (first build)")
+        self.root.title(APP_NAME)
         self._update_folder_controls()
         self._load_common(path)
 
@@ -816,7 +817,7 @@ class DfitApp:
                 self._apply_loaded_state(saved)
         self.state.active_source = source.lower()
         self.current_entry = entry
-        self.root.title(f"DFIT interpretation — {entry.display_label}")
+        self.root.title(f"{APP_NAME} — {entry.display_label}")
         entry.status = store.status_for(self.state if saved else None)
         self._refresh_queue_row(entry)
         self._update_folder_controls()
@@ -1243,7 +1244,7 @@ class DfitApp:
 
     def _build_guide_window(self):
         win = tk.Toplevel(self.root)
-        win.title("DFIT interpretation guide")
+        win.title(f"{APP_NAME} interpretation guide")
         win.state("zoomed")
         win._guide_images = []  # keep PhotoImage refs alive; Tk GCs unreferenced images.
 
