@@ -87,6 +87,14 @@ class PickState:
     # picks.resync_auto_tail_trim ran -- and gets clamped. Old saves lack this key and take the
     # default via _decode's known-field filter, no migration needed.
     tail_guard_override: bool = False
+    # Analyst-drawn pressure-mask intervals, absolute td.t_s seconds (not shut-in-relative, so a
+    # shut-in move never shifts them): (lo, hi) inclusive, applied post-shut-in only. A mask
+    # interval marks a gauge glitch the auto detectors missed; a keep interval overrides the
+    # auto-masking (dropouts and rise excursions) over the samples it covers. Both feed
+    # DerivedResults.dropout_mask in compute_all. Old saves lack these keys and take the default;
+    # _decode drops malformed entries.
+    mask_intervals: list[tuple[float, float]] = field(default_factory=list)
+    keep_intervals: list[tuple[float, float]] = field(default_factory=list)
 
     # --- step 2: injection window ---
     start_idx: Optional[int] = None
@@ -181,6 +189,24 @@ def _encode(state: PickState) -> dict:
     return d
 
 
+def _clean_intervals(raw) -> list[tuple[float, float]]:
+    """Mask/keep intervals from a save as (float, float) tuples. Drops any entry that is not a
+    2-sequence of finite real numbers with lo < hi; a null or non-list value gives []. Never
+    raises (the module's "old or foreign JSON never raises" contract)."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[tuple[float, float]] = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        if any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in item):
+            continue
+        lo, hi = float(item[0]), float(item[1])
+        if math.isfinite(lo) and math.isfinite(hi) and lo < hi:
+            out.append((lo, hi))
+    return out
+
+
 def _decode(d: dict) -> PickState:
     # Migrate an old save's eff_isip_line (a stored, draggable pick on P-vs-G) to min_dpdg_G: its
     # anchor sat on the P-vs-G curve at the same G the min-dP/dG point now lives at.
@@ -191,6 +217,9 @@ def _decode(d: dict) -> PickState:
     for key in ("loglog_window", "pp_window"):
         if d.get(key) is not None:
             d[key] = tuple(d[key])
+    for key in ("mask_intervals", "keep_intervals"):
+        if key in d:
+            d[key] = _clean_intervals(d[key])
     # A foreign/corrupted save can carry an explicit JSON null for a string field that
     # PickState defaults to "" -- e.g. compute_all calls state.closure_scenario.startswith(...)
     # unconditionally, which raises AttributeError on None. Coerce null -> "" for every scenario
@@ -464,14 +493,21 @@ class DerivedResults:
     guard_excluded_G: Optional[np.ndarray] = field(default=None, repr=False)
     guard_excluded_p: Optional[np.ndarray] = field(default=None, repr=False)
 
-    # Momentary near-zero pressure dropouts masked on the raw mapped pressure channel (see
-    # resample.detect_dropouts and the "Pressure dropouts" section in ../CLAUDE.md).
-    # dropout_mask is full-length (aligned with td samples), False before shut-in and wherever
-    # no dropout was detected; dropouts is the list of resample.Dropout records found. Every
+    # Masked pressure samples on the raw mapped pressure channel (see resample.detect_dropouts,
+    # resample.detect_rise_excursions and the "Pressure dropouts" section in ../CLAUDE.md).
+    # dropout_mask is the COMBINED mask from all sources (near-zero dropouts, returning rise
+    # excursions, PickState.mask_intervals, minus PickState.keep_intervals); the field name is
+    # kept for its consumers. Full-length (aligned with td samples), False before shut-in and
+    # wherever nothing was masked. dropouts / rise_excursions are the resample.Dropout /
+    # resample.RiseExcursion records found; n_manual_masked counts samples masked by a manual
+    # interval and n_keep_restored counts auto-masked samples a keep interval restored. Every
     # consumer of raw post-shut-in pressure applies this mask by treating a masked sample as
     # missing (NaN) -- res.bhp_all itself is never mutated.
     dropout_mask: Optional[np.ndarray] = field(default=None, repr=False)
     dropouts: list = field(default_factory=list, repr=False)
+    rise_excursions: list = field(default_factory=list, repr=False)
+    n_manual_masked: int = 0
+    n_keep_restored: int = 0
 
     # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
@@ -592,6 +628,14 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
 STIFFNESS_MAX_POINTS = 2000
 
 
+def _min_label(dt_s: float) -> str:
+    """Whole minutes for a warning. "at 0 min" reads as "no time elapsed at all" -- true for
+    anything in the first ~30 s, not just the exact instant of shut-in -- so "<1" is printed
+    instead; gated on the formatted (rounded) string, since that's what's actually printed."""
+    s = f"{dt_s/60:.0f}"
+    return "<1" if s == "0" else s
+
+
 def compute_all(state: PickState, td: TestData) -> DerivedResults:
     """Compute every derived value that the current PickState supports. Missing picks -> None.
 
@@ -691,16 +735,50 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         post_dropout = dt_all_dropout >= 0
         if post_dropout.any():
             raw_pressure = td.column(state.pressure_col)
-            dropout_mask_post, res.dropouts = resample.detect_dropouts(
-                dt_all_dropout[post_dropout], raw_pressure[post_dropout])
-            res.dropout_mask[post_dropout] = dropout_mask_post
-            # "at 0 min" reads as "no time elapsed at all" -- true for any dropout starting in
-            # the first ~30 s, not just one at the exact instant of shut-in. "at <1 min" is
-            # honest instead; gated on the formatted (rounded) string, since that's what's
-            # actually about to be printed.
-            def _min_label(dt_s: float) -> str:
-                s = f"{dt_s/60:.0f}"
-                return "<1" if s == "0" else s
+            dt_post = dt_all_dropout[post_dropout]
+            p_post_raw = raw_pressure[post_dropout]
+            auto_drop, res.dropouts = resample.detect_dropouts(dt_post, p_post_raw)
+            # Analyst intervals (absolute td.t_s, inclusive). Manual masks add to the auto mask;
+            # keep intervals override it. Rise excursions are detected on a copy of the raw
+            # pressure with the dropouts and manual masks removed (so a masked false low cannot
+            # pin the running min), except where a keep interval covers them (kept samples stay
+            # live input to the rise detector). A keep then unmasks in the combined mask.
+            t_post = td.t_s[post_dropout]
+            manual = np.zeros(len(t_post), dtype=bool)
+            keep = np.zeros(len(t_post), dtype=bool)
+            n_touching = 0
+            for lo, hi in state.mask_intervals:
+                hit = (t_post >= lo) & (t_post <= hi)
+                n_touching += bool(hit.any())
+                manual |= hit
+            for lo, hi in state.keep_intervals:
+                keep |= (t_post >= lo) & (t_post <= hi)
+            p_for_rise = np.array(p_post_raw, dtype=float)
+            p_for_rise[(auto_drop | manual) & ~keep] = np.nan
+            auto_rise, res.rise_excursions = resample.detect_rise_excursions(dt_post, p_for_rise)
+            final = (auto_drop | auto_rise | manual) & ~keep
+            res.dropout_mask[post_dropout] = final
+            res.n_manual_masked = int(np.count_nonzero(manual & ~keep))
+            res.n_keep_restored = int(np.count_nonzero((auto_drop | auto_rise) & keep))
+            if keep.any():
+                # An event a keep interval fully restored is not masked, so it is not reported as
+                # masked (warning, event list, log count); the keep warning covers it instead. An
+                # event's samples are the contiguous run of its own source mask containing its
+                # first sample: that covers a dropout's lead-in (which precedes dt_start) and
+                # stops at a rise's return sample (which is not masked).
+                def _still_masked(source: np.ndarray, dt_start: float) -> bool:
+                    k = int(np.searchsorted(dt_post, dt_start, side="left"))
+                    if k >= len(source) or not source[k]:
+                        return True   # can't locate it: keep reporting rather than go silent
+                    lo = k
+                    while lo > 0 and source[lo - 1]:
+                        lo -= 1
+                    off = np.flatnonzero(~source[k:])
+                    hi = k + int(off[0]) if off.size else len(source)
+                    return bool(final[lo:hi].any())
+                res.dropouts = [d for d in res.dropouts if _still_masked(auto_drop, d.dt_start)]
+                res.rise_excursions = [e for e in res.rise_excursions
+                                       if _still_masked(auto_rise, e.dt_start)]
             if len(res.dropouts) == 1:
                 d = res.dropouts[0]
                 # "1 sample" not "1 samples" (the common case, a single-sample glitch). The
@@ -719,6 +797,27 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 first = res.dropouts[0]
                 res.warnings.insert(0,
                     f"{len(res.dropouts)} pressure dropouts masked, first at "
+                    f"{_min_label(first.dt_start)} min")
+            # Front-inserted in reverse so they read rise, manual mask, manual keep, then the
+            # dropout line.
+            if res.n_keep_restored > 0:
+                n_word = "sample" if res.n_keep_restored == 1 else "samples"
+                res.warnings.insert(0, f"Manual keep: {res.n_keep_restored} auto-masked "
+                                       f"{n_word} restored")
+            if res.n_manual_masked > 0:
+                ivl = "interval" if n_touching == 1 else "intervals"
+                s_word = "sample" if res.n_manual_masked == 1 else "samples"
+                res.warnings.insert(0, f"Manual mask: {res.n_manual_masked} {s_word} in "
+                                       f"{n_touching} {ivl}")
+            if len(res.rise_excursions) == 1:
+                e = res.rise_excursions[0]
+                res.warnings.insert(0,
+                    f"Pressure rise masked at {_min_label(e.dt_start)} min "
+                    f"({_min_label(e.dt_end - e.dt_start)} min, +{e.p_max - e.base:.0f} psi)")
+            elif len(res.rise_excursions) > 1:
+                first = res.rise_excursions[0]
+                res.warnings.insert(0,
+                    f"{len(res.rise_excursions)} pressure rises masked, first at "
                     f"{_min_label(first.dt_start)} min")
 
     if state.isip_at_shutin and res.t_shutin_s is not None and state.shutin_idx is not None:

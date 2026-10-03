@@ -187,6 +187,9 @@ def _inputs(state: PickState, res: DerivedResults) -> Section:
         ["units note", res.unit_conversion_note or "none"],
         ["resampled points", str(len(res.resampled.p)) if res.resampled is not None else DASH],
         ["dropouts masked", str(len(res.dropouts)) if res.bhp_all is not None else DASH],
+        ["rises masked", str(len(res.rise_excursions)) if res.bhp_all is not None else DASH],
+        ["manual masks", (f"{len(state.mask_intervals)} mask, {len(state.keep_intervals)} keep"
+                          if res.bhp_all is not None else DASH)],
         ["tail cut (min after shut-in)", _fmt(_min(cut), "{:.2f}")],
     ]
     return Section("Inputs and data", ["Item", "Value"], rows)

@@ -269,9 +269,18 @@ is drawn (and draggable) on the stiffness step only.
   `SEEDERS`, because it needs a recomputed `res`. Moving shut-in calls
   `picks.resync_auto_tail_trim`, which only touches `"low_pressure"` trims. Scenario changes and
   min-dP/dG corrections never touch the trim.
-- **Dropouts**: `resample.detect_dropouts` masks brief near-zero gauge dips that recover (raw
-  mapped channel, post-shut-in only). Consumers treat masked samples as NaN; `res.bhp_all` is
-  never mutated. Overview/ISIP draw them as magenta markers excluded from autoscale.
+- **Masking**: `res.dropout_mask` is the combined mask (the name is historical), post-shut-in
+  only: (`resample.detect_dropouts` near-zero dips that recover | `resample.detect_rise_excursions`
+  guard-qualifying rises that return to within 30 psi of the pre-rise running min | manual
+  `PickState.mask_intervals`) & ~`PickState.keep_intervals`. Intervals are absolute `td.t_s`
+  seconds. Rises are detected with dropouts and manual masks NaN'd, so a manual mask over a false
+  low fixes a later rise's base. A rise is masked only if it starts >= 3 min after shut-in, lasts
+  <= 0.25 of elapsed time, and the level after the return is >= half the base (not a crash);
+  otherwise the scan stops and the guard fires as before. An event a keep fully restores is not
+  reported. Consumers treat masked samples as NaN; `res.bhp_all` is never mutated. Overview/ISIP
+  draw them as magenta markers excluded from autoscale. Overview gestures: Shift+drag mask,
+  Ctrl+drag keep, right-click a band to remove (`picks.commit_mask_interval` keeps the two lists
+  disjoint), plus a Clear button.
 - **No rate channel**: `interpret.suggest_injection_window_pressure` seeds the window from the
   pressure shape; te falls back to pump wall-clock duration with a warning. With rate,
   `suggest_injection_window` returns the last rate-on run whose size (volume gain, else summed
@@ -354,6 +363,10 @@ Accepted, not bugs to fix opportunistically. Full list with measured files in
 - The ISIP tangent fit and anchor snapping ignore `dropout_mask`; dropouts during injection are
   not masked.
 - Only the first tail-guard excursion is reported; a second one is resampled without a warning.
+- Short (< 60 s) upward spikes are never auto-masked (same shape as water hammer); use a manual
+  mask. A single-sample downward blip can pin a false running min, which both the guard and the
+  rise detector inherit (Akbary ~1350 min); a manual mask over it fixes the test.
+- Manual mask/keep bands before shut-in are drawn and counted in the log but mask nothing.
 - 7-step-era saves read `"in_progress"` until the stiffness step is visited (intended).
 - Sample data, `Refs/`, and `.superpowers/` are gitignored. Old design specs are in
   `docs/superpowers/`. The log is CSV only (parquet mirror deferred).

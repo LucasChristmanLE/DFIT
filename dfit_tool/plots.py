@@ -144,6 +144,22 @@ def _split_dropouts(p: np.ndarray, mask: Optional[np.ndarray]) -> tuple[np.ndarr
     return p_clean, p_masked
 
 
+_MAX_DROPOUT_MARKERS = 20000
+
+
+def _plot_manual_spans(ax, state: PickState) -> None:
+    """Shade the analyst's manual mask/keep intervals (absolute seconds) as hour-axis bands.
+    dataLim is snapshotted and restored so the bands never move autoscale or ViewDefaults."""
+    saved_points = ax.dataLim.get_points().copy()
+    for intervals, gid, color in ((state.mask_intervals, "manual_mask", C.MANUAL_MASK),
+                                  (state.keep_intervals, "manual_keep", C.MANUAL_KEEP)):
+        for lo, hi in intervals:
+            span = ax.axvspan(lo / 3600.0, hi / 3600.0, color=color, alpha=C.MANUAL_SPAN_ALPHA,
+                              lw=0, gid=gid)
+            span.set_label("_nolegend_")
+    ax.dataLim.set_points(saved_points)
+
+
 def _plot_dropout_markers(ax, x: np.ndarray, y: np.ndarray) -> None:
     """Scatter masked-dropout samples (``x``/``y`` already filtered to the finite/masked subset --
     see render_overview/render_isip) as their own small markers, without letting their real (and
@@ -158,6 +174,10 @@ def _plot_dropout_markers(ax, x: np.ndarray, y: np.ndarray) -> None:
     """
     if not len(x):
         return
+    if len(x) > _MAX_DROPOUT_MARKERS:
+        # A rise excursion can mask tens of thousands of samples; thin evenly.
+        stride = int(np.ceil(len(x) / _MAX_DROPOUT_MARKERS))
+        x, y = x[::stride], y[::stride]
     saved_points = ax.dataLim.get_points().copy()
     ax.plot(x, y, color=C.DROPOUT, marker="o", ms=3, ls="none", label="masked dropout",
             gid="dropout_masked", scalex=False, scaley=False)
@@ -277,6 +297,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     # main trace's decimation stride and never get drawn.
     masked_idx = np.flatnonzero(np.isfinite(p_masked))
     _plot_dropout_markers(ax, t_h[masked_idx], p_masked[masked_idx])
+    _plot_manual_spans(ax, state)
 
     ax.set_xlabel("Time from File Start (h)")
     ax.set_ylabel(press_ylabel, color=press_color)

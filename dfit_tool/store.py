@@ -80,6 +80,12 @@ LOG_COLUMNS = [
     # True when the postclosure scenario is the auto-assigned PC-A (picks.auto_assign_postclosure)
     # -- tail-appended per the append-only convention.
     "postclosure_auto",
+    # Counts of masked-pressure sources (resample.detect_dropouts, resample.detect_rise_excursions,
+    # PickState.mask_intervals / keep_intervals) -- tail-appended per the append-only convention.
+    "dropouts_masked",
+    "rises_masked",
+    "manual_masks",
+    "manual_keeps",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -531,4 +537,8 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "tangent_uninterpretable": state.tangent_uninterpretable,
         "apparent_isip_method": res.apparent_isip_method,
         "postclosure_auto": state.postclosure_auto,
+        "dropouts_masked": len(res.dropouts),
+        "rises_masked": len(res.rise_excursions),
+        "manual_masks": len(state.mask_intervals),
+        "manual_keeps": len(state.keep_intervals),
     }

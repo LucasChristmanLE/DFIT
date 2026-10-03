@@ -139,6 +139,12 @@ class SpanController:
         self.selector.disconnect_events()
 
 
+def _norm_modifier(name: str) -> str:
+    """Canonical modifier name: matplotlib reports Ctrl as "control" on ``event.key`` but callers
+    (and some backends' ``event.modifiers``) say "ctrl"."""
+    return "ctrl" if name == "control" else name
+
+
 class ModifierSpanController:
     """Modifier-armed (default Shift) horizontal drag-select on a target Axes; forwards the
     sorted ``(lo, hi)`` window on release. Backs the G-function step's window-correction gesture
@@ -171,14 +177,19 @@ class ModifierSpanController:
     way (the selection disappears) and calls ``on_span(lo, hi)`` with the sorted bounds, but only
     when ``hi > lo``. ``disconnect()`` mid-drag also releases the gate and resets ``_press_x``, so
     a stray motion event after disconnection can't raise on the now-gone patch.
+
+    ``exclude`` names modifiers that veto capture when held (e.g. Shift-armed with
+    ``exclude=("ctrl",)`` ignores Ctrl+Shift). "ctrl" and "control" are the same name everywhere.
     """
 
     def __init__(self, canvas, ax, on_span: Callable[[float, float], None],
-                 modifier: str = "shift", gate: Optional[_CaptureGate] = None, guard=None):
+                 modifier: str = "shift", gate: Optional[_CaptureGate] = None, guard=None,
+                 exclude=()):
         self.canvas = canvas
         self.ax = ax
         self.on_span = on_span
-        self.modifier = modifier
+        self.modifier = _norm_modifier(modifier)
+        self.exclude = frozenset(_norm_modifier(m) for m in exclude)
         self.gate = gate if gate is not None else _CaptureGate()
         self.guard = guard or (lambda: False)
 
@@ -196,8 +207,9 @@ class ModifierSpanController:
             return
         # event.key only reflects a modifier when the canvas had keyboard focus at key-press time;
         # event.modifiers comes from the mouse event's own state, so it works on the first click.
-        held = set((event.key or "").split("+")) | set(getattr(event, "modifiers", None) or ())
-        if self.modifier not in held:
+        held = {_norm_modifier(m) for m in (event.key or "").split("+")}
+        held |= {_norm_modifier(m) for m in (getattr(event, "modifiers", None) or ())}
+        if self.modifier not in held or held & self.exclude:
             return
         if self.guard():
             return
@@ -286,6 +298,58 @@ class ModifierSpanController:
         a move cursor for the duration of the gesture instead of raising on the probe it doesn't
         implement."""
         return "body" if self._press_x is not None else None
+
+
+class IntervalRemoveController:
+    """Right-click inside a shaded interval removes it. ``get_spans()`` returns
+    ``(kind, idx, lo_x, hi_x)`` tuples in the axes' data x units; a button-3 press inside ``ax``
+    (pixel hit-test, never ``event.inaxes``) whose x falls in a span calls ``on_remove(kind,
+    idx)``. With a ``gate``, it is claimed after the hit-test succeeds and released on button
+    release, like every other controller sharing a gate."""
+
+    def __init__(self, canvas, ax, get_spans: Callable[[], list], on_remove, gate=None):
+        self.canvas = canvas
+        self.ax = ax
+        self.get_spans = get_spans
+        self.on_remove = on_remove
+        self.gate = gate
+        self._holding = False
+        self._cids = [
+            canvas.mpl_connect("button_press_event", self._on_press),
+            canvas.mpl_connect("button_release_event", self._on_release),
+        ]
+
+    def _on_press(self, event):
+        if event.button != 3 or not _axes_contains_pixel(self.ax, event):
+            return
+        x, _ = _data_from_pixel(self.ax, event)
+        hit = next(((k, i) for k, i, lo, hi in self.get_spans() if lo <= x <= hi), None)
+        if hit is None:
+            return
+        if self.gate is not None:
+            if not self.gate.try_claim(self):
+                return
+            self._holding = True
+        self.on_remove(*hit)
+
+    def _on_release(self, event):
+        if self._holding and self.gate is not None:
+            self.gate.release()
+        self._holding = False
+
+    def disconnect(self):
+        for cid in self._cids:
+            self.canvas.mpl_disconnect(cid)
+        self._cids = []
+        if self._holding and self.gate is not None:
+            self.gate.release()
+        self._holding = False
+
+    def hover_kind(self, event) -> Optional[str]:
+        return None
+
+    def active_kind(self) -> Optional[str]:
+        return None
 
 
 class DragLineController:
@@ -1040,6 +1104,55 @@ def handle_pp_span(state: PickState, lo: float, hi: float) -> None:
     t_lo = float(hi) ** (1.0 / expo)
     t_hi = float(lo) ** (1.0 / expo) if lo > 0 else float("inf")
     state.pp_window = (t_lo, t_hi)
+
+
+def commit_mask_interval(state: PickState, kind: str, lo_s: float, hi_s: float) -> None:
+    """Add ``[lo_s, hi_s]`` (absolute ``td.t_s`` seconds) to ``state.mask_intervals`` (kind
+    "mask") or ``state.keep_intervals`` ("keep"): union-merged into that list, and subtracted from
+    the other kind's list so the two never overlap. Inverted bounds are sorted; a zero-width or
+    non-finite interval is ignored."""
+    lo, hi = sorted((float(lo_s), float(hi_s)))
+    if not (math.isfinite(lo) and math.isfinite(hi)) or hi <= lo:
+        return
+    own, other = (("mask_intervals", "keep_intervals") if kind == "mask"
+                  else ("keep_intervals", "mask_intervals"))
+    merged = []
+    for a, b in sorted(getattr(state, own) + [(lo, hi)]):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    setattr(state, own, merged)
+    pieces = []
+    for a, b in getattr(state, other):
+        if b <= lo or a >= hi:
+            pieces.append((a, b))
+            continue
+        if a < lo:
+            pieces.append((a, lo))
+        if b > hi:
+            pieces.append((hi, b))
+    setattr(state, other, pieces)
+
+
+def interval_at(intervals, x_s: float) -> Optional[int]:
+    """Index of the interval with ``lo <= x_s <= hi``, else None."""
+    for i, (lo, hi) in enumerate(intervals):
+        if lo <= x_s <= hi:
+            return i
+    return None
+
+
+def remove_interval(state: PickState, kind: str, idx: int) -> None:
+    lst = state.mask_intervals if kind == "mask" else state.keep_intervals
+    if 0 <= idx < len(lst):
+        del lst[idx]
+
+
+def clear_manual_masks(state: PickState) -> None:
+    state.mask_intervals = []
+    state.keep_intervals = []
+
 
 
 # --------------------------------------------------------------------------------------------------

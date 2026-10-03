@@ -554,6 +554,12 @@ class DfitApp:
                         variable=self.var_isip_at_shutin,
                         command=self._on_isip_at_shutin).pack(anchor="w")
 
+        # Overview's manual-mask tool: one button that drops every analyst mask/keep band.
+        self.frm_masks = ttk.Frame(panel)
+        self.btn_clear_masks = ttk.Button(self.frm_masks, text="Clear manual masks (0)",
+                                          state="disabled", command=self._on_clear_masks)
+        self.btn_clear_masks.pack(anchor="w")
+
     def _show_queue(self):
         """Add the folder-mode sidebar as the leftmost pane -- `before=` re-slots it ahead
         of the center pane regardless of add order. No-op when the pane is already present
@@ -1548,7 +1554,10 @@ class DfitApp:
         self.frm_tangent.pack_forget()
         self.frm_isip.pack_forget()
         self.frm_stiffness.pack_forget()
+        self.frm_masks.pack_forget()
         if self.step == "overview":
+            self.frm_masks.pack(side="bottom", fill="x", after=self.frm_notes)
+            self._update_masks_button()
             self.frm_results.pack_forget()
             # Ahead of frm_notes in pack order (still drawn at the top): the issues list is the
             # only full list of blockers, so a short panel squeezes Notes instead of it.
@@ -1572,6 +1581,16 @@ class DfitApp:
         if self.step == "stiffness":
             self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
             self.frm_stiffness.pack(side="bottom", fill="x", after=self.frm_notes)
+
+    def _update_masks_button(self):
+        """Show the manual mask+keep band count on the Clear button; disabled when there are none."""
+        n = len(self.state.mask_intervals) + len(self.state.keep_intervals)
+        self.btn_clear_masks.config(text=f"Clear manual masks ({n})",
+                                    state="normal" if n else "disabled")
+
+    def _on_clear_masks(self):
+        picks.clear_manual_masks(self.state)
+        self.refresh()
 
     def _twin_axes(self):
         """The step's twin (secondary y) Axes if it has one, else None.
@@ -1896,6 +1915,38 @@ class DfitApp:
         step = self.step
         if step == "overview":
             res = self.res
+            mask_hint = ""
+            # One gate for every Overview gesture: a Shift/Ctrl press near the trim line goes to
+            # the mask/keep span (connected first), a plain press to the trim drag.
+            gate = picks._CaptureGate()
+            if self.td is not None:
+
+                def _commit_band(kind):
+                    def on_span(lo_h, hi_h):
+                        picks.commit_mask_interval(self.state, kind, lo_h * 3600.0, hi_h * 3600.0)
+                        self.refresh()
+                    return on_span
+
+                def get_spans():
+                    return [(kind, i, lo / 3600.0, hi / 3600.0)
+                            for kind, ivs in (("mask", self.state.mask_intervals),
+                                              ("keep", self.state.keep_intervals))
+                            for i, (lo, hi) in enumerate(ivs)]
+
+                def on_remove(kind, idx):
+                    picks.remove_interval(self.state, kind, idx)
+                    self.refresh()
+
+                self._controllers.append(picks.ModifierSpanController(
+                    self.canvas, self.ax, _commit_band("mask"), modifier="shift",
+                    exclude=("ctrl",), gate=gate))
+                self._controllers.append(picks.ModifierSpanController(
+                    self.canvas, self.ax, _commit_band("keep"), modifier="ctrl",
+                    exclude=("shift",), gate=gate))
+                self._controllers.append(picks.IntervalRemoveController(
+                    self.canvas, self.ax, get_spans, on_remove, gate=gate))
+                mask_hint = (" Shift+drag to mask a glitch, Ctrl+drag to keep auto-masked data, "
+                             "right-click a band to remove it.")
             if (res.resampled_full is not None and res.t_shutin_s is not None
                     and len(res.resampled_full.dt)):
                 dt_full = res.resampled_full.dt
@@ -1940,7 +1991,8 @@ class DfitApp:
                     self.refresh()
 
                 ctrl = picks.DragLineController(self.canvas, self.ax,
-                                                handlers={"tail_trim": commit_trim})
+                                                handlers={"tail_trim": commit_trim},
+                                                gate=gate)
                 self._controllers.append(ctrl)
                 self._controllers.append(picks.HoverCursorController(self.canvas, [ctrl]))
                 hint = ("Drag the blue dashed line to trim a bad tail; release it at the right "
@@ -1954,10 +2006,11 @@ class DfitApp:
                     hint = ("Drag the blue dashed line to trim a bad tail; release it at the "
                             "right edge to override the tail guard and extend the cutoff to "
                             "the end of the record.")
-                self.hint_lbl.config(text=hint)
+                self.hint_lbl.config(text=hint + mask_hint)
             else:
                 self.hint_lbl.config(
-                    text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists.")
+                    text="Entire dataset. Trim tool unavailable until a shut-in/falloff exists."
+                    + mask_hint)
         elif step == "injection":
             def _commit(idx_attr):
                 def on_release(x_hours):

@@ -1223,7 +1223,66 @@ and the Axes' `dataLim` is snapshotted before and restored after, so a masked sa
 that reads `ax.get_ylim()`/`dataLim` afterward, e.g. the ISIP step's default view or the Overview
 y-slider's full range -- down to it; the marker is still a real plotted artist at its true (and
 possibly off-screen) position, just excluded from the bounding box. Exported PNGs
-(`render_step_figure`) get this automatically, since it isn't gated on `interactive`.
+(`render_step_figure`) get this automatically, since it isn't gated on `interactive`. Above
+20,000 masked samples (one rise excursion can mask 38k) the markers are thinned to an even stride.
+
+**Rise excursions.** An upward excursion that comes back down otherwise trips the tail guard and
+ends resampling there. Arkansas 1BH `1BH MERGED.DBS` has a +50 psi bump at 975-1075 min after
+shut-in (guard at 985 min, ~200 h lost). Akbary `Edge - Akbary DFIT Injection All Data
+Combined.DBS` has a +2277 psi excursion at 954-1046 min (guard at 955 min, ~35 h lost).
+`resample.detect_rise_excursions(dt, p)` uses the guard's own run definition (continuously above
+`running_min + RISE_GUARD_PSI` for >= 60 s and >= 5 samples), so water hammer is never a
+candidate. The return is the first later finite sample <= `base + 30`. The mask runs from one
+sample after the last new running-min sample before the run (so the slow start of a ramp is
+included), walked forward so it is never longer before the run than the event's own duration,
+through the sample before the return. An event is masked only when all three hold:
+- it starts >= `RISE_EXCURSION_MIN_START_S` (180 s);
+- its duration is <= `RISE_EXCURSION_MAX_FRAC` (0.25) of the elapsed time at its start;
+- the median of the first 5 finite samples from the return is >= `RISE_EXCURSION_CRASH_FRAC`
+  (0.5) of the base.
+
+Any failure stops the scan with nothing masked for it or after it, so the guard fires there
+exactly as it would without the detector. Masked samples never lower the running min, so the fast
+path computes the running min, runs, fire points and new-min positions once over the whole
+record. Only the return search runs per event, with a doubling window. `_rise_excursion_loop` is
+the reference, fuzzed against the fast path.
+
+Corpus evidence (2026-10-02, all 3550 `C:\DFIT Data` tests, first source, auto-seeded injection):
+- 2712 loaded and resampled, and the guard fired on 1116 of them.
+- 956 of those had a first excursion that returns. Their duration/elapsed spreads continuously
+  from 1e-4 to >500, with no clean gap.
+- Contact sheets (late starts) at <= 0.25 were mostly real glitches: Arkansas, Latham, Alma West
+  bumps and plateaus.
+- 0.25-0.5 added mostly junk: a second pump pulse (Crestone Reserve), a dead gauge (Montney), and
+  false-base events.
+- Several "returns" were the gauge crashing to ~0 (Crestone Rush 4CH, Raindance, Kiwetinohk),
+  hence the crash check.
+- Early excursions (first ~15 min) were mostly pressure steps from a mis-picked shut-in or
+  staged-down pumps, hence the start floor. With the 0.25 cap a >= 60-s run can't be masked
+  before 240 s anyway, so the 180-s floor only acts if the cap is raised.
+- A cluster at ~830-1030 min after shut-in recurs across operators (Akbary, Arkansas, Latham x2,
+  John Peanut, Deporter, Khaki Campbell, Liberty 10TFH, Berry, SM B&D). It looks like a merge
+  seam or surface operation. These spread 0.16-0.9, and the cap catches about half.
+
+The detector inherits the guard's weakness: a single-sample downward blip pins a false running
+min, after which real decline sits "above" it (Akbary ~1350 min, Black Hills Ponderosa). A manual
+mask over the blip fixes it, because manual masks are NaN'd before detection.
+
+**Manual masks.** `PickState.mask_intervals` / `keep_intervals` are absolute `td.t_s` seconds
+(stable across shut-in moves), sanitized by `_decode` (non-finite, inverted or malformed entries
+are dropped). `compute_all` builds `res.dropout_mask = (dropouts | rises | manual) & ~keep`, post
+shut-in only.
+- A keep is a true override: a kept rise is resampled, and the guard fires on it again.
+- An event whose own contiguous masked run (including a dropout's lead-in) is entirely kept is
+  removed from `res.dropouts` / `res.rise_excursions`, so it is not reported as masked.
+- Warnings: "Manual mask: N samples in K intervals" and "Manual keep: N auto-masked samples
+  restored".
+- Overview gestures share one `_CaptureGate` with the tail-trim line. Shift+drag adds a mask,
+  Ctrl+drag a keep (`ModifierSpanController(exclude=...)` keeps them exclusive), right-click a
+  band removes it (`IntervalRemoveController`), and a Clear button empties both lists.
+- `picks.commit_mask_interval` merges into one kind and subtracts the range from the other, so
+  the lists never overlap.
+- Log columns (appended): `dropouts_masked`, `rises_masked`, `manual_masks`, `manual_keeps`.
 
 **G-function.** α = 1 (low-leakoff) is the default; α = 0.5 only if a test exceeds ~1 md.
 

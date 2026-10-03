@@ -270,19 +270,26 @@ def test_overview_wiring_attaches_drag_and_hover():
     td, st, res = _seeded_with_crash()
     stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
-    assert len(stub._controllers) == 2
-    ctrl, hover_ctrl = stub._controllers
+    # Two mask/keep span controllers and the remove controller precede the trim pair.
+    assert len(stub._controllers) == 5
+    ctrl, hover_ctrl = stub._controllers[3:]
     assert isinstance(ctrl, picks.DragLineController)
     assert isinstance(hover_ctrl, picks.HoverCursorController)
+    # One gate for every Overview gesture, so a Shift/Ctrl press near the trim line can't start
+    # both a span and a trim drag.
+    gates = {id(c.gate) for c in stub._controllers[:4]}
+    assert len(gates) == 1
 
 
-def test_overview_wiring_no_resampled_full_no_controllers():
+def test_overview_wiring_no_resampled_full_no_trim_controllers():
     td = make_testdata()
     st = PickState(pressure_col="PRESSURE")  # no start/shutin -> no t_shutin_s/resampled_full
     res = compute_all(st, td)
     stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
-    assert stub._controllers == []
+    # No trim tool, but the manual mask tool is still attached.
+    assert [type(c).__name__ for c in stub._controllers] == [
+        "ModifierSpanController", "ModifierSpanController", "IntervalRemoveController"]
 
 
 def _seeded_with_guard_fire_and_more_data_after():

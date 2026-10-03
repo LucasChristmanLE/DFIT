@@ -654,6 +654,196 @@ def _dropout_scan_loop(
     return mask, events
 
 
+RISE_EXCURSION_MAX_FRAC = 0.25  # masked only if duration <= this fraction of elapsed shut-in time at its start
+# Excursions starting earlier than this after shut-in are left to the guard. In the corpus check
+# (docs/implementation-notes.md, "Rise excursions") early ones were mostly pressure steps from a
+# mis-picked shut-in or staged-down pumps, not gauge glitches.
+RISE_EXCURSION_MIN_START_S = 180.0
+# A "return" whose level (median of the first 5 finite samples from the return sample) is below
+# this fraction of the base is a gauge crash, not a return: left to the guard and the tail trim.
+RISE_EXCURSION_CRASH_FRAC = 0.5
+
+
+@dataclass
+class RiseExcursion:
+    dt_start: float   # first masked sample
+    dt_end: float     # return sample (first sample back within tol of base; NOT masked)
+    n_samples: int    # masked sample count (r - lo)
+    base: float       # running min at the start of the qualifying run
+    p_max: float      # nanmax over the masked samples
+
+
+def _first_at_or_below(pf: np.ndarray, start: int, thr: float) -> int | None:
+    """First index >= ``start`` with ``pf <= thr``, found with a doubling window so the cost is
+    proportional to the distance searched, not to the rest of the record."""
+    n = len(pf)
+    s, w = start, 4096
+    while s < n:
+        e = min(n, s + w)
+        hit = np.flatnonzero(pf[s:e] <= thr)
+        if hit.size:
+            return s + int(hit[0])
+        s, w = e, w * 2
+    return None
+
+
+def detect_rise_excursions(
+    dt: np.ndarray,
+    p: np.ndarray,
+    tol: float = RISE_GUARD_PSI,
+    sustain_s: float = RISE_GUARD_SUSTAIN_S,
+    sustain_samples: int = RISE_GUARD_SUSTAIN_SAMPLES,
+    max_frac: float = RISE_EXCURSION_MAX_FRAC,
+    min_start_s: float = RISE_EXCURSION_MIN_START_S,
+    crash_frac: float = RISE_EXCURSION_CRASH_FRAC,
+) -> tuple[np.ndarray, list[RiseExcursion]]:
+    """Mask sustained upward excursions that RETURN to the pre-excursion level.
+
+    ``dt``/``p`` are post-shut-in samples (dt >= 0, increasing). A run qualifies exactly as the
+    tail rise guard does (``resample_pressure_increment``): consecutive finite samples above
+    ``running_min + tol`` lasting >= ``sustain_s`` and >= ``sustain_samples`` samples; a sample
+    within ``tol`` of the running min, or a non-finite one, resets the run. Where the guard then
+    stops resampling, this checks whether the series comes back (first later finite sample
+    ``<= base + tol``, ``base`` = the running min when the run started). The samples from the
+    last new minimum + 1 through the sample before the return are masked when all of these hold:
+    the masked span starts at or after ``min_start_s``, lasts <= ``max_frac`` of the elapsed
+    time at its start, and the level after the return (median of the first 5 finite samples from
+    the return sample) is >= ``crash_frac * base`` (``crash_frac <= 0`` disables that check).
+    The start is walked forward so a slow ramp-up cannot make the masked span longer than the
+    sustained run. A run that never returns, or fails any check, stops the scan with nothing
+    masked for it or after it: the guard then fires there exactly as it would without this.
+
+    Returns a bool mask aligned with ``p`` (True = masked) and the ``RiseExcursion`` records.
+    Vectorized replacement for ``_rise_excursion_loop`` (the semantic reference, pinned by
+    ``tests/test_rise_excursions.py``'s fuzz test). Masked samples never lower the running min
+    (every one is >= base), so the running min, the above-tolerance runs, their fire points, and
+    the new-minimum positions are all computed once over the whole record; only the return
+    search runs per event, with a doubling window. Total cost is O(n) plus the searched spans.
+    """
+    dt = np.asarray(dt, dtype=float)
+    p = np.asarray(p, dtype=float)
+    n = len(p)
+    mask = np.zeros(n, dtype=bool)
+    events: list[RiseExcursion] = []
+    if n == 0:
+        return mask, events
+    finite = np.isfinite(p)
+    pf = np.where(finite, p, np.inf)
+    # rmb[k]: the running min just before sample k.
+    rmb = np.empty(n)
+    rmb[0] = np.inf
+    rmb[1:] = np.minimum.accumulate(pf)[:-1]
+    above = finite & (pf > rmb + tol)
+    if not above.any():
+        return mask, events
+    idx_arr = np.arange(n)
+    starts = above.copy()
+    starts[1:] &= ~above[:-1]
+    run_start = np.maximum.accumulate(np.where(starts, idx_arr, -1))
+    rel = np.flatnonzero(above)
+    rs = run_start[rel]
+    cond = (rel - rs + 1 >= sustain_samples) & (dt[rel] - dt[rs] >= sustain_s)
+    fire_k, fire_rs = rel[cond], rs[cond]   # both nondecreasing
+    if not fire_k.size:
+        return mask, events
+    new_min = np.flatnonzero(finite & (pf <= rmb))   # samples that set/tie the running min
+    fin_idx = np.flatnonzero(finite)
+    pos = 0
+    floor_i = 0
+    while True:
+        j = int(np.searchsorted(fire_rs, pos, side="left"))
+        if j >= fire_k.size:
+            break
+        kf, ks = int(fire_k[j]), int(fire_rs[j])
+        base = float(rmb[kf])
+        r = _first_at_or_below(pf, kf, base + tol)
+        if r is None:
+            break   # never returns: the guard's job
+        m = int(np.searchsorted(new_min, ks, side="left"))
+        last_min_i = int(new_min[m - 1]) if m > 0 else -1
+        lo = max(last_min_i + 1, floor_i)
+        dur_run = dt[r] - dt[ks]
+        if lo < ks:
+            too_far = (dt[ks] - dt[lo:ks]) > dur_run
+            stop = np.flatnonzero(~too_far)
+            lo += int(stop[0]) if stop.size else len(too_far)
+        dur = dt[r] - dt[lo]
+        if dt[lo] <= 0 or dt[lo] < min_start_s or dur > max_frac * dt[lo]:
+            break
+        if crash_frac > 0:
+            f0 = int(np.searchsorted(fin_idx, r, side="left"))
+            level = float(np.median(p[fin_idx[f0:f0 + 5]]))
+            if level < crash_frac * base:
+                break
+        mask[lo:r] = True
+        events.append(RiseExcursion(float(dt[lo]), float(dt[r]), r - lo, base,
+                                    float(np.nanmax(p[lo:r]))))
+        floor_i = r
+        pos = r
+    return mask, events
+
+
+def _rise_excursion_loop(dt, p, tol, sustain_s, sustain_samples, max_frac,
+                         min_start_s=RISE_EXCURSION_MIN_START_S,
+                         crash_frac=RISE_EXCURSION_CRASH_FRAC):
+    """Reference per-sample implementation of ``detect_rise_excursions`` (the semantic
+    definition; kept for the fuzz test, same convention as ``_dropout_scan_loop``)."""
+    dt = np.asarray(dt, dtype=float)
+    p = np.asarray(p, dtype=float)
+    n = len(p)
+    mask = np.zeros(n, dtype=bool)
+    events: list[RiseExcursion] = []
+    rm = np.inf
+    last_min_i = -1
+    floor_i = 0
+    run_start = None
+    run_n = 0
+    i = 0
+    while i < n:
+        v = p[i]
+        if not np.isfinite(v):
+            run_start, run_n = None, 0
+            i += 1
+            continue
+        if v > rm + tol:
+            if run_start is None:
+                run_start, run_n = i, 0
+            run_n += 1
+            if dt[i] - dt[run_start] >= sustain_s and run_n >= sustain_samples:
+                base = rm
+                r = None
+                for k in range(i, n):
+                    if np.isfinite(p[k]) and p[k] <= base + tol:
+                        r = k
+                        break
+                if r is None:
+                    break
+                lo = max(last_min_i + 1, floor_i)
+                dur_run = dt[r] - dt[run_start]
+                while lo < run_start and dt[run_start] - dt[lo] > dur_run:
+                    lo += 1
+                dur = dt[r] - dt[lo]
+                if dt[lo] <= 0 or dt[lo] < min_start_s or dur > max_frac * dt[lo]:
+                    break
+                if crash_frac > 0:
+                    after = [float(p[k]) for k in range(r, n) if np.isfinite(p[k])][:5]
+                    if float(np.median(after)) < crash_frac * base:
+                        break
+                mask[lo:r] = True
+                events.append(RiseExcursion(float(dt[lo]), float(dt[r]), r - lo, float(base),
+                                            float(np.nanmax(p[lo:r]))))
+                floor_i = r
+                run_start, run_n = None, 0
+                i = r
+                continue
+        else:
+            run_start, run_n = None, 0
+            if v <= rm:
+                rm, last_min_i = v, i
+        i += 1
+    return mask, events
+
+
 @dataclass
 class Diagnostics:
     G: np.ndarray         # G-time
