@@ -1367,24 +1367,23 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
         # stop_at_guard=False), but either way nothing past it is admitted into the diagnostics
         # unless the analyst drags an explicit override (PickState.tail_guard_override).
         return
-    # Snap to the last resampled sample STRICTLY BEFORE the cut (side="left", not "right"), and
-    # not _nearest -- both of those can leave the crash sample itself in the record, which is the
-    # one sample that must go. The resampler keeps a point at every >=30 psi drop, so a crash
-    # cliff is almost always kept, and it is usually the LAST point kept (the flat ~0 psi tail
-    # after it never drops another 30 psi). "<= cut" would therefore land on dt_full[-1] and hit
-    # the bail below on the ordinary crashed record, making this seeder a near-no-op.
-    idx = int(np.searchsorted(dt_full, cut_dt, side="left")) - 1
-    # Bail rather than clamp. With side="left", idx < 2 happens exactly when fewer than 3
-    # resampled samples precede the crash -- clamping idx UP to 2 (the old behavior) can then
-    # set a trim at dt_full[2], which can sit AT OR PAST the cut and so still keep a sub-floor
-    # sample; the "auto-trimmed" message would then name a point where pressure never actually
-    # fell below the floor. idx >= len(dt_full) - 1 happens when the cut sits past the last kept
-    # point (crash beyond where resampling reached) -- nothing in the record to remove. Both
-    # halves are covered without a pick here by the separate low-surface-pressure warning, which
-    # scans raw (not kept) samples, so bailing never goes silent.
-    if idx < 2 or idx >= len(dt_full) - 1:
+    # Snap to the last RAW sample strictly before the cut, not a resampled one. The 30-psi
+    # resampler keeps nothing on a slow late falloff, so the last kept point before the crash can
+    # sit hours early (AEF 05-61-34-5649B: 251.9 h for a 290.96 h crash). The kept points at or
+    # before the trim are the same either way, so no diagnostic changes; only the line, gray-out,
+    # and logged tail_trim_s move to where the crash actually is. Strictly before (not <=, not
+    # nearest) so the crash sample itself, usually the last kept point, is excluded.
+    raw_before = dt_post[dt_post < cut_dt]
+    # Bail rather than clamp when the trim would keep fewer than 3 kept points (clamping up to
+    # dt_full[2] can sit at or past the cut and keep a sub-floor sample), or when no kept point
+    # sits at or past the cut (crash beyond where resampling reached, nothing to remove). Both
+    # are still covered by the separate low-surface-pressure warning, which scans raw samples.
+    if len(dt_full) < 3 or len(raw_before) == 0 or dt_full[-1] < cut_dt:
         return
-    commit_tail_trim(state, float(dt_full[idx]))
+    trim_dt = float(raw_before[-1])
+    if trim_dt < dt_full[2]:
+        return
+    commit_tail_trim(state, trim_dt)
     state.tail_trim_reason = "low_pressure"
 
 

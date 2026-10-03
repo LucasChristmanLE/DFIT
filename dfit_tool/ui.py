@@ -1915,30 +1915,26 @@ class DfitApp:
                         idx = picks._nearest(raw_dt_post, dt_target)
                         dt = float(raw_dt_post[idx])
                     else:
-                        # dt_target is at/before the guard (or there's no guard at all): restrict
-                        # the snap candidates to samples strictly before it. dt_full itself can
-                        # carry points AT OR PAST guard_dt now (stop_at_guard=False, and the
-                        # bidirectional keep rule can keep a sample exactly at guard_dt -- the
-                        # first rising sample of the guarded excursion, if it's a >= step move off
-                        # the last pre-guard kept point), so snapping against the unrestricted
-                        # array can pick one of those whenever it happens to be numerically nearer
-                        # than any pre-guard sample (a sparse pre-guard decline and a denser
-                        # post-guard one) -- silently crossing into override territory even though
-                        # the analyst never dragged past the guard. Masking to strictly-before
-                        # reproduces exactly the kept-point set stop_at_guard=True would have
-                        # produced (resample.resample_pressure_increment truncates to idx <
-                        # s_abs), so this is provably equivalent to the tool's pre-override
-                        # behavior for every no-guard/at-or-before-guard case.
-                        candidates = dt_full if guard_dt is None else dt_full[dt_full < guard_dt]
-                        if len(candidates) == 0:  # should be impossible (dt_full always has the
-                            dt = None             # dt=0 reference point), but never index into
-                                                   # an empty array -- fall back to clearing.
+                        # dt_target is at/before the guard (or there's no guard at all): snap to
+                        # the nearest RAW sample, not a 30-psi kept point. Kept points can be
+                        # hours apart on a slow late falloff, which left a drag only two places
+                        # to land (AEF 05-61-34-5649B). Candidates are restricted to strictly
+                        # before guard_dt so a drag at/before the guard never crosses into
+                        # override territory.
+                        if guard_dt is None:
+                            kept, candidates = dt_full, raw_dt_post
+                        else:
+                            kept = dt_full[dt_full < guard_dt]
+                            candidates = raw_dt_post[raw_dt_post < guard_dt]
+                        if len(kept) < 3 or len(candidates) == 0:
+                            dt = None  # no room for a trim that keeps >= 3 kept points
                         else:
                             idx = picks._nearest(candidates, dt_target)
-                            idx = max(idx, 2)  # never trim below 3 kept points; clamp before the
-                                               # clear check so a <=3-point record can only clear,
-                                               # never index past the end
-                            dt = None if idx >= len(candidates) - 1 else float(candidates[idx])
+                            if idx >= len(candidates) - 1:
+                                dt = None  # released at/past the last sample: clear
+                            else:
+                                # never trim below 3 kept points
+                                dt = max(float(candidates[idx]), float(kept[2]))
                     picks.commit_tail_trim(self.state, dt, guard_dt)
                     self.refresh()
 

@@ -326,8 +326,41 @@ def test_seed_tail_trim_trims_when_the_crash_is_the_last_kept_point():
 
     picks.seed_tail_trim(st, td, res)
 
-    assert st.tail_trim_dt == pytest.approx(15.0)  # dt_full[-2], NOT no-trim
+    assert st.tail_trim_dt == pytest.approx(19.0)  # last raw sample before the crash, NOT no-trim
     assert st.tail_trim_reason == "low_pressure"
+
+
+def _seeded_with_flat_stretch_then_crash(flat_from: int = 300, crash_at: int = 700):
+    """A slow late falloff that never moves 30 psi (held flat from dt=flat_from), then a crash
+    below 100 psi at dt=crash_at. The resampler keeps nothing on the flat stretch, so the only
+    kept points near the crash are the one before the stretch and the crash sample itself. The
+    AEF 05-61-34-5649B DFIT.DBS shape: 678 -> 661 psi over the last 39 h before the crash."""
+    td = make_testdata(n=1200, zero_crash_at=None)
+    shutin = 300  # helpers.SHUTIN_IDX; raw samples are 1 s apart, so dt == index - shutin
+    p = td.df["PRESSURE"].to_numpy(copy=True)
+    p[shutin + flat_from:shutin + crash_at] = p[shutin + flat_from]
+    p[shutin + crash_at:] = 50.0
+    td.df["PRESSURE"] = p
+    st = injection_state(td)
+    picks.seed_injection(st, td)
+    res = compute_all(st, td)
+    picks.seed_isip(st, td, res)
+    res = compute_all(st, td)
+    return td, st, res
+
+
+def test_seed_tail_trim_lands_at_the_raw_sample_before_the_crash_not_a_sparse_kept_point():
+    """Regression (AEF 05-61-34-5649B): the seed snapped to the last 30-psi kept point before the
+    crash, which sat 39 h early on a slow falloff. It must land on the last raw sample before the
+    crash."""
+    td, st, res = _seeded_with_flat_stretch_then_crash(flat_from=300, crash_at=700)
+    kept_before_crash = res.resampled_full.dt[res.resampled_full.dt < 700.0]
+    assert kept_before_crash[-1] <= 300.0  # sanity: nothing kept on the flat stretch
+
+    picks.seed_tail_trim(st, td, res)
+
+    assert st.tail_trim_reason == "low_pressure"
+    assert st.tail_trim_dt == pytest.approx(699.0)
 
 
 def test_seed_tail_trim_sets_no_pick_for_guard_only_record():

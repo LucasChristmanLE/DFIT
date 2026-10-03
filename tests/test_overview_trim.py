@@ -518,9 +518,9 @@ def test_overview_trim_commit_release_at_last_sample_clears():
     assert st.tail_trim_dt is None
 
 
-def test_overview_trim_commit_at_or_before_guard_uses_resampled_grid_snap_unchanged():
-    """A drag target at/before guard_dt takes the old resampled-grid path unchanged: it snaps
-    against res.resampled_full.dt, not the raw record, and never sets tail_guard_override."""
+def test_overview_trim_commit_at_or_before_guard_snaps_before_guard_without_override():
+    """A drag target at/before guard_dt snaps to a raw sample strictly before the guard and never
+    sets tail_guard_override."""
     td, st, res = _seeded_with_guard_fire_and_more_data_after()
     guard_dt = res.resampled_full.guard_dt
     assert guard_dt is not None
@@ -558,6 +558,27 @@ def test_overview_trim_commit_release_mid_record_snaps_to_nearest_sample():
     x_hours = (float(res.resampled_full.dt[mid]) + res.t_shutin_s) / 3600.0
     commit(x_hours)
     assert st.tail_trim_dt == pytest.approx(float(res.resampled_full.dt[mid]))
+
+
+def test_overview_trim_commit_snaps_to_raw_samples_between_sparse_kept_points():
+    """Regression (AEF 05-61-34-5649B): on a slow falloff the 30-psi kept points are hours apart,
+    so snapping a drag to them left only two places to land. A drag between two kept points must
+    land on the nearest raw sample."""
+    td = make_testdata(n=1200, zero_crash_at=None)
+    p = td.df["PRESSURE"].to_numpy(copy=True)
+    p[300 + 300:300 + 700] = p[300 + 300]   # flat from dt=300 to dt=700
+    p[300 + 700:] = 50.0                    # crash at dt=700
+    td.df["PRESSURE"] = p
+    st = injection_state(td)
+    picks.seed_injection(st, td)
+    res = compute_all(st, td)
+    assert not np.any((res.resampled_full.dt > 300.0) & (res.resampled_full.dt < 700.0))
+
+    stub, commit = _trim_commit(td, st, res)
+    commit((500.4 + res.t_shutin_s) / 3600.0)
+
+    assert st.tail_trim_dt == pytest.approx(500.0)
+    assert st.tail_guard_override is False
 
 
 def test_overview_trim_commit_release_before_shutin_clamps_to_index_2():

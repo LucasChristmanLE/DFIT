@@ -931,21 +931,19 @@ the rise guard. A rise-guard boundary sets **no pick at all** (`PickState.tail_t
 `None`) -- the guard boundary is already the effective cutoff by default
 (`interpret.resolve_tail_cut_dt`, below, with no trim in state), so only the rendered line
 position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
-does snap to the last full-resample sample **strictly before** the cut (`searchsorted` with
-`side="left"`, not `"right"`, and not `picks._nearest`) and sets `PickState.tail_trim_reason =
-"low_pressure"` (logged to `tail_trim_reason`, appended after `tail_trim_s` in `LOG_COLUMNS`).
-Strictly-before matters and is not a rounding nicety: the resampler keeps a point at every >=30 psi
-drop, so the crash cliff is almost always kept *and is usually the last point kept* (the flat ~0
-psi tail after it never drops another 30 psi), so an "at or before" snap would land on
-`dt_full[-1]`, trip the seeder's own past-the-end bail, and make the auto-trim a near-no-op on the
-ordinary crashed record. The seeder BAILS (sets no pick) rather than clamps whenever
-`idx = searchsorted(dt_full, cut_dt, side="left") - 1` falls outside `[2, len(dt_full) - 2]`:
-`idx < 2` means fewer than 3 resampled samples precede the crash, so no cut can both keep >=3
-points and exclude it -- clamping `idx` UP to 2 (the old behavior) could set a trim at
-`dt_full[2]` even when that sample sits at or past the crash, keeping a sub-floor sample inside
-a record the "Tail auto-trimmed" message claims is clean; `idx >= len(dt_full) - 1` means the
-cut sits past the last kept point (crash beyond where resampling reached), so there's nothing in
-the record to remove. Both bail cases are still covered by the separate low-surface-pressure
+snaps to the last **raw** post-shut-in sample **strictly before** the cut and sets
+`PickState.tail_trim_reason = "low_pressure"` (logged to `tail_trim_reason`, appended after
+`tail_trim_s` in `LOG_COLUMNS`). Raw, not the last full-resample (30-psi kept) sample: on a slow
+late falloff the resampler keeps nothing for hours, so the last kept point before the crash can
+sit far early (AEF 05-61-34-5649B DFIT.DBS: kept points at 204.6, 251.9 and 290.96 h, crash at
+290.96 h, 678 -> 661 psi over the last 39 h; the old kept-point snap trimmed at 251.9 h). The kept
+points at or before the trim are identical either way, so no diagnostic changes; only the line,
+gray-out, warning text and logged `tail_trim_s` move. Strictly-before matters: the crash cliff is
+almost always kept *and is usually the last point kept*, so it must be excluded. The seeder BAILS
+(sets no pick) rather than clamps when the trim would sit before `dt_full[2]` (fewer than 3 kept
+points would remain; clamping up to `dt_full[2]` could sit at or past the crash and keep a
+sub-floor sample inside a record the "Tail auto-trimmed" message claims is clean), or when
+`dt_full[-1] < cut_dt` (crash beyond where resampling reached, nothing in the record to remove). Both bail cases are still covered by the separate low-surface-pressure
 warning (which scans raw, not kept, samples), so neither goes silent -- setting no trim is
 strictly better than setting a wrong one. Neither candidate existing (clean record) leaves the
 line parked at the end of the data, nothing trimmed. The seeder is non-destructive (a pre-existing
@@ -1019,17 +1017,12 @@ the guard -- not even the excursion's own first sample -- ever clears that +-ste
 last pre-guard kept value (reachable when `resample_step` is configured larger than the
 excursion's height above it), so there may be no resampled sample there to snap to at all. The override therefore lives in `ui.py`'s Overview
 drag-commit closure (`_attach_controllers`), not in the resampler: when the drag target is at or
-before `guard_dt` (or there's no guard), it snaps to the nearest full-resample sample among only
-those strictly before `guard_dt` (`picks._nearest` against `DerivedResults.resampled_full.dt`
-masked to `< guard_dt` when a guard exists) -- restricted, not the bare unmasked array, because
-`resampled_full` can now carry points AT OR PAST `guard_dt` too (`stop_at_guard=False`, and the
-bidirectional keep rule can keep a sample exactly at `guard_dt`), and an unmasked nearest search
-can pick one of those whenever it happens to sit numerically closer to the drag target than any
-pre-guard sample (a sparse pre-guard decline next to a denser post-guard one), silently setting
-`tail_guard_override` even though the analyst never dragged past the guard. Masking to strictly
-before `guard_dt` reproduces exactly the kept-point set `stop_at_guard=True` would have produced
-(it truncates to `idx < s_abs`), so this branch is provably equivalent to the tool's pre-override
-behavior. When the drag target is PAST `guard_dt`, it instead snaps against the RAW post-shut-in
+before `guard_dt` (or there's no guard), it snaps to the nearest raw post-shut-in sample among
+only those strictly before `guard_dt`, floored at the third kept point (`>= 3` kept points) and
+cleared when released at the last candidate. Raw, not `resampled_full.dt`: kept points can be
+hours apart on a slow falloff, which left a drag only two places to land (AEF 05-61-34-5649B).
+Restricted to `< guard_dt` so a drag at/before the guard can never land past it and silently set
+`tail_guard_override`. When the drag target is PAST `guard_dt`, it also snaps against the RAW post-shut-in
 samples (`self.td.t_s` from shut-in onward) -- resolvable unconditionally regardless of whether
 the resampler found any new points past the guard, since a raw sample always exists to snap to
 even when `resampled_full` doesn't. That said, "resolvable" is not "meaningful": the override
