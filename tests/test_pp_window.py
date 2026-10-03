@@ -208,8 +208,8 @@ def test_render_porepressure_shades_finite_window_and_plain_title():
     x_hi = lo ** expo
     assert rect.get_x() == pytest.approx(x_lo)
     assert rect.get_x() + rect.get_width() == pytest.approx(x_hi)
-    assert ax.get_title() == f"Pore pressure = {pore_pressure:.0f} psi"
-    assert ">= observed" not in ax.get_title()
+    assert ax.get_title() == f"Pore Pressure = {pore_pressure:.0f} psi"
+    assert ">= Observed" not in ax.get_title()
 
 
 def test_render_porepressure_open_ended_window_shades_from_zero():
@@ -234,7 +234,7 @@ def test_render_porepressure_open_ended_window_shades_from_zero():
 
 def test_render_porepressure_flags_title_when_fit_is_unphysical():
     """A window where the fitted BHP is perfectly flat: the extrapolated (x->0) pore pressure
-    equals the window's observed minimum exactly, tripping the ">= observed" sanity flag."""
+    equals the window's observed minimum exactly, tripping the ">= Observed" sanity flag."""
     t = np.array([10.0, 50.0, 100.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0])
     p = np.array([9500.0, 9400.0, 9300.0, 9200.0, 9100.0, 9000.0, 9000.0, 9000.0, 8500.0, 8400.0])
     dg = _pp_diagnostics(t, p)
@@ -250,7 +250,7 @@ def test_render_porepressure_flags_title_when_fit_is_unphysical():
     res = DerivedResults(diagnostics=dg, pore_pressure=pore_pressure)
 
     ax, _ = _render_pp(state, res)
-    assert ">= observed" in ax.get_title()
+    assert ">= Observed" in ax.get_title()
 
 
 def test_render_porepressure_default_ylim_includes_the_intercept():

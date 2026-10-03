@@ -219,7 +219,7 @@ def test_isip_at_shutin_draws_dot_not_tangent():
     gids = _gids(ax)
     assert "isip_shutin_dot" in gids
     assert not any(g and g.startswith("isip_tangent_") for g in gids)
-    assert "(at shut-in)" in ax.get_title()
+    assert "(At Shut-In)" in ax.get_title()
     assert f"{res.apparent_isip:.0f}" in ax.get_title()
 
 

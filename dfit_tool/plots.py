@@ -332,7 +332,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
         trim_x_h = (cut_dt + res.t_shutin_s) / 3600.0 if cut_dt is not None else t_h[-1]
         ax.axvline(trim_x_h, color=C.TAIL_TRIM, ls="--", lw=1.8, gid="tail_trim")
 
-    ax.set_title("Overview — entire dataset", fontsize=10)
+    ax.set_title("Overview", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
 
     # Pinned y-min 0 (CLAUDE.md TODO): the pressure trace never reads below 0 psi, and a
@@ -440,7 +440,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     """
     ax.clear()
     if res.bhp_all is None or res.t_shutin_s is None:
-        ax.set_title("Apparent ISIP -- set injection window first", fontsize=10)
+        ax.set_title("Apparent ISIP -- Set Injection Window First", fontsize=10)
         return ViewDefaults()
     t_min = (td.t_s - res.t_shutin_s) / 60.0
     m = (t_min >= -5.0) & (t_min <= 15.0)
@@ -481,9 +481,9 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
         # No tangent: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
         if res.apparent_isip is not None:
             ax.plot(0.0, res.apparent_isip, "o", color=C.ISIP_LINE, gid="isip_shutin_dot")
-            ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi (at shut-in)", fontsize=10)
+            ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi (At Shut-In)", fontsize=10)
         else:
-            ax.set_title("Apparent ISIP (at shut-in) -- no BHP at the shut-in sample", fontsize=10)
+            ax.set_title("Apparent ISIP (At Shut-In) -- No BHP at the Shut-In Sample", fontsize=10)
         ax.legend(loc="upper right", fontsize=8)
         return ViewDefaults(xlim=_ISIP_DEFAULT_XLIM, ylim=ylim, y2lim=y2lim,
                             y_color=press_color, y2_color=y2_color)
@@ -504,7 +504,7 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     if res.apparent_isip is not None:
         ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi", fontsize=10)
     else:
-        ax.set_title("Apparent ISIP -- place the tangent", fontsize=10)
+        ax.set_title("Apparent ISIP -- Place the Tangent", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
     return ViewDefaults(xlim=_ISIP_DEFAULT_XLIM, ylim=ylim, y2lim=y2lim,
                         y_color=press_color, y2_color=y2_color)
@@ -514,7 +514,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     """Step 4: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
     ax.clear()
     if res.diagnostics is None:
-        ax.set_title("G-function -- need te and a falloff", fontsize=10)
+        ax.set_title("G-Function -- Need te and a Falloff", fontsize=10)
         # Recovery path: a pathological saved tail trim can leave <3 resampled points (the
         # diagnostics guard in compute_all fails), so there is nothing left to diagnose here.
         # The trim tool itself now lives on the Overview tab -- dragging it back right there is
@@ -634,7 +634,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if state.contact_G is not None:
         ax.axvline(state.contact_G, color=C.PICK, ls=":", lw=1.2, gid="contact_vline")
 
-    title = "G-function"
+    title = "G-Function"
     if res.effective_isip_compliance is not None:
         title += f"   eff.ISIP={res.effective_isip_compliance:.0f}"
     if res.shmin_compliance is not None:
@@ -655,7 +655,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     curve on the primary axis."""
     ax.clear()
     if res.diagnostics is None:
-        ax.set_title("Tangent method -- need a falloff", fontsize=10)
+        ax.set_title("Tangent Method -- Need a Falloff", fontsize=10)
         return ViewDefaults()
     dg = res.diagnostics
     rs = res.resampled
@@ -679,7 +679,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     if state.tangent_uninterpretable:
         # Explicit negative finding, same precedent as render_stiffness's stiffness_no_upturn:
         # the curves stay as evidence, but no line/marker, and shmin_tangent is None.
-        title = "Tangent method -- uninterpretable (Shmin not reported)"
+        title = "Tangent Method -- Uninterpretable (Shmin Not Reported)"
     else:
         if state.closure_slope is not None:
             gg = np.array([0.0, float(dg.G.max())])
@@ -690,7 +690,7 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
             ax.plot(state.closure_G, yv, "o", color=C.PICK, ms=7, label="closure",
                     gid="closure_point")
             ax.axvline(state.closure_G, color=C.PICK, ls=":", lw=1.2, gid="closure_vline")
-        title = "Tangent method"
+        title = "Tangent Method"
         if res.shmin_tangent is not None:
             title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
@@ -703,7 +703,7 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
     """Step 6: log-log dp and t*dP/dt vs shut-in time; selected window + fitted slope."""
     ax.clear()
     if res.diagnostics is None:
-        ax.set_title("Log-log -- need a falloff", fontsize=10)
+        ax.set_title("Log-Log -- Need a Falloff", fontsize=10)
         return ViewDefaults()
     dg = res.diagnostics
     good = (dg.t > 0) & (dg.dp > 0)
@@ -719,10 +719,10 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
         lo, hi = state.loglog_window
         ax.axvspan(lo, hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
         s = "?" if res.loglog_slope is None else f"{res.loglog_slope:.2f}"
-        ax.set_title(f"Log-log   window slope={s}   ({state.postclosure_scenario or '?'})",
+        ax.set_title(f"Log-Log   Window Slope={s}   ({state.postclosure_scenario or '?'})",
                      fontsize=10)
     else:
-        ax.set_title("Log-log -- select the late-time window", fontsize=10)
+        ax.set_title("Log-Log -- Select the Late-Time Window", fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
     return ViewDefaults()
 
@@ -731,7 +731,7 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     """Step 7: P vs t^-1/2 or t^-1 with the fitted line extended to the intercept."""
     ax.clear()
     if res.diagnostics is None:
-        ax.set_title("Pore pressure -- need a falloff", fontsize=10)
+        ax.set_title("Pore Pressure -- Need a Falloff", fontsize=10)
         return ViewDefaults()
     dg = res.diagnostics
     expo = -0.5 if state.pp_axis == "tm12" else -1.0
@@ -762,14 +762,14 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             pmin = float(dg.p[m].min())
             if res.pore_pressure >= pmin:
                 ax.set_title(
-                    f"Pore pressure = {res.pore_pressure:.0f} psi  (>= observed -- adjust window)",
+                    f"Pore Pressure = {res.pore_pressure:.0f} psi  (>= Observed -- Adjust Window)",
                     fontsize=10)
             else:
-                ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
+                ax.set_title(f"Pore Pressure = {res.pore_pressure:.0f} psi", fontsize=10)
         else:
-            ax.set_title(f"Pore pressure = {res.pore_pressure:.0f} psi", fontsize=10)
+            ax.set_title(f"Pore Pressure = {res.pore_pressure:.0f} psi", fontsize=10)
     else:
-        ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
+        ax.set_title("Pore Pressure -- Select the Late-Time Window", fontsize=10)
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
     # The pick sits at x = 0, normally below every observed sample; keep it in the default view.
     p_view = dg.p if res.pore_pressure is None else np.append(dg.p, res.pore_pressure)
@@ -785,7 +785,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     apparent" -- the curve still draws, but no pick vline/marker and a title saying so."""
     ax.clear()
     if res.stiffness_S is None:
-        ax.set_title("Stiffness -- requires the min-dP/dG pick and a pore-pressure estimate",
+        ax.set_title("Stiffness -- Requires the min-dP/dG Pick and a Pore-Pressure Estimate",
                      fontsize=10)
         return ViewDefaults()
     p_eff, S = res.stiffness_p_eff[1:], res.stiffness_S
@@ -795,14 +795,14 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # set_yscale("log") ahead of this check drew an axis-only plot plus a matplotlib
         # UserWarning ("Data has no positive values..."). Guard branch instead, same style as
         # the missing-arrays branch above.
-        title = "Stiffness -- no positive relative-stiffness samples to plot"
+        title = "Stiffness -- No Positive Relative-Stiffness Samples to Plot"
         if closure_uninterpretable(state):
-            title += " -- G-function uninterpretable (Shmin not reported)"
+            title += " -- G-Function Uninterpretable (Shmin Not Reported)"
         elif state.stiffness_no_upturn:
             # The recorded finding still belongs in the title even though there is nothing to
             # plot -- otherwise this branch silently drops it and looks like a data problem
             # rather than the analyst's own "no slope change apparent" call.
-            title += " -- no slope change apparent (Shmin not reported)"
+            title += " -- No Slope Change Apparent (Shmin Not Reported)"
         ax.set_title(title, fontsize=10)
         return ViewDefaults()
     ax.plot(p_eff, S, color=C.PRESSURE, lw=1.0, marker=".", ms=3)
@@ -814,14 +814,14 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if closure_uninterpretable(state):
         # C-X: the min-dP/dG anchor of this curve can't be trusted, so shmin_stiffness is None
         # (model.compute_all). Same no-vline/no-marker treatment as stiffness_no_upturn.
-        ax.set_title("Relative stiffness -- G-function uninterpretable (Shmin not reported)",
+        ax.set_title("Relative Stiffness -- G-Function Uninterpretable (Shmin Not Reported)",
                      fontsize=10)
     elif state.stiffness_no_upturn:
         # Explicit negative finding, same precedent as closure scenario C-C's "no contact ->
         # no Shmin": the curve is still evidence (kept on the plot and in PNG exports), but
         # there is no upturn to mark, so no vline/marker -- and shmin_stiffness is None
         # (model.compute_all), so no title should imply otherwise.
-        ax.set_title("Relative stiffness -- no slope change apparent (Shmin not reported)",
+        ax.set_title("Relative Stiffness -- No Slope Change Apparent (Shmin Not Reported)",
                      fontsize=10)
     elif state.stiffness_pick_P is not None:
         ax.axvline(state.stiffness_pick_P, color=C.STIFFNESS_PICK, ls="--", lw=1.4,
@@ -842,7 +842,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         else:
             ax.set_title("Stiffness", fontsize=10)
     else:
-        ax.set_title("Stiffness -- pick the upturn", fontsize=10)
+        ax.set_title("Stiffness -- Pick the Upturn", fontsize=10)
 
     finite_p = p_eff[np.isfinite(p_eff)]
     xlim = None
@@ -984,7 +984,7 @@ def _summary_ladder(ax, cv) -> bool:
     ]
     entries = [e for e in entries if e[1] is not None]
     ax.set_gid("summary_ladder")
-    ax.set_title("Reported pressures", fontsize=10, pad=36)
+    ax.set_title("Reported Pressures", fontsize=10, pad=36)
     if not entries:
         ax.text(0.5, 0.5, "no pressures yet", ha="center", va="center",
                 transform=ax.transAxes, color=C.MID_GREY)
@@ -1014,7 +1014,7 @@ def _summary_breakdown(ax, cv) -> bool:
     """Per method, a floating bar Shmin -> reference ISIP (net pressure) and reference ISIP ->
     apparent ISIP (complexity): Shmin + net + complexity = apparent ISIP."""
     ax.set_gid("summary_breakdown")
-    ax.set_title("Shmin + net + complexity\n= apparent ISIP", fontsize=10)
+    ax.set_title("Shmin + Net + Complexity\n= Apparent ISIP", fontsize=10)
     rows = []
     for name, shmin, net in (("compliance", cv.shmin_compliance, cv.net_compliance),
                              ("tangent", cv.shmin_tangent, cv.net_tangent),
@@ -1059,7 +1059,7 @@ def _summary_closure(ax, cv) -> bool:
     the closure time in minutes. The compliance pick is drawn at Shmin (contact - 75 psi), so it
     sits below the curve; the others are read off the curve."""
     ax.set_gid("summary_closure")
-    ax.set_title("Closure picks in G-time", fontsize=10)
+    ax.set_title("Closure Picks in G-Time", fontsize=10)
     entries = [("min dP/dG", cv.min_dpdg_G, cv.min_dpdg_p, cv.min_dpdg_tc_s, C.MID_GREY),
                ("compliance (contact - 75)", cv.G_compliance, cv.shmin_compliance,
                 cv.tc_compliance_s, C.LBRT_RED),
