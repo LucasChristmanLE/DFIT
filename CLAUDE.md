@@ -290,7 +290,7 @@ is drawn (and draggable) on the stiffness step only.
 - **G-function**: α = 1 default; α = 0.5 only if a test exceeds ~1 md. The dP/dG default view
   autoscales over G >= 1.0 (`Y2_SCALE_G_MIN`), minus the leading water-hammer run
   (`interpret.leading_spike_end`: > 5x the median) and a trailing crash spike
-  (`terminal_spike_start`), capped at `DPDG_VIEW_MAX` (500).
+  (`terminal_spike_start`), capped at `DPDG_VIEW_MAX` (2000).
 - **Min-dP/dG pick**: seeded by `interpret.suggest_min_dpdg_index` (interior local min before the
   contact hump, `suggest_hump_index`). `seed_gfunction` hides two regions from the suggesters
   and `is_clear_closure`: G < `interpret.SEED_MIN_G` (1.0; early-decline noise), and a trailing

@@ -51,10 +51,10 @@ def test_render_step_figure_gfunction_clamps_default_view():
     fig = plots.render_step_figure("gfunction", td, state, res)
     # gfunction overrides full_y with the renderer's data-driven ylim (ui.py:646-651).
     assert fig.axes[0].get_ylim() == defaults.ylim
-    # ...and clamps the derivative twin to 0..500 (ui.py:654-657).
+    # ...and clamps the derivative twin to 0..DPDG_VIEW_MAX (ui.py:654-657).
     twin = next(a for a in fig.axes if a is not fig.axes[0])
     lo, hi = twin.get_ylim()
-    assert lo >= 0.0 and hi <= 500.0
+    assert lo >= 0.0 and hi <= plots.DPDG_VIEW_MAX
 
 
 def test_render_step_figure_applies_stored_view_twin():

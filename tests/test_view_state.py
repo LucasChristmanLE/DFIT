@@ -114,11 +114,30 @@ def test_gfunction_y2lim_default_no_longer_capped_at_50():
     assert defaults.y2lim[1] == pytest.approx(350.0)  # 300 x 1.10, rounded up to a tick
 
 
-def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
-    """A record whose real dP/dG runs even higher (~900) still clamps at DPDG_VIEW_MAX so the
-    default view can never exceed the 0-500 hard bound."""
+def test_gfunction_y2lim_default_not_capped_at_500():
+    """A record whose post-G=1 dP/dG genuinely runs to ~1500 autoscales there instead of being
+    squashed by the old 500 cap."""
     G = np.linspace(0.1, 20.0, 60)
-    dPdG = np.linspace(10.0, 900.0, 60)
+    dPdG = np.linspace(10.0, 1500.0, 60)
+    dPdG[:3] = 20000.0  # water-hammer spike, still below G=1
+    p = np.linspace(5000.0, 4000.0, 60)
+    res = DerivedResults()
+    res.resampled = Resampled(dt=np.linspace(0.0, 3000.0, 60), p=p, n_raw=60)
+    res.diagnostics = Diagnostics(G=G, dPdG=dPdG, GdPdG=G * dPdG, d2PdG2=np.gradient(dPdG, G),
+                                  t=np.linspace(1.0, 3000.0, 60),
+                                  p=p, dp=np.zeros(60), tdpdt=np.zeros(60))
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_gfunction(ax, None, PickState(), res)
+    assert defaults.y2lim[1] == pytest.approx(plots.nice_limits(0.0, 1500.0 * 1.10)[1])
+    assert defaults.y2lim[1] > 1500.0
+
+
+def test_gfunction_y2lim_default_clamped_at_dpdg_view_max():
+    """A record whose real dP/dG runs even higher (~3000) still clamps at DPDG_VIEW_MAX so the
+    default view can never exceed the 0-2000 hard bound."""
+    G = np.linspace(0.1, 20.0, 60)
+    dPdG = np.linspace(10.0, 3000.0, 60)
     dPdG[:3] = 20000.0  # water-hammer spike, still below G=1
     p = np.linspace(5000.0, 4000.0, 60)
     res = DerivedResults()
@@ -350,7 +369,7 @@ def _refresh_stub(td, state, step):
     return stub
 
 
-def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500():
+def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_view_max():
     td = make_testdata()
     state = injection_state(td)
     res = compute_all(state, td)
@@ -370,9 +389,9 @@ def test_refresh_clamps_gfunction_full_y_to_pressure_data_and_full_y2_to_0_500()
     # whatever the Axes autoscaled to (which includes the tangent construction).
     assert (stub._y_slider.valmin, stub._y_slider.valmax) == pytest.approx(defaults.ylim)
 
-    # full_y2: the dP/dG slider's outer range must never exceed 0-500.
+    # full_y2: the dP/dG slider's outer range must never exceed 0-DPDG_VIEW_MAX.
     assert stub._y2_slider.valmin >= 0.0
-    assert stub._y2_slider.valmax <= 500.0
+    assert stub._y2_slider.valmax <= plots.DPDG_VIEW_MAX
 
 
 def test_refresh_unions_overview_full_y_down_to_zero():
@@ -551,7 +570,7 @@ def test_apply_step_view_unions_default_outside_autoscale_except_gfunction_y():
     assert sv.full_y[0] == 0.0 and sv.full_y[1] >= 200.0
     assert sv.full_y2[0] == 0.0 and sv.full_y2[1] == 9.0
 
-    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 2000.0))
+    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 5000.0))
     sv = plots.apply_step_view("gfunction", ax, ViewDefaults(ylim=(120.0, 180.0), y2lim=(0.0, 50.0)))
     assert sv.full_y == (120.0, 180.0)                      # replaced, not unioned
     assert sv.full_y2[0] == 0.0 and sv.full_y2[1] == plots.DPDG_VIEW_MAX

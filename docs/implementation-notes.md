@@ -1309,12 +1309,12 @@ A record entirely below G=1 falls back to all finite samples. The **slider's ful
 twin Axes' own autoscale unioned with that default, then hard-clamped into
 `(0, plots.DPDG_VIEW_MAX)` -- both steps in `plots.apply_step_view`, which `ui.refresh` and
 `plots.render_step_figure` share. The clamp is what stops the slider
-traveling past 500 no matter how extreme the raw spike is. The union is what keeps the default
+traveling past 2000 no matter how extreme the raw spike is. The union is what keeps the default
 view inside the travel: the raw autoscale is inflated at the top by the near-G=0 spike and
 lifted off zero at the bottom by a nonzero data minimum, so the default can fall outside it in
 either direction, and `_make_range_slider`'s valinit pinning would then snap the view off the
 default on the first slider touch -- the same failure the `full_y` union prevents on every other
-step. Note the full range is an *intersection* with `(0, 500)`, not that interval itself.
+step. Note the full range is an *intersection* with `(0, DPDG_VIEW_MAX)`, not that interval itself.
 `render_tangent`'s own G·dP/dG default is still the 95th-percentile rule and has no cap.
 
 Closure scenarios drive the contact pick and effective ISIP:

@@ -41,7 +41,7 @@ D2_AXIS_GID = "d2pdg2_axis"  # gid on the gfunction step's optional third (d2P/d
 
 RATE_VIEW_FACTOR = 3.0  # default rate-axis ceiling = this x the max rate plotted on that step, so
                         # the rate trace rides in the bottom third, clear of the pressure trace
-DPDG_VIEW_MAX = 500.0   # hard ceiling on the gfunction dP/dG axis: default view AND slider range
+DPDG_VIEW_MAX = 2000.0  # hard ceiling on the gfunction dP/dG axis: default view AND slider range
 Y2_SCALE_G_MIN = 1.0    # G below this is the water-hammer spike -- excluded from the autoscale
 
 
