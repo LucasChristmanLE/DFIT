@@ -53,6 +53,10 @@ INJECTION_MAX_PLAUSIBLE_BPM = 150.0  # suggest_injection_window: a run whose med
 INJECTION_MIN_SURFACE_PSI = 500.0  # suggest_injection_window: a run whose median surface pressure
                                    # is below this is a prime/fill into an open system, not the
                                    # injection (WRP Anderson 18-3-11HC: ~90 bpm at ~0 psi).
+INJECTION_PRIME_MIN_SURVIVOR_FRAC = 0.05  # the low-pressure filter applies only when the largest
+                                          # high-pressure run is at least this fraction of the
+                                          # largest low-pressure one (corpus: real primes >= 0.083,
+                                          # late-gauge injections vs a blip <= 0.019).
 CLEAR_RISE_FRAC = 0.10  # C-A contact: dP/dG rise above the min-dP/dG value
 CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must hold
 
@@ -90,12 +94,17 @@ def suggest_injection_window(
     median rate exceeds ``INJECTION_MAX_PLAUSIBLE_BPM`` are dropped first (a fill or prime read
     at a non-physical rate), unless every run does. When ``surface_p`` (surface or
     surface-equivalent pressure, psi) is given, runs whose median pressure is below
-    ``INJECTION_MIN_SURFACE_PSI`` are dropped next (a prime or fill pumps into an open system),
-    again unless every run does; a run with no finite pressure is kept. Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
-    -- this is what rejects both an early breakdown pulse and a trailing blip, since either is
-    tiny next to the main injection. The window is the *last* surviving run: start is its first
-    sample, shut-in is one past its last sample (clamped to ``len(rate) - 1``). This is only a
-    default -- the interpreter drags the lines to the true window.
+    ``INJECTION_MIN_SURFACE_PSI`` stop being candidates (a prime or fill pumps into an open
+    system); a run with no finite pressure stays one. The filter steps aside unless the largest
+    remaining run is at least ``INJECTION_PRIME_MIN_SURVIVOR_FRAC`` of the largest dropped one,
+    since a gauge that reads ~0 for most of the real injection otherwise hands the seed to a
+    falloff blip. Candidates smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest plausible
+    run's size (dropped ones included, so removing a big prime can't shrink the yardstick) are
+    dropped -- this is what rejects both an early breakdown pulse and a trailing blip, since
+    either is tiny next to the main injection. The window is the *last* surviving candidate, or
+    the largest candidate when none clears the floor: start is its first sample, shut-in is one
+    past its last sample (clamped to ``len(rate) - 1``). This is only a default -- the
+    interpreter drags the lines to the true window.
 
     Raises ``ValueError`` when the rate never exceeds ``threshold`` at all.
     """
@@ -114,17 +123,6 @@ def suggest_injection_window(
     plausible = [r for r in runs if np.median(rate[r[0]:r[1] + 1]) <= INJECTION_MAX_PLAUSIBLE_BPM]
     if plausible:
         runs = plausible
-    if surface_p is not None:
-        sp = np.asarray(surface_p, dtype=float)
-
-        def _pressured(s: int, e: int) -> bool:
-            seg = sp[s:e + 1]
-            seg = seg[np.isfinite(seg)]
-            return seg.size == 0 or float(np.median(seg)) >= INJECTION_MIN_SURFACE_PSI
-
-        pressured = [r for r in runs if _pressured(*r)]
-        if pressured:
-            runs = pressured
 
     # One sizing basis for every run: volume gain only when every run's gain is finite and
     # positive (a NaN cell, a dead/flat channel, or a counter reset would otherwise put runs on
@@ -138,7 +136,24 @@ def suggest_injection_window(
     if sizes is None:
         sizes = np.array([float(np.sum(rate[s:e + 1])) for s, e in runs])
 
-    keep = np.where(sizes >= INJECTION_MIN_RUN_FRAC * sizes.max())[0]
+    cand = np.ones(len(runs), dtype=bool)
+    if surface_p is not None:
+        sp = np.asarray(surface_p, dtype=float)
+
+        def _pressured(s: int, e: int) -> bool:
+            seg = sp[s:e + 1]
+            seg = seg[np.isfinite(seg)]
+            return seg.size == 0 or float(np.median(seg)) >= INJECTION_MIN_SURFACE_PSI
+
+        pressured = np.array([_pressured(s, e) for s, e in runs])
+        if pressured.any() and not pressured.all():
+            survivor_frac = sizes[pressured].max() / sizes[~pressured].max()
+            if survivor_frac >= INJECTION_PRIME_MIN_SURVIVOR_FRAC:
+                cand = pressured
+
+    keep = np.flatnonzero(cand & (sizes >= INJECTION_MIN_RUN_FRAC * sizes.max()))
+    if keep.size == 0:
+        keep = np.flatnonzero(cand)[[int(np.argmax(sizes[cand]))]]
     start, last = runs[int(keep[-1])]
     return start, min(last + 1, len(rate) - 1)
 

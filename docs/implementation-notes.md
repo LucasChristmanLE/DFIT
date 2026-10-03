@@ -891,15 +891,23 @@ and qmax stay blank without rate; the Injection title shows only the pieces that
 rate channel does exist, the rate-based seed (`interpret.suggest_injection_window`) splits the
 rate-on samples into contiguous runs and first drops runs whose median rate exceeds
 `INJECTION_MAX_PLAUSIBLE_BPM` (150), unless every run does (then the channel is more likely in
-the wrong unit). It then drops runs whose median surface pressure is below
-`INJECTION_MIN_SURFACE_PSI` (500), unless every run does; a run with no finite pressure is kept.
+the wrong unit). Runs whose median surface pressure is below `INJECTION_MIN_SURFACE_PSI` (500)
+then stop being candidates; a run with no finite pressure stays one. The filter steps aside
+unless the largest high-pressure run is >= `INJECTION_PRIME_MIN_SURVIVOR_FRAC` (5%) of the largest
+low-pressure one. Over the 62 corpus files the unguarded filter moved, real primes sat at >= 0.083
+(WRP Anderson) and the regressions at <= 0.019: a gauge reading ~0 for most of the real injection
+(Emerald Clark Griswold, Zavanna Bills 5-8, Ballard Leavitt Trust, Synergy Weis A-9CHZ) handed
+the seed to a one-sample falloff blip. The 10% size floor is measured against the largest
+plausible run, dropped ones included, and the largest candidate is taken when none clears it.
+Measuring it against the candidates alone let a small post-shut-in run win once a big prime was
+removed (Strathcona 104-07-32-062-03W6).
 A prime or fill pumps into an open system, so pressure, not volume, separates it from the
 injection. WRP Anderson 18-3-11HC is the case: a ~90 bpm prime at ~0 psi outsized the real
-injection. The pressure is `picks._seed_surface_pressure`: the mapped channel when it is surface
+injection. The pressure comes from `picks._seed_surface_pressure`: the mapped channel when it is surface
 pressure, BHP minus hydrostatic (`io_load.hydrostatic_head`) when density and TVD are usable,
 else none and the filter is skipped (hydrostatic alone puts a BHP prime well over 500 psi).
 Triage (`scripts/triage/features.py`) has no TVD, so it filters surface channels only. It sizes
-the rest all by volume gain (or all by summed rate when there is no
+every plausible run by volume gain (or all by summed rate when there is no
 volume channel or any run's gain is non-finite or non-positive), drops any run smaller than
 `INJECTION_MIN_RUN_FRAC` (10%) of the largest run's size, and returns the last surviving run
 (start = its first sample, shut-in = one past its last). This skips both an earlier breakdown

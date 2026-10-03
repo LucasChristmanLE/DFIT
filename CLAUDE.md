@@ -289,7 +289,10 @@ is drawn (and draggable) on the stiffness step only.
   rate) is >= 10% of the largest run's (`INJECTION_MIN_RUN_FRAC`), after dropping runs with a
   median rate > 150 bpm (`INJECTION_MAX_PLAUSIBLE_BPM`) and then runs with a median surface
   pressure < 500 psi (`INJECTION_MIN_SURFACE_PSI`, a prime into an open system; BHP minus
-  hydrostatic when density/TVD are set, else skipped), each unless every run fails it. The
+  hydrostatic when density/TVD are set, else skipped), the ceiling unless every run fails it,
+  the pressure filter only when the largest high-pressure run is >= 5% of the largest
+  low-pressure one (`INJECTION_PRIME_MIN_SURVIVOR_FRAC`). The 10% floor is against the largest
+  plausible run, dropped ones included. The
   rate-axis default ignores samples > 150 bpm the same way; the slider still reaches them. An
   absolute volume floor was tried and rejected (see implementation notes).
 - **G-function**: α = 1 default; α = 0.5 only if a test exceeds ~1 md. The dP/dG default view

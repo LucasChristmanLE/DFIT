@@ -159,13 +159,14 @@ def test_suggest_injection_window_all_runs_implausible_keeps_old_rule():
 
 def _prime_then_injection():
     """WRP Anderson 18-3-11HC shape: a prime at a plausible ~90 bpm into ~0 psi surface, then
-    the real injection at 6 bpm building pressure. The prime outsizes the main run ~30x."""
+    the real injection at 6 bpm building pressure. The prime outsizes the main run ~15x (the
+    real file: ~12x), past the 10% size floor but inside the 5% survivor guard."""
     n = 3000
     rate = np.zeros(n)
     p = np.full(n, 20.0)
-    rate[100:400] = 90.0
-    p[100:390] = 30.0
-    p[390:400] = 3000.0          # a pressure test at the end of the prime: median stays low
+    rate[100:250] = 90.0
+    p[100:240] = 30.0
+    p[240:250] = 3000.0          # a pressure test at the end of the prime: median stays low
     rate[1000:1150] = 6.0
     p[1000:1050] = np.linspace(500.0, 5000.0, 50)
     p[1050:1150] = 5000.0
@@ -175,7 +176,7 @@ def _prime_then_injection():
 
 def test_suggest_injection_window_drops_a_low_pressure_prime():
     rate, p = _prime_then_injection()
-    assert interpret.suggest_injection_window(rate) == (100, 400)          # old behavior
+    assert interpret.suggest_injection_window(rate) == (100, 250)          # old behavior
     assert interpret.suggest_injection_window(rate, surface_p=p) == (1000, 1150)
 
 
@@ -183,14 +184,42 @@ def test_suggest_injection_window_every_run_low_pressure_keeps_all():
     """No run reaches 500 psi (e.g. a mis-mapped pressure channel): the filter steps aside."""
     rate, p = _prime_then_injection()
     p = np.full_like(p, 50.0)
-    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 400)
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 250)
 
 
 def test_suggest_injection_window_all_nan_pressure_in_a_run_keeps_that_run():
     rate, p = _prime_then_injection()
     p[1000:1150] = np.nan        # no pressure reading over the main run: no evidence against it
-    p[100:400] = np.nan          # nor over the prime: the old size rule decides
-    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 400)
+    p[100:250] = np.nan          # nor over the prime: the old size rule decides
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 250)
+
+
+def test_suggest_injection_window_gauge_late_does_not_hand_the_seed_to_a_blip():
+    """Emerald Clark Griswold: the gauge reads ~0 for most of the real injection, so its median
+    is under 500, and the only high-pressure run is a one-sample rate blip during the falloff.
+    That survivor is < 5% of the dropped run, so the filter steps aside."""
+    n = 3000
+    rate = np.zeros(n)
+    p = np.zeros(n)
+    rate[100:500] = 9.0
+    p[450:500] = np.linspace(2000.0, 6400.0, 50)   # gauge comes alive at the end
+    p[500:] = np.linspace(5000.0, 4000.0, n - 500)
+    rate[2000] = 7.0                                # falloff blip at 4,000+ psi
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 500)
+
+
+def test_suggest_injection_window_size_floor_keeps_the_dropped_run_as_yardstick():
+    """Strathcona 104-07: dropping a large low-pressure run must not shrink the 10% size floor,
+    or a small post-shut-in run survives as the last one and wins."""
+    n = 5000
+    rate = np.zeros(n)
+    p = np.full(n, 50.0)
+    rate[100:1100] = 2.0          # large low-pressure run: size 2000
+    rate[1500:1600] = 4.0         # real injection: 400 (20% of 2000)
+    p[1500:1600] = 11000.0
+    p[1600:] = 4200.0
+    rate[3000:3050] = 1.6         # post-shut-in run: 80 (4% of 2000, 20% of 400)
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (1500, 1600)
 
 
 def test_seed_injection_uses_surface_pressure_filter():
