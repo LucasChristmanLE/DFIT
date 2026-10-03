@@ -251,3 +251,23 @@ def test_render_porepressure_flags_title_when_fit_is_unphysical():
 
     ax, _ = _render_pp(state, res)
     assert ">= observed" in ax.get_title()
+
+
+def test_render_porepressure_default_ylim_includes_the_intercept():
+    """The pore-pressure pick sits at x = 0, below every observed sample on a normal falloff.
+    The default y-range must include it, or the marker and the line's intercept are cut off."""
+    p0, m = 7600.0, 20000.0
+    t = np.logspace(2.0, 4.0, 200)  # observed BHP spans 7800..9600, all above p0
+    p = p0 + m * t ** -0.5
+    dg = _pp_diagnostics(t, p)
+
+    lo, hi = 3000.0, 10000.0
+    mask = (dg.t >= lo) & (dg.t <= hi)
+    pore_pressure = interpret.pore_pressure(dg.t[mask] ** -0.5, dg.p[mask])
+    assert pore_pressure < float(dg.p.min()) - 150.0
+
+    state = PickState(pp_axis="tm12", pp_window=(lo, hi))
+    res = DerivedResults(diagnostics=dg, pore_pressure=pore_pressure)
+
+    _, defaults = _render_pp(state, res)
+    assert defaults.ylim[0] < pore_pressure < defaults.ylim[1]

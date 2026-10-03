@@ -738,7 +738,9 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     else:
         ax.set_title("Pore pressure -- select the late-time window", fontsize=10)
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
-    return ViewDefaults(xlim=(0.0, xhi), ylim=_pressure_ylim(dg.p), y_color=press_color)
+    # The pick sits at x = 0, normally below every observed sample; keep it in the default view.
+    p_view = dg.p if res.pore_pressure is None else np.append(dg.p, res.pore_pressure)
+    return ViewDefaults(xlim=(0.0, xhi), ylim=_pressure_ylim(p_view), y_color=press_color)
 
 
 def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
