@@ -18,6 +18,12 @@ def test_main_constructs_dfitapp_with_path_and_runs_mainloop(monkeypatch):
     calls = []
 
     class _FakeRoot:
+        def bind(self, *a, **kw):
+            pass
+
+        def winfo_ismapped(self):
+            return False
+
         def mainloop(self):
             calls.append("mainloop")
 
@@ -38,7 +44,9 @@ def test_main_constructs_dfitapp_with_path_and_runs_mainloop(monkeypatch):
 
 
 def test_main_no_argv_passes_none_path(monkeypatch):
-    monkeypatch.setattr(app.tk, "Tk", lambda: types.SimpleNamespace(mainloop=lambda: None))
+    monkeypatch.setattr(app.tk, "Tk", lambda: types.SimpleNamespace(mainloop=lambda: None,
+                                                                        bind=lambda *a, **kw: None,
+                                                                        winfo_ismapped=lambda: False))
     seen = {}
 
     class _FakeApp:
