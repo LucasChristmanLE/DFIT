@@ -95,6 +95,7 @@ def _cmd_scan(args: argparse.Namespace) -> None:
         require_questionnaire=not args.all_folders,
         limit=args.limit,
         progress=_progress,
+        group_depth=args.group_depth,
     )
 
     # The scan's features are the whole point of a run that can take tens of minutes -- save them
@@ -276,6 +277,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--all-folders", action="store_true",
                          help="include folders with no questionnaire (default: filtered to "
                               "folders that have one)")
+    p_scan.add_argument("--group-depth", type=int, default=None,
+                        help="group files by their first N folder levels under --root instead "
+                             "of the questionnaire well-root climb (1 = one page per top-level "
+                             "well folder)")
     p_scan.add_argument("--limit", type=int, default=None, help="cap the number of folders scanned")
     p_scan.add_argument("--force", action="store_true",
                          help="with --limit, overwrite an existing features.json anyway "

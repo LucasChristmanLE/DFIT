@@ -1708,3 +1708,56 @@ def test_sig_files_for_includes_xlsx_that_is_a_recorded_keeper():
     assert [f.path for f in got] == ["d/f1.csv", "d/f2.xlsx"]
     # a merely-present xlsx still never counts, and no keeps is the old behavior
     assert [f.path for f in features.sig_files_for(files)] == ["d/f1.csv"]
+
+
+def test_scan_folders_group_depth_one_puts_each_top_level_well_on_one_page(tmp_path, monkeypatch):
+    """The DJ Basin shape: every top-level folder under the root is one well, but the well-root
+    climb splits it. `WellA` has no questionnaire at all (the 0-name climb never promotes), and
+    `WellB` has two questionnaires whose names differ only by a prefix (`n_wells == 2` stops the
+    climb at each subfolder). `group_depth=1` groups by the first path component instead, so each
+    well's files land on one page; a loose file at the root keeps its own root-level group."""
+    root = tmp_path / "root"
+    a_raw = root / "WellA" / "Raw Data"
+    b_old = root / "WellB" / "Old"
+    b_data = root / "WellB" / "Data" / "CSV"
+    for d in (a_raw, b_old, b_data):
+        d.mkdir(parents=True)
+    q1 = root / "WellB" / "b_questionnaire.xlsx"
+    q2 = b_old / "b_old_questionnaire.xlsx"
+    q1.write_bytes(b"dummy")
+    q2.write_bytes(b"dummy")
+
+    def fake_names(paths):
+        names = {str(q1): "schneider 182hc", str(q2): "11-182hc"}
+        return {p: names.get(p, f"?{p}") for p in paths}
+
+    monkeypatch.setattr(features, "_questionnaire_well_names", fake_names)
+
+    t_s, p, r = _dfit_arrays(inj_peak=5000.0)
+    _write_csv(root / "WellA" / "a.csv", t_s, p, rate=r)
+    _write_csv(a_raw / "a_raw.csv", t_s, p, rate=r * 1.01)
+    _write_csv(root / "WellB" / "b.csv", t_s, p, rate=r * 1.02)
+    _write_csv(b_old / "b_old.csv", t_s, p, rate=r * 1.03)
+    _write_csv(b_data / "b_data.csv", t_s, p, rate=r * 1.04)
+    _write_csv(root / "loose.csv", t_s, p, rate=r * 1.05)
+
+    split = features.scan_folders(str(root), require_questionnaire=False)
+    assert len(split) > 3  # the default climb splits both wells
+
+    scans = features.scan_folders(str(root), require_questionnaire=False, group_depth=1)
+    by_rel = {s.rel: s for s in scans}
+    assert set(by_rel) == {".", "WellA", "WellB"}
+    assert by_rel["WellA"].folder == str(root / "WellA")
+    assert sorted(os.path.basename(f.path) for f in by_rel["WellA"].files) == ["a.csv", "a_raw.csv"]
+    assert sorted(os.path.basename(f.path) for f in by_rel["WellB"].files) == [
+        "b.csv", "b_data.csv", "b_old.csv",
+    ]
+    assert by_rel["WellB"].n_wells == 2
+    assert by_rel["WellB"].questionnaire_path == str(q1)
+    assert by_rel["WellA"].n_wells == 0
+    assert [os.path.basename(f.path) for f in by_rel["."].files] == ["loose.csv"]
+
+
+def test_scan_folders_group_depth_rejects_non_positive(tmp_path):
+    with pytest.raises(ValueError):
+        features.scan_folders(str(tmp_path), group_depth=0)

@@ -615,6 +615,19 @@ def _well_root(entry_folder: str, root: str, subtree_names: dict[str, set[str]])
     return best
 
 
+def _depth_root(entry_folder: str, root: str, depth: int) -> str:
+    """`entry_folder` truncated to its first `depth` path components below `root`. A folder
+    already that shallow (including `root` itself) is returned unchanged. Used by
+    `scan_folders(group_depth=...)` for roots where each folder at that depth is one well."""
+    folder = os.path.normpath(entry_folder)
+    root_norm = os.path.normpath(root)
+    rel = os.path.relpath(folder, root_norm)
+    if rel == os.curdir:
+        return folder
+    parts = rel.split(os.sep)
+    return os.path.join(root_norm, *parts[:depth])
+
+
 def _group_questionnaire_path(group_folder: str, quest_paths: list[str]) -> str:
     """The questionnaire in `group_folder`'s own subtree at the shallowest depth (ties broken
     alphabetically) -- `""` if none. This is the group's "official" questionnaire even when the
@@ -638,6 +651,7 @@ def scan_folders(
     require_questionnaire: bool = True,
     limit: int | None = None,
     progress=None,
+    group_depth: int | None = None,
 ) -> list[FolderScan]:
     """One `FolderScan` per **well root** found under `root`, in `rel` order -- see the
     well-root-grouping section above this function for the full rationale and the anti-merge
@@ -689,6 +703,12 @@ def scan_folders(
     group or another one) is stamped onto a fresh record (its own path/folder/size_bytes) rather
     than reloaded.
 
+    `group_depth`, if given, replaces the well-root climb with a fixed rule: each entry groups at
+    its first `group_depth` folder levels below `root` (`_depth_root`). For a root laid out as
+    one folder per well (the DJ Basin tree), `group_depth=1` puts every file under a well folder
+    on one page, regardless of questionnaires. `n_wells` is still the subtree's distinct
+    questionnaire-name count, so name variants and multi-well pads stay flagged.
+
     `progress`, if given, is called `progress(groups_done, total_groups, current_rel)` once per
     group. `limit`, if given, truncates the `rel`-sorted group list to its first N entries
     *before any file is read* -- signatures and features are computed only for the surviving
@@ -698,6 +718,9 @@ def scan_folders(
     scan -- a limited scan's `same_bytes_as` is fine for a smoke test but must not be read as a
     real result.
     """
+    if group_depth is not None and group_depth < 1:
+        raise ValueError(f"group_depth must be >= 1, got {group_depth}")
+
     entries = store.scan_root(root)
 
     # FIX 5 (perf): one shared walk feeds both quest_paths and dirs, instead of
@@ -709,7 +732,10 @@ def scan_folders(
 
     def _group_for(folder: str) -> str:
         if folder not in well_root_cache:
-            well_root_cache[folder] = _well_root(folder, root, subtree_names)
+            if group_depth is not None:
+                well_root_cache[folder] = _depth_root(folder, root, group_depth)
+            else:
+                well_root_cache[folder] = _well_root(folder, root, subtree_names)
         return well_root_cache[folder]
 
     by_group: dict[str, list] = {}
