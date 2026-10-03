@@ -23,7 +23,7 @@ from matplotlib.backend_tools import Cursors
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
-from . import colors as C, interpret
+from . import colors as C, interpret, io_load
 from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick
 from .io_load import TestData
 
@@ -1538,6 +1538,24 @@ def resync_auto_tail_trim(state: PickState, td: TestData, res: DerivedResults) -
     seed_tail_trim(state, td, res)
 
 
+def _seed_surface_pressure(state: PickState, td: TestData) -> Optional[np.ndarray]:
+    """Surface (or surface-equivalent) pressure for the injection seed's prime filter: the
+    mapped channel when it is surface pressure, BHP minus hydrostatic when density and TVD are
+    usable, else None (the filter is skipped)."""
+    if not state.pressure_col:
+        return None
+    p = td.column(state.pressure_col)
+    if not state.pressure_is_bhp:
+        return p
+    try:
+        mw, tvd = float(state.density_ppg), float(state.tvd_ft)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(mw) and np.isfinite(tvd) and mw > 0 and tvd > 0):
+        return None
+    return p - io_load.hydrostatic_head(mw, tvd)
+
+
 def seed_injection(state: PickState, td: TestData) -> None:
     """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
     falling back to the pressure shape when no usable rate channel exists -- the vlines must
@@ -1548,7 +1566,8 @@ def seed_injection(state: PickState, td: TestData) -> None:
         rate = td.column(state.rate_col)
         vol = td.column(state.volume_col) if state.volume_col else None
         try:
-            state.start_idx, state.shutin_idx = interpret.suggest_injection_window(rate, vol)
+            state.start_idx, state.shutin_idx = interpret.suggest_injection_window(
+                rate, vol, surface_p=_seed_surface_pressure(state, td))
             return
         except ValueError:
             pass  # e.g. an all-zero rate channel -- fall through to the pressure fallback

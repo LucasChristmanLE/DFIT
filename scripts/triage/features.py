@@ -358,8 +358,12 @@ def extract(path: str) -> FileFeatures:
             rate = td.column(feat.rate_col)[finite_t][mono]
             volume_col = guess.get("volume")
             volume = td.column(volume_col)[finite_t][mono] if volume_col else None
+            # The prime filter needs surface pressure; a BHP channel would need TVD, which
+            # triage doesn't have, so it skips the filter there.
+            surface_p = None if guess.get("pressure_is_bhp") else p_clean
             try:
-                start_idx, shutin_idx = interpret.suggest_injection_window(rate, volume=volume)
+                start_idx, shutin_idx = interpret.suggest_injection_window(
+                    rate, volume=volume, surface_p=surface_p)
                 feat.shutin_source = "rate"
                 feat.injection_min = float((t_s[shutin_idx] - t_s[start_idx]) / 60.0)
             except ValueError:

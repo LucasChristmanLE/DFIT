@@ -891,7 +891,15 @@ and qmax stay blank without rate; the Injection title shows only the pieces that
 rate channel does exist, the rate-based seed (`interpret.suggest_injection_window`) splits the
 rate-on samples into contiguous runs and first drops runs whose median rate exceeds
 `INJECTION_MAX_PLAUSIBLE_BPM` (150), unless every run does (then the channel is more likely in
-the wrong unit). It sizes the rest all by volume gain (or all by summed rate when there is no
+the wrong unit). It then drops runs whose median surface pressure is below
+`INJECTION_MIN_SURFACE_PSI` (500), unless every run does; a run with no finite pressure is kept.
+A prime or fill pumps into an open system, so pressure, not volume, separates it from the
+injection. WRP Anderson 18-3-11HC is the case: a ~90 bpm prime at ~0 psi outsized the real
+injection. The pressure is `picks._seed_surface_pressure`: the mapped channel when it is surface
+pressure, BHP minus hydrostatic (`io_load.hydrostatic_head`) when density and TVD are usable,
+else none and the filter is skipped (hydrostatic alone puts a BHP prime well over 500 psi).
+Triage (`scripts/triage/features.py`) has no TVD, so it filters surface channels only. It sizes
+the rest all by volume gain (or all by summed rate when there is no
 volume channel or any run's gain is non-finite or non-positive), drops any run smaller than
 `INJECTION_MIN_RUN_FRAC` (10%) of the largest run's size, and returns the last surviving run
 (start = its first sample, shut-in = one past its last). This skips both an earlier breakdown
@@ -907,9 +915,8 @@ An absolute floor (last run >= N bbl, whatever the earlier runs' size) was tried
 (2026-10-03). Over the 2,077 corpus files with a rate channel it moved 112-190 seeds for
 N = 1-10 bbl. Many records carry a 1-40 bbl post-shut-in run (rate noise at ~0 psi during the
 falloff, a small top-up), and on 12 plotted files the floor picked wrong on 6 and right on 1.
-Still open: a prime at a *plausible* rate (WRP Anderson 18-3-11HC: ~90 bpm at ~0 psi before
-the real injection) wins on size; pressure, not volume, separates it. A brief rate drop also
-splits one injection into two runs (WRP Sharp 24-3-11HC, Continental Maryland 2-16H), and the
+The plausible-rate prime is handled by the pressure filter above. Still open: a brief rate
+drop splits one injection into two runs (WRP Sharp 24-3-11HC, Continental Maryland 2-16H), and the
 seed then ends at the first run's end.
 
 **Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it

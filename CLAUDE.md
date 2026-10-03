@@ -287,7 +287,9 @@ is drawn (and draggable) on the stiffness step only.
   pressure shape; te falls back to pump wall-clock duration with a warning. With rate,
   `suggest_injection_window` returns the last rate-on run whose size (volume gain, else summed
   rate) is >= 10% of the largest run's (`INJECTION_MIN_RUN_FRAC`), after dropping runs with a
-  median rate > 150 bpm (`INJECTION_MAX_PLAUSIBLE_BPM`) unless every run is that high. The
+  median rate > 150 bpm (`INJECTION_MAX_PLAUSIBLE_BPM`) and then runs with a median surface
+  pressure < 500 psi (`INJECTION_MIN_SURFACE_PSI`, a prime into an open system; BHP minus
+  hydrostatic when density/TVD are set, else skipped), each unless every run fails it. The
   rate-axis default ignores samples > 150 bpm the same way; the slider still reaches them. An
   absolute volume floor was tried and rejected (see implementation notes).
 - **G-function**: α = 1 default; α = 0.5 only if a test exceeds ~1 md. The dP/dG default view

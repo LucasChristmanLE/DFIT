@@ -50,6 +50,9 @@ INJECTION_MIN_RUN_FRAC = 0.10  # suggest_injection_window: a rate-on run smaller
                                # fraction of the largest run's size is dropped as a pulse/blip.
 INJECTION_MAX_PLAUSIBLE_BPM = 150.0  # suggest_injection_window: a run whose median rate exceeds
                                      # this is not pumping (Cream 2C-21HZ fill reads a flat ~432).
+INJECTION_MIN_SURFACE_PSI = 500.0  # suggest_injection_window: a run whose median surface pressure
+                                   # is below this is a prime/fill into an open system, not the
+                                   # injection (WRP Anderson 18-3-11HC: ~90 bpm at ~0 psi).
 CLEAR_RISE_FRAC = 0.10  # C-A contact: dP/dG rise above the min-dP/dG value
 CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must hold
 
@@ -72,7 +75,8 @@ def detect_injection_window(rate: np.ndarray, threshold: float = 0.1) -> tuple[i
 
 
 def suggest_injection_window(
-    rate: np.ndarray, volume: Optional[np.ndarray] = None, threshold: float = 0.1
+    rate: np.ndarray, volume: Optional[np.ndarray] = None, threshold: float = 0.1,
+    surface_p: Optional[np.ndarray] = None,
 ) -> tuple[int, int]:
     """Best-guess (start, shutin) for the *main* injection when a file has many cycles.
 
@@ -84,7 +88,10 @@ def suggest_injection_window(
     sample) when ``volume`` is given and every run's gain is finite and positive, else every run
     is sized by the sum of ``rate`` over it (one basis for all runs, never mixed). Runs whose
     median rate exceeds ``INJECTION_MAX_PLAUSIBLE_BPM`` are dropped first (a fill or prime read
-    at a non-physical rate), unless every run does. Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
+    at a non-physical rate), unless every run does. When ``surface_p`` (surface or
+    surface-equivalent pressure, psi) is given, runs whose median pressure is below
+    ``INJECTION_MIN_SURFACE_PSI`` are dropped next (a prime or fill pumps into an open system),
+    again unless every run does; a run with no finite pressure is kept. Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
     -- this is what rejects both an early breakdown pulse and a trailing blip, since either is
     tiny next to the main injection. The window is the *last* surviving run: start is its first
     sample, shut-in is one past its last sample (clamped to ``len(rate) - 1``). This is only a
@@ -107,6 +114,17 @@ def suggest_injection_window(
     plausible = [r for r in runs if np.median(rate[r[0]:r[1] + 1]) <= INJECTION_MAX_PLAUSIBLE_BPM]
     if plausible:
         runs = plausible
+    if surface_p is not None:
+        sp = np.asarray(surface_p, dtype=float)
+
+        def _pressured(s: int, e: int) -> bool:
+            seg = sp[s:e + 1]
+            seg = seg[np.isfinite(seg)]
+            return seg.size == 0 or float(np.median(seg)) >= INJECTION_MIN_SURFACE_PSI
+
+        pressured = [r for r in runs if _pressured(*r)]
+        if pressured:
+            runs = pressured
 
     # One sizing basis for every run: volume gain only when every run's gain is finite and
     # positive (a NaN cell, a dead/flat channel, or a counter reset would otherwise put runs on

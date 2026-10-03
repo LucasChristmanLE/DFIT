@@ -17,7 +17,7 @@ import pytest
 
 from dfit_tool import interpret, picks
 from dfit_tool.model import compute_all
-from tests.helpers import injection_state, make_testdata
+from tests.helpers import PRESSURE_COL, injection_state, make_testdata
 
 
 # --------------------------------------------------------------------------------------------------
@@ -155,6 +155,85 @@ def test_suggest_injection_window_all_runs_implausible_keeps_old_rule():
     rate[100:200] = 400.0
     rate[700:710] = 300.0        # tiny trailing run, under the size floor
     assert interpret.suggest_injection_window(rate) == (100, 200)
+
+
+def _prime_then_injection():
+    """WRP Anderson 18-3-11HC shape: a prime at a plausible ~90 bpm into ~0 psi surface, then
+    the real injection at 6 bpm building pressure. The prime outsizes the main run ~30x."""
+    n = 3000
+    rate = np.zeros(n)
+    p = np.full(n, 20.0)
+    rate[100:400] = 90.0
+    p[100:390] = 30.0
+    p[390:400] = 3000.0          # a pressure test at the end of the prime: median stays low
+    rate[1000:1150] = 6.0
+    p[1000:1050] = np.linspace(500.0, 5000.0, 50)
+    p[1050:1150] = 5000.0
+    p[1150:] = np.linspace(4500.0, 3000.0, n - 1150)
+    return rate, p
+
+
+def test_suggest_injection_window_drops_a_low_pressure_prime():
+    rate, p = _prime_then_injection()
+    assert interpret.suggest_injection_window(rate) == (100, 400)          # old behavior
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (1000, 1150)
+
+
+def test_suggest_injection_window_every_run_low_pressure_keeps_all():
+    """No run reaches 500 psi (e.g. a mis-mapped pressure channel): the filter steps aside."""
+    rate, p = _prime_then_injection()
+    p = np.full_like(p, 50.0)
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 400)
+
+
+def test_suggest_injection_window_all_nan_pressure_in_a_run_keeps_that_run():
+    rate, p = _prime_then_injection()
+    p[1000:1150] = np.nan        # no pressure reading over the main run: no evidence against it
+    p[100:400] = np.nan          # nor over the prime: the old size rule decides
+    assert interpret.suggest_injection_window(rate, surface_p=p) == (100, 400)
+
+
+def test_seed_injection_uses_surface_pressure_filter():
+    td = make_testdata()
+    st = injection_state(td)
+    st.volume_col = None          # size by summed rate; the prime is not in VOLUME
+    st.start_idx = st.shutin_idx = None
+    rate = td.column("RATE")
+    on = np.flatnonzero(rate > 0.1)
+    expected = (int(on[0]), min(int(on[-1]) + 1, len(rate) - 1))
+    # A big low-pressure prime well before the injection.
+    td.df.loc[1:on[0] - 2, "RATE"] = 120.0  # ~15x the main run
+    td.df.loc[1:on[0] - 2, PRESSURE_COL] = 10.0
+    st.pressure_is_bhp = False
+    picks.seed_injection(st, td)
+    assert (st.start_idx, st.shutin_idx) == expected
+
+
+def test_seed_injection_bhp_subtracts_hydrostatic_before_the_filter():
+    """A BHP channel carries hydrostatic, so a prime reads thousands of psi. With density and
+    TVD set, the seed compares BHP - hydrostatic to the 500 psi floor; without them it skips
+    the filter (the old rule decides)."""
+    td = make_testdata()
+    st = injection_state(td)
+    st.volume_col = None          # size by summed rate; the prime is not in VOLUME
+    rate = td.column("RATE")
+    on = np.flatnonzero(rate > 0.1)
+    expected = (int(on[0]), min(int(on[-1]) + 1, len(rate) - 1))
+    hydro = 0.052 * 8.33 * 8000.0
+    td.df[PRESSURE_COL] = td.df[PRESSURE_COL] + hydro
+    td.df.loc[1:on[0] - 2, "RATE"] = 120.0  # ~15x the main run
+    td.df.loc[1:on[0] - 2, PRESSURE_COL] = hydro + 10.0
+    st.pressure_is_bhp = True
+
+    st.start_idx = st.shutin_idx = None
+    st.density_ppg, st.tvd_ft = 8.33, 8000.0
+    picks.seed_injection(st, td)
+    assert (st.start_idx, st.shutin_idx) == expected
+
+    st.start_idx = st.shutin_idx = None
+    st.density_ppg = st.tvd_ft = None
+    picks.seed_injection(st, td)
+    assert st.start_idx == 1     # filter skipped: the big prime wins on size, as before
 
 
 def test_suggest_injection_window_nan_counts_as_not_above_threshold():
