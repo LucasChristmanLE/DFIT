@@ -48,6 +48,8 @@ CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hu
                                        # real hump, which would otherwise win on G*dP/dG alone.
 INJECTION_MIN_RUN_FRAC = 0.10  # suggest_injection_window: a rate-on run smaller than this
                                # fraction of the largest run's size is dropped as a pulse/blip.
+INJECTION_MAX_PLAUSIBLE_BPM = 150.0  # suggest_injection_window: a run whose median rate exceeds
+                                     # this is not pumping (Cream 2C-21HZ fill reads a flat ~432).
 CLEAR_RISE_FRAC = 0.10  # C-A contact: dP/dG rise above the min-dP/dG value
 CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must hold
 
@@ -80,7 +82,9 @@ def suggest_injection_window(
     sample counts as "not above threshold") is split into contiguous runs; each run is sized by
     its volume gain (``volume`` at one-past-its-last-active-sample minus ``volume`` at its first
     sample) when ``volume`` is given and every run's gain is finite and positive, else every run
-    is sized by the sum of ``rate`` over it (one basis for all runs, never mixed). Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
+    is sized by the sum of ``rate`` over it (one basis for all runs, never mixed). Runs whose
+    median rate exceeds ``INJECTION_MAX_PLAUSIBLE_BPM`` are dropped first (a fill or prime read
+    at a non-physical rate), unless every run does. Runs smaller than ``INJECTION_MIN_RUN_FRAC`` of the largest run's size are dropped
     -- this is what rejects both an early breakdown pulse and a trailing blip, since either is
     tiny next to the main injection. The window is the *last* surviving run: start is its first
     sample, shut-in is one past its last sample (clamped to ``len(rate) - 1``). This is only a
@@ -97,6 +101,12 @@ def suggest_injection_window(
     run_first = np.r_[0, gaps + 1]
     run_last = np.r_[gaps, active_idx.size - 1]
     runs = [(int(active_idx[a]), int(active_idx[b])) for a, b in zip(run_first, run_last)]
+
+    # Drop runs at a non-physical rate before sizing, or their summed rate outsizes the real
+    # injection. If every run is implausible the channel is likely in the wrong unit: keep all.
+    plausible = [r for r in runs if np.median(rate[r[0]:r[1] + 1]) <= INJECTION_MAX_PLAUSIBLE_BPM]
+    if plausible:
+        runs = plausible
 
     # One sizing basis for every run: volume gain only when every run's gain is finite and
     # positive (a NaN cell, a dead/flat channel, or a counter reset would otherwise put runs on

@@ -889,12 +889,28 @@ Overview step's first visit, so the reference lines exist there too. `compute_al
 falls back to te = wall-clock pump duration (shut-in − start) with an appended warning. Vinj
 and qmax stay blank without rate; the Injection title shows only the pieces that exist. When a
 rate channel does exist, the rate-based seed (`interpret.suggest_injection_window`) splits the
-rate-on samples into contiguous runs, sizes them all by volume gain (or all by summed rate
-when there is no volume channel or any run's gain is non-finite or non-positive), drops any run smaller than
+rate-on samples into contiguous runs and first drops runs whose median rate exceeds
+`INJECTION_MAX_PLAUSIBLE_BPM` (150), unless every run does (then the channel is more likely in
+the wrong unit). It sizes the rest all by volume gain (or all by summed rate when there is no
+volume channel or any run's gain is non-finite or non-positive), drops any run smaller than
 `INJECTION_MIN_RUN_FRAC` (10%) of the largest run's size, and returns the last surviving run
 (start = its first sample, shut-in = one past its last). This skips both an earlier breakdown
 pulse or step-rate cycle and a trailing post-shut-in rate blip, landing on the main, sustained
-injection.
+injection. Cream 2C-21HZ (DJ Basin, `.DBS`) is the ceiling's case: a fill/prime reads a flat
+~432 on "Slurry Flow Rate" for 4.6 min at 15 psi surface, then a pressure test to ~3,900 psi;
+its summed rate was 15x the real ~10 bpm injection's, so it won the seed. The rate-axis default
+(`plots._rate_y2lim`) also leaves out samples above 150 bpm, unless every sample is that high, so
+such a fill doesn't flatten the real rate trace; the slider's outer range is the twin's own
+autoscale, so it still reaches them.
+
+An absolute floor (last run >= N bbl, whatever the earlier runs' size) was tried and rejected
+(2026-10-03). Over the 2,077 corpus files with a rate channel it moved 112-190 seeds for
+N = 1-10 bbl. Many records carry a 1-40 bbl post-shut-in run (rate noise at ~0 psi during the
+falloff, a small top-up), and on 12 plotted files the floor picked wrong on 6 and right on 1.
+Still open: a prime at a *plausible* rate (WRP Anderson 18-3-11HC: ~90 bpm at ~0 psi before
+the real injection) wins on size; pressure, not volume, separates it. A brief rate drop also
+splits one injection into two runs (WRP Sharp 24-3-11HC, Continental Maryland 2-16H), and the
+seed then ends at the first run's end.
 
 **Tail trim.** The tail guard only catches a late rise, and now only a *sustained* one: it
 fires when a run of samples stays continuously more than a fixed 30 psi

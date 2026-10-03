@@ -104,11 +104,16 @@ def _pressure_ylim(p_plotted) -> Optional[tuple[float, float]]:
 
 def _rate_y2lim(rate_plotted) -> Optional[tuple[float, float]]:
     """Default rate-axis range (0, RATE_VIEW_FACTOR x max) over the rate actually plotted on a
-    step, rounded up to a tick, or None when there is no finite positive rate."""
+    step, rounded up to a tick, or None when there is no finite positive rate. Samples above
+    ``interpret.INJECTION_MAX_PLAUSIBLE_BPM`` (a fill read at a non-physical rate) are left out
+    unless no sample at or below it is positive; the slider's outer range still reaches them."""
     if rate_plotted is None:
         return None
     r = np.asarray(rate_plotted, dtype=float)
     r = r[np.isfinite(r)]
+    plausible = r[r <= interpret.INJECTION_MAX_PLAUSIBLE_BPM]
+    if plausible.size and plausible.max() > 0:
+        r = plausible
     if r.size == 0 or r.max() <= 0:
         return None
     return nice_limits(0.0, RATE_VIEW_FACTOR * float(r.max()))

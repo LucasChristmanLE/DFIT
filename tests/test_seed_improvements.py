@@ -136,6 +136,27 @@ def test_suggest_injection_window_dead_or_reset_volume_falls_back_to_rate(volume
     assert interpret.suggest_injection_window(rate, volume) == (100, 700)
 
 
+def test_suggest_injection_window_drops_an_implausible_rate_run():
+    """Cream 2C-21HZ: a fill/prime reads a flat ~432 on the rate channel for 280 samples, then
+    the real ~10 bpm injection runs 1159 samples. The fill's summed rate is 15x the main run's,
+    so without a plausibility ceiling it outsizes the main run and wins the seed."""
+    n = 3000
+    rate = np.zeros(n)
+    rate[100:380] = 432.0        # non-physical fill/prime reading
+    rate[900:2059] = 6.8         # main injection, same summed rate as the real file (~7900)
+    assert interpret.suggest_injection_window(rate) == (900, 2059)
+
+
+def test_suggest_injection_window_all_runs_implausible_keeps_old_rule():
+    """When every run is above the ceiling (a channel in the wrong unit), nothing is dropped
+    for it and the size rule decides as before."""
+    n = 1000
+    rate = np.zeros(n)
+    rate[100:200] = 400.0
+    rate[700:710] = 300.0        # tiny trailing run, under the size floor
+    assert interpret.suggest_injection_window(rate) == (100, 200)
+
+
 def test_suggest_injection_window_nan_counts_as_not_above_threshold():
     n = 200
     rate = np.zeros(n)

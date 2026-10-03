@@ -171,6 +171,31 @@ def test_y2lim_none_without_rate(fn):
     assert len(fig.axes) == 1
 
 
+def test_rate_y2lim_ignores_implausible_samples():
+    rate = np.array([0.0, 432.0, 431.0, 0.0, 6.8, 10.5, 0.0])
+    assert plots._rate_y2lim(rate) == plots.nice_limits(0.0, 3.0 * 10.5)
+
+
+def test_rate_y2lim_all_implausible_uses_every_sample():
+    rate = np.array([0.0, 400.0, 420.0])
+    assert plots._rate_y2lim(rate) == plots.nice_limits(0.0, 3.0 * 420.0)
+
+
+def test_overview_slider_still_reaches_an_implausible_rate():
+    """Cream 2C-21HZ: a fill reads ~432 on the rate channel. The default view rides on the real
+    rate, but the slider's outer range still reaches 432."""
+    td = make_testdata()
+    st = injection_state(td)
+    td.df.loc[5:15, "RATE"] = 432.0   # before the injection window
+    res = compute_all(st, td)
+    fig, ax, d = _render(plots.render_overview, td, st, res)
+    plausible = res.rate_all[res.rate_all <= 150.0]
+    assert d.y2lim == plots.nice_limits(0.0, 3.0 * float(np.nanmax(plausible)))
+    sv = plots.apply_step_view("overview", ax, d)
+    assert sv.full_y2[1] >= 432.0
+    assert sv.view.y2lim == d.y2lim
+
+
 def test_isip_has_rate_twin():
     td, st, res = _seeded()
     fig, ax, _ = _render(plots.render_isip, td, st, res)
