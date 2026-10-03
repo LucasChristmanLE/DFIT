@@ -261,8 +261,10 @@ is drawn (and draggable) on the stiffness step only.
   when pressure stays > 30 psi (`RISE_GUARD_PSI`) above its running minimum for >= 60 s and >= 5
   samples; `guard_dt` is pinned to the first qualifying run.
 - **Tail trim** (`PickState.tail_trim_dt`, shut-in-relative seconds): seeded on Overview's first
-  visit by `picks.seed_tail_trim` (sub-100-psi surface crash → trim strictly before it, reason
-  `"low_pressure"`; a guard boundary sets no pick). `interpret.resolve_tail_cut_dt(trim,
+  visit by `picks.seed_tail_trim` (sub-100-psi surface crash → trim strictly before the collapse
+  onset, not the first sub-100 sample: `suggest_tail_trim_dt` backs up over the prior
+  min(300 s, 2% of elapsed) to the last sample within `state.resample_step` psi of the window max;
+  reason `"low_pressure"`; a guard boundary sets no pick). `interpret.resolve_tail_cut_dt(trim,
   guard_dt, override)` is the single place the effective cutoff is resolved, for both masking and
   display; when the cutoff equals `guard_dt` the mask is `<`, otherwise `<=`. A drag past
   `guard_dt` sets `tail_guard_override`. `seed_tail_trim` is called from `ui._seed_step`, not
@@ -288,7 +290,11 @@ is drawn (and draggable) on the stiffness step only.
 - **G-function**: α = 1 default; α = 0.5 only if a test exceeds ~1 md. The dP/dG default view
   autoscales over G >= 1.0 (`Y2_SCALE_G_MIN`), capped at `DPDG_VIEW_MAX` (500).
 - **Min-dP/dG pick**: seeded by `interpret.suggest_min_dpdg_index` (interior local min before the
-  contact hump, `suggest_hump_index`). Dragging re-derives the contact
+  contact hump, `suggest_hump_index`). `seed_gfunction` hides two regions from the suggesters
+  and `is_clear_closure`: G < `interpret.SEED_MIN_G` (1.0; early-decline noise), and a trailing
+  crash spike (`interpret.terminal_spike_start`: |dP/dG| > 10x the median over G <= 95% of the
+  last G). Each mask applies only if >= 6 samples survive. The auto-seed is never below G = 1
+  unless the record barely reaches it; manual picks are not limited. Dragging re-derives the contact
   (`re_derive_contact_from_min`). Shift+drag selects a window (`handle_min_dpdg_window`).
 
 Closure scenarios (`picks.apply_closure_scenario`):

@@ -178,3 +178,109 @@ def test_dfit_app_goto_shows_seed_hint_after_refresh():
     stub._goto("overview")  # a bare PickState blocks every later step
 
     assert shown == ["refresh", "auto hint"]
+
+
+# --------------------------------------------------------------------------------------------------
+# picks.seed_gfunction: the auto-seed never lands below interpret.SEED_MIN_G (G = 1)
+# --------------------------------------------------------------------------------------------------
+def _noisy_early_curve():
+    """1BH MERGED shape: early-decline noise below G=1 (alternating 800 / 80, so every other
+    sample is a local min/max and the G*dP/dG of the noise beats the real bump), then a smooth
+    decline to a shallow min of 50 at G=5, a 2% bump (51) at G=8, and a slow decline."""
+    G = np.linspace(0.02, 12.0, 600)
+    y = np.empty_like(G)
+    early = G < 1.0
+    y[early] = np.where(np.arange(early.sum()) % 2 == 0, 8000.0, 800.0)
+    a = (G >= 1.0) & (G < 5.0)
+    y[a] = 50.0 + 30.0 * (G[a] - 5.0) ** 2
+    mid = (G >= 5.0) & (G <= 8.0)
+    y[mid] = 50.0 + (G[mid] - 5.0) ** 2 / 9.0
+    y[G > 8.0] = 51.0 - 0.5 * (G[G > 8.0] - 8.0)
+    return G, y
+
+
+def test_seed_ignores_noise_below_g_1():
+    G, y = _noisy_early_curve()
+    state = PickState()
+    hint = picks.seed_gfunction(state, _res(G, y))
+    assert abs(state.min_dpdg_G - 5.0) < 0.05
+    assert abs(state.contact_G - 8.0) < 0.05
+    assert state.closure_scenario == ""  # a 2% bump is not a clear C-A
+    assert hint is None
+
+
+def test_seed_never_below_g_1_even_for_a_clean_sub_1_elbow():
+    """A real elbow below G=1 is not auto-seeded; the analyst drags it. The seed stays >= 1."""
+    G = np.linspace(0.02, 8.0, 400)
+    y = np.where(G < 0.55, 2.0 + 20.0 * (0.55 - G) ** 2, 2.0 + (G - 0.55))
+    state = PickState()
+    picks.seed_gfunction(state, _res(G, y))
+    assert state.min_dpdg_G >= interpret.SEED_MIN_G
+    assert state.contact_G >= interpret.SEED_MIN_G
+
+
+def test_seed_floor_falls_back_when_the_record_barely_reaches_g_1():
+    """Fewer than 6 samples at G >= 1: seed on the whole curve, as before."""
+    G = np.linspace(0.0, 1.01, 200)
+    y = 50.0 + (G - 0.5) ** 2
+    state = PickState()
+    picks.seed_gfunction(state, _res(G, y))
+    assert state.min_dpdg_G == float(G[_min_idx(G, y)])
+
+
+def test_seed_ignores_a_terminal_crash_spike():
+    """Flaherty / Delphi shape: the record ends mid-bleed-off, so the last samples have dP/dG
+    100x the settled curve (the final one negative where pressure ticks back up). The trim cannot
+    catch it (BHP channel, or the bleed stops above 100 psi), so the seed must."""
+    G, y = _noisy_early_curve()
+    G = np.append(G, G[-1] + np.array([0.001, 0.002, 0.003, 0.004, 0.005]))
+    y = np.append(y, [9000.0, 9500.0, 8700.0, 5300.0, -7800.0])
+    state = PickState()
+    hint = picks.seed_gfunction(state, _res(G, y))
+    assert abs(state.min_dpdg_G - 5.0) < 0.05
+    assert abs(state.contact_G - 8.0) < 0.05
+    assert state.closure_scenario == ""
+    assert hint is None
+
+
+def test_seed_ignores_a_long_terminal_crash_that_outnumbers_the_curve():
+    """Delphi shape: a BHP channel bleeds off to ~0 psi, and the 30-psi resampler keeps more
+    crash points (all packed in the last 0.01% of G) than real falloff points."""
+    G, y = _noisy_early_curve()
+    keep = G >= 1.0
+    G, y = G[keep], y[keep]
+    n_crash = 2 * len(G)
+    G = np.append(G, G[-1] + np.linspace(1e-4, 1e-2, n_crash))
+    y = np.append(y, np.full(n_crash, 48000.0))
+    state = PickState()
+    hint = picks.seed_gfunction(state, _res(G, y))
+    assert abs(state.min_dpdg_G - 5.0) < 0.05
+    assert abs(state.contact_G - 8.0) < 0.05
+    assert state.closure_scenario == ""
+    assert hint is None
+
+
+def test_seed_spike_with_a_reversal_sample_inside_is_masked_whole():
+    """At a down-then-up reversal the central difference gives a ~0 (or NaN) sample inside the
+    spike; the walk back must step over it, not stop there."""
+    for tail in ([9000.0, 9500.0, 120.0, -7800.0], [9000.0, 9500.0, 8700.0, np.nan, -7800.0]):
+        G, y = _noisy_early_curve()
+        G = np.append(G, G[-1] + 0.001 * np.arange(1, len(tail) + 1))
+        y = np.append(y, tail)
+        state = PickState()
+        hint = picks.seed_gfunction(state, _res(G, y))
+        assert abs(state.min_dpdg_G - 5.0) < 0.05, tail
+        assert state.closure_scenario == "", tail
+        assert hint is None
+
+
+def test_terminal_spike_start_cases():
+    G = np.linspace(1.0, 10.0, 10)
+    assert interpret.terminal_spike_start(G, np.full(10, 5.0)) == 10
+    y = np.full(10, 5.0)
+    y[-3:] = [900.0, 2.0, -900.0]  # reversal sample inside the spike
+    assert interpret.terminal_spike_start(G, y) == 7
+    y = np.full(10, 5.0)
+    y[-1] = 900.0
+    assert interpret.terminal_spike_start(G, y) == 9
+    assert interpret.terminal_spike_start(G, np.full(10, np.nan)) == 10

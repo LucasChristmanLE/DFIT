@@ -1469,7 +1469,8 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
             p_surface_post = p_surface_post.copy()
             p_surface_post[res.dropout_mask[post]] = np.nan
     cut_dt, reason = interpret.suggest_tail_trim_dt(dt_post, p_surface_post,
-                                                     res.resampled_full.guard_dt)
+                                                     res.resampled_full.guard_dt,
+                                                     onset_tol_psi=state.resample_step)
     if reason != "low_pressure":
         # "" (no candidate at all) sets nothing -- the line parks at the end of the data.
         # "rise_guard" sets no pick either: the guard boundary is already the effective cutoff
@@ -1578,15 +1579,30 @@ def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
     dg = res.diagnostics
     if dg is None or res.resampled is None or len(dg.G) <= 5:
         return None
+    # The auto-seed never lands below G = SEED_MIN_G: early-decline noise there (1BH MERGED: a
+    # +-10x dP/dG swing on 1-s data) otherwise reads as a min and a hump, and passes the C-A
+    # gate. Indices stay aligned with dg.G (masked = NaN). A record that barely reaches the floor
+    # seeds on the whole curve. The analyst can still drag the pick below it.
+    y_seed = np.where(dg.G >= interpret.SEED_MIN_G, dg.dPdG, np.nan)
+    if int(np.isfinite(y_seed).sum()) < 6:
+        y_seed = dg.dPdG
+    # A crash spike at the end of the record (a bleed-off the tail trim can't see) would
+    # otherwise be the "hump" and make every earlier min, plus the climb into it, a clear C-A.
+    spike = interpret.terminal_spike_start(dg.G, y_seed)
+    if spike < len(y_seed):
+        trimmed = y_seed.copy()
+        trimmed[spike:] = np.nan
+        if int(np.isfinite(trimmed).sum()) >= 6:
+            y_seed = trimmed
     fresh_idx = None
     if state.min_dpdg_G is None:
-        fresh_idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+        fresh_idx = interpret.suggest_min_dpdg_index(dg.G, y_seed)
         state.min_dpdg_G = float(dg.G[fresh_idx])
     if state.contact_G is None:
-        hump = interpret.suggest_hump_index(dg.G, dg.dPdG)
+        hump = interpret.suggest_hump_index(dg.G, y_seed)
         state.contact_G = float(dg.G[hump]) if hump is not None else float(dg.G[-1])
     if (fresh_idx is not None and not state.closure_scenario
-            and interpret.is_clear_closure(dg.G, dg.dPdG, fresh_idx)):
+            and interpret.is_clear_closure(dg.G, y_seed, fresh_idx)):
         state.closure_scenario = "C-A clear"
         apply_closure_scenario(state, res)
         return closure_auto_hint()

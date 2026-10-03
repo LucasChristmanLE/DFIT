@@ -23,6 +23,17 @@ RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-2
 RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
 MIN_SURFACE_PRESSURE_PSI = 100.0  # below this, the hydrostatic BHP conversion is unreliable
                                   # (the WHP signal is too small to trust); see model.compute_all
+TAIL_ONSET_LOOKBACK_S = 300.0  # suggest_tail_trim_dt: how far before a sub-floor sample to look
+                               # for the start of the collapse (bounds how much real decline is cut)
+TAIL_ONSET_LOOKBACK_FRAC = 0.02  # ...and at most this fraction of the crash's elapsed time, so an
+                                 # early crash does not eat the steep early decline before it
+SEED_MIN_G = 1.0  # picks.seed_gfunction: the auto-seeded min dP/dG, contact, and auto C-A never sit
+                  # below this G (early-decline noise); manual picks are not limited
+TERMINAL_SPIKE_FACTOR = 10.0  # terminal_spike_start: trailing dP/dG beyond this x the curve's
+                              # median is an end-of-record crash, not a hump
+TERMINAL_SPIKE_MAX_GAP = 2  # terminal_spike_start: small samples it steps over inside a spike
+TERMINAL_SPIKE_REF_G_FRAC = 0.95  # terminal_spike_start: the reference median uses G up to this
+                                  # fraction of the last G, so the crash itself is left out
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
@@ -391,6 +402,53 @@ def suggest_hump_index(G: np.ndarray, dPdG: np.ndarray) -> Optional[int]:
     return int(np.flatnonzero(finite)[np.argmax(y[finite])])
 
 
+def terminal_spike_start(G: np.ndarray, dPdG: np.ndarray,
+                         factor: float = TERMINAL_SPIKE_FACTOR) -> int:
+    """Start index of a trailing crash spike in dP/dG, or ``len(dPdG)`` when there is none.
+
+    A record that ends mid-bleed-off (or a BHP channel the low-pressure tail trim never looks at)
+    leaves its last resampled points packed into a tiny G span, so dP/dG there runs 100x the
+    settled curve; the final sample can even go negative where pressure ticks back up. Walking
+    back from the last finite sample (which must itself qualify), a sample is part of the spike
+    while its magnitude exceeds
+    ``factor`` x the reference: the median |dP/dG| over G <= TERMINAL_SPIKE_REF_G_FRAC x the
+    last G. Taking the reference by G, not by sample count, keeps a long bleed-off (Delphi
+    46702: more crash points than falloff points, all in the last 0.03% of G) from setting its
+    own reference. A genuine C-A hump is a 10-100% rise, nowhere near 10x. Non-finite samples
+    (e.g. a seed mask) are ignored."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    fin = np.isfinite(y) & np.isfinite(G)
+    if fin.sum() < 3:
+        return len(y)
+    last = int(np.flatnonzero(fin)[-1])
+    ref_mask = fin & (G <= TERMINAL_SPIKE_REF_G_FRAC * G[last])
+    ref_vals = np.abs(y[ref_mask]) if ref_mask.sum() >= 3 else np.abs(y[fin])
+    med = float(np.median(ref_vals))
+    if med <= 0:
+        return len(y)
+    big = np.isfinite(y) & (np.abs(y) > factor * med)
+    if not big[last]:
+        return len(y)
+    # Walk back over the spike. Up to TERMINAL_SPIKE_MAX_GAP small or non-finite samples inside it
+    # are stepped over when a spike sample lies just before them: at a down-then-up reversal the
+    # central difference puts a ~0 sample in the middle of the spike.
+    start = last
+    i = last - 1
+    while i >= 0:
+        if big[i]:
+            start = i
+            i -= 1
+            continue
+        gap_end = i
+        while i >= 0 and not big[i] and gap_end - i < TERMINAL_SPIKE_MAX_GAP:
+            i -= 1
+        if i >= 0 and big[i]:
+            continue
+        break
+    return start
+
+
 def suggest_min_dpdg_index(G: np.ndarray, dPdG: np.ndarray, g_min: float = 1.0) -> int:
     """Index of the relative minimum of dP/dG -- the compliance "elbow" the effective-ISIP
     tangent should anchor at.
@@ -434,6 +492,7 @@ def suggest_tail_trim_dt(
     p_surface_post: Optional[np.ndarray],
     guard_dt: Optional[float],
     floor_psi: float = MIN_SURFACE_PRESSURE_PSI,
+    onset_tol_psi: float = 30.0,
 ) -> tuple[Optional[float], str]:
     """Default boundary for the Overview step's always-on tail-trim line (shut-in-relative
     seconds), and the reason it landed there. ``dt_post``/``p_surface_post`` are the raw
@@ -448,8 +507,14 @@ def suggest_tail_trim_dt(
         genuine further decline past it -- but nothing past the guard is admitted into the
         diagnostics unless the analyst drags an explicit override past it
         (``PickState.tail_guard_override``).
-      - ``(crash_dt, "low_pressure")`` -- the first ``dt_post`` whose finite surface pressure
-        drops below ``floor_psi``. Skipped entirely when ``p_surface_post`` is None: a caller
+      - ``(crash_dt, "low_pressure")`` -- the onset of the collapse that ends below
+        ``floor_psi``. Found by taking the first ``dt_post`` k whose finite surface pressure is
+        below ``floor_psi``, then backing up over the raw samples in
+        ``[dt[k] - lookback, dt[k])``, ``lookback = min(TAIL_ONSET_LOOKBACK_S,
+        TAIL_ONSET_LOOKBACK_FRAC * dt[k])``: ``p_ref`` is their finite max and the cut is
+        the dt of the first sample after the LAST one with ``p >= p_ref - onset_tol_psi``, so the
+        whole multi-sample collapse (not just its sub-floor end) lies past the cut. With no
+        window samples, or none within tolerance, the cut stays ``dt[k]``. Skipped entirely when ``p_surface_post`` is None: a caller
         passes None when the mapped channel is already BHP, where a sub-100-psi test is
         meaningless (the same gate model.compute_all's own low-pressure warning uses).
 
@@ -464,7 +529,17 @@ def suggest_tail_trim_dt(
         p_surface_post = np.asarray(p_surface_post, dtype=float)
         below = np.isfinite(p_surface_post) & (p_surface_post < floor_psi)
         if below.any():
-            candidates.append((float(dt_post[below][0]), "low_pressure"))
+            k = int(np.flatnonzero(below)[0])
+            cut = float(dt_post[k])
+            lookback = min(TAIL_ONSET_LOOKBACK_S, TAIL_ONSET_LOOKBACK_FRAC * max(cut, 0.0))
+            win = np.flatnonzero((dt_post >= dt_post[k] - lookback)
+                                 & (np.arange(len(dt_post)) < k) & np.isfinite(p_surface_post))
+            if win.size:
+                p_ref = float(np.max(p_surface_post[win]))
+                ok = win[p_surface_post[win] >= p_ref - onset_tol_psi]
+                if ok.size and ok[-1] + 1 < len(dt_post):
+                    cut = float(dt_post[ok[-1] + 1])
+            candidates.append((cut, "low_pressure"))
     if not candidates:
         return None, ""
     candidates.sort(key=lambda c: c[0])  # stable: a tie keeps rise_guard's earlier list position

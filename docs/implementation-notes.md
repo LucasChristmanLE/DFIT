@@ -927,7 +927,20 @@ first visit, via `interpret.suggest_tail_trim_dt(dt_post, p_surface_post, guard_
 earliest of the rise-guard boundary (`res.resampled_full.guard_dt`) or the first post-shut-in
 sample where surface pressure drops below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`; skipped
 when the mapped channel is already BHP, where a sub-100-psi test is meaningless), tie going to
-the rise guard. A rise-guard boundary sets **no pick at all** (`PickState.tail_trim_dt` stays
+the rise guard. The low-pressure candidate is the collapse **onset**, not that first sub-floor
+sample k: over the raw samples in `[dt[k] - lookback, dt[k])`, lookback = min(300 s
+(`interpret.TAIL_ONSET_LOOKBACK_S`), 2% of dt[k] (`TAIL_ONSET_LOOKBACK_FRAC`)),
+`p_ref` is the finite max and the cut is the dt of the first sample after the LAST one with
+`p >= p_ref - onset_tol_psi` (`seed_tail_trim` passes `state.resample_step`, default 30). With no
+window samples or none qualifying the cut stays `dt[k]`. The window bounds how much real decline
+it can remove; the 2% term keeps an early crash from eating the steep early decline (a crash
+within minutes of shut-in is a bad test anyway, so it simply gets almost no back-off). On a
+134-test corpus sample (88 with a >= 1 h falloff and no crash in the first hour), 22 trims moved
+earlier, 1-23 s except one 174 s. Arkansas 1BH MERGED.DBS: surface pressure holds 805.7 psi, collapses
+802 -> 575 psi over 12 one-second samples, then 268 -> 32 -> 13 psi. Cutting at the first
+sub-100 sample (774443.04 s) left the whole 805 -> 268 collapse in, and the 30-psi resampler kept
+7 points on it within dG ~ 1e-3 (dP/dG 2.5e5-3.7e6), which the hump suggester took as the
+contact hump. The onset cut is 774431.04 s (Gmax 126.37 -> 120.07). A rise-guard boundary sets **no pick at all** (`PickState.tail_trim_dt` stays
 `None`) -- the guard boundary is already the effective cutoff by default
 (`interpret.resolve_tail_cut_dt`, below, with no trim in state), so only the rendered line
 position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
@@ -1369,7 +1382,33 @@ local minima of dP/dG over the whole record (no fixed G threshold), preferring c
 before the fracture-contact hump. `interpret.suggest_hump_index` locates that hump as the
 interior local max of dP/dG with the largest G·dP/dG -- the water-hammer spike near G=0 loses
 on the G factor, the decaying tail has no local max -- falling back to the raw argmax on a
-monotone record; the same helper seeds the blank-scenario contact placeholder. A record with
+monotone record; the same helper seeds the blank-scenario contact placeholder. The seeder
+(`picks.seed_gfunction`) hides two regions (NaN) from `suggest_min_dpdg_index`,
+`suggest_hump_index` and `is_clear_closure`; the interpret suggesters themselves still search the
+whole curve, and manual corrections are untouched:
+- **G < `interpret.SEED_MIN_G` (1.0).** On 1-s data with a fast early decline the 30-psi
+  resampler keeps nearly every raw sample, and the pressure *rate* wobbles second to second.
+  1BH MERGED.DBS: BHP 10,690 -> 6,950 psi in the first 209 s, monotone (not water hammer), dP/dG
+  swinging +-10x below G ~ 0.5 and +-20% near G = 1. Its envelope looked like a hump at G ~ 0.3
+  (G*dP/dG 3,400 vs the real bump's 450), so the min seeded at G = 0.074 and passed the C-A gate.
+  An auto-seed below G = 1 is never right in practice, so the floor is a flat rule. It is skipped
+  when fewer than 6 samples sit at G >= 1 (a record that never reaches G ~ 1 is a te/window
+  problem; those keep the old whole-curve seed). Rejected alternatives: masking points whose
+  central difference spans < 20 raw samples (it also masked clean 5-10 s data and lost real
+  elbows; review finding), a zigzag-roughness prefix, and log-G median smoothing.
+- **A trailing crash spike (`interpret.terminal_spike_start`).** Walking back from the last finite
+  sample while |dP/dG| > 10x (`TERMINAL_SPIKE_FACTOR`) the median |dP/dG| over G <= 95% of the last
+  G (`TERMINAL_SPIKE_REF_G_FRAC`), stepping over up to 2 small or NaN samples inside the spike
+  (`TERMINAL_SPIKE_MAX_GAP`; a down-then-up reversal puts a ~0 central difference mid-spike). This catches bleed-offs the tail trim cannot: a BHP channel
+  (Delphi 46702 100-09-21-059-22W5: BHP to 31 psi, ~60 crash points in the last 0.03% of G, more
+  than the falloff itself, hence the G-based reference rather than a sample median) or a record
+  ending mid-bleed above 100 psi (Flaherty 18-7-10NBH, Stenehjem 10H, Harlequin, Khaki Campbell
+  Trap1, all previously auto C-A on the spike). A real C-A hump is a 10-100% rise, never 10x.
+
+1BH after both: min G = 25.14, contact placeholder G = 38.0, no auto C-A (the rise is 1.8%). On
+the 88 usable corpus tests above: seeds at G < 0.1 went 38 -> 10 and below G = 1 57 -> 15 (all 15
+on records whose curve ends at G <= 1.16), auto C-A 43 -> 30, no contact on a terminal spike.
+`seed_tangent` is not masked: on 1BH its seed lands at G = 1.90, probably the same noise. A record with
 no interior local min at all (C-C shape) falls back to the G>=1-masked global min. Two
 corrections exist: dragging the triangle commits on release and re-derives the contact via
 `re_derive_contact_from_min` (C-A: +10% rule; C-B: g_min-masked inflection nearest the drag);

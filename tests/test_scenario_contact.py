@@ -409,7 +409,11 @@ def test_seed_gfunction_contact_at_hump_not_spike():
     # the contact to the +10% point: this pins the hump placeholder itself.
     state = PickState(closure_scenario="C-B adequate")
     picks.seed_gfunction(state, res)
-    assert abs(state.min_dpdg_G - 0.55) < 0.15
+    # The real elbow sits at G=0.55, below the seed floor (interpret.SEED_MIN_G): not auto-seeded.
+    # Above the floor the curve rises to the hump and decays with no interior min, so the seed
+    # takes the masked global-min fallback: the last sample.
+    assert state.min_dpdg_G >= interpret.SEED_MIN_G
+    assert state.min_dpdg_G == float(G[-1])
     assert abs(state.contact_G - 3.5) < 0.3
     assert state.contact_G > 1.0  # nowhere near the spike at G~=0
 
