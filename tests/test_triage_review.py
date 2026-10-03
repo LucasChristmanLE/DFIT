@@ -359,3 +359,19 @@ def test_annotate_file_subfolders_respects_pagination(tmp_path):
     assert len(visible) == 1  # 9 files, 8 per page -> 1 on page 2
     texts = [t.get_text() for t in visible[0].texts]
     assert any("OLD Files" in t for t in texts)
+
+
+def test_status_text_hints_no_dfit_key_when_scan_suggests_nothing():
+    text = review_app._status_text(keeps=set(), suggested=[], page=0, pages=1)
+    assert text.startswith("keeps: (none)")
+    assert 'No likely DFIT file' in text and '"0"' in text
+
+
+def test_status_text_no_hint_when_scan_has_a_suggestion():
+    text = review_app._status_text(
+        keeps={r"C:\w\a.csv"}, suggested=[r"C:\w\a.csv"], page=1, pages=3)
+    assert text == "keeps: a.csv    page 2/3"
+
+
+def test_key_legend_names_no_dfit_key():
+    assert "0 = NO DFIT HERE" in review_app._KEY_LEGEND

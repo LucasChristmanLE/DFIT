@@ -42,9 +42,18 @@ from triage.ledger import Ledger, group_files_sig
 PER_PAGE = 8
 
 _KEY_LEGEND = (
-    "Keys:  1-8 toggle keeper  |  Enter/Right = decide  |  0 = no DFIT here  |  u = unsure  |  "
-    "Left = back (non-destructive)  |  [ / ] = prev/next page  |  q = quit"
+    "Keys:  1-8 toggle keeper  |  Enter/Right = decide  |  0 = NO DFIT HERE (skip folder)  |  "
+    "u = unsure  |  Left = back (non-destructive)  |  [ / ] = prev/next page  |  q = quit"
 )
+
+
+def _status_text(keeps, suggested, page: int, pages: int) -> str:
+    """The footer status line: current keeps, the page indicator, and -- when the scan found no
+    likely-DFIT file to suggest -- a pointer at the `0` "no DFIT here" decision."""
+    keeps_note = ", ".join(os.path.basename(k) for k in sorted(keeps)) or "(none)"
+    page_note = f"    page {page + 1}/{pages}" if pages > 1 else ""
+    hint = '    No likely DFIT file found: press "0" if there is none.' if not suggested else ""
+    return f"keeps: {keeps_note}{page_note}{hint}"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -154,6 +163,18 @@ class ReviewApp:
         footer.pack(side="bottom", fill="x")
         self.status_lbl = ttk.Label(footer, text="")
         self.status_lbl.pack(anchor="w")
+        # Mouse equivalents of the decision keys. takefocus=False so a focused button never
+        # swallows Enter/space meant for the root-window key binding.
+        buttons = ttk.Frame(footer)
+        buttons.pack(anchor="w", pady=(4, 2))
+        for text, cmd in (
+            ("Keep selected (Enter)", self._commit_and_advance),
+            ("No DFIT here (0)", self._mark_none_and_advance),
+            ("Unsure (u)", self._mark_unsure_and_advance),
+            ("Back (Left)", self._go_back),
+        ):
+            ttk.Button(buttons, text=text, command=cmd, takefocus=False).pack(
+                side="left", padx=(0, 6))
         self.legend_lbl = ttk.Label(footer, text=_KEY_LEGEND, foreground="gray")
         self.legend_lbl.pack(anchor="w")
 
@@ -241,9 +262,7 @@ class ReviewApp:
         self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
 
         pages = figure.page_count(scan, per_page=PER_PAGE)
-        page_note = f"    page {self.page + 1}/{pages}" if pages > 1 else ""
-        keeps_note = ", ".join(os.path.basename(k) for k in sorted(self.keeps)) or "(none)"
-        self.status_lbl.config(text=f"keeps: {keeps_note}{page_note}")
+        self.status_lbl.config(text=_status_text(self.keeps, scan.suggested, self.page, pages))
 
     def _show_complete(self) -> None:
         if self.canvas is not None:
