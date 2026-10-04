@@ -137,7 +137,7 @@ class PickState:
 
     # --- step 7-8: log-log window + postclosure + pore pressure ---
     loglog_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
-    postclosure_scenario: str = ""  # PC-A..PC-F
+    postclosure_scenario: str = ""  # PC-A..PC-F, PC-X
     # True while postclosure_scenario is PC-A set by picks.auto_assign_postclosure (a near -1/2
     # window slope) rather than by the analyst; a manual scenario change clears it.
     postclosure_auto: bool = False
@@ -148,7 +148,7 @@ class PickState:
     # semilog-y stiffness-vs-effective-pressure plot, in psi. Comparison-only: feeds
     # Shmin(stiffness) = this - 75 psi (interpret.shmin_compliance) and nothing else. Needs the
     # pore-pressure estimate (see skipped_steps/compute_all), so it is skipped end to end
-    # under PC-F exactly like porepressure. Old saves lack this key and take the default via
+    # under PC-F/PC-X exactly like porepressure. Old saves lack this key and take the default via
     # _decode's known-field filter, no migration needed. ---
     stiffness_pick_P: Optional[float] = None
     # Explicit negative finding: "no slope change apparent" on the relative-stiffness plot --

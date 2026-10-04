@@ -1433,7 +1433,7 @@ _PP_AXIS_BY_SCENARIO = {"PC-A": "tm12", "PC-B": "tm1", "PC-C": "tm12", "PC-E": "
 
 def suggest_pp_axis(scenario: str) -> Optional[str]:
     """Pore-pressure axis dictated by a postclosure scenario ("tm12"/"tm1"), or None when
-    the scenario leaves the axis to the analyst (unset, PC-D 'either', PC-F 'none')."""
+    the scenario leaves the axis to the analyst (unset, PC-D 'either', PC-F 'none', PC-X)."""
     if not scenario:
         return None
     return _PP_AXIS_BY_SCENARIO.get(scenario[:4])

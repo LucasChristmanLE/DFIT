@@ -1107,7 +1107,7 @@ class DfitApp:
             hint = picks.apply_closure_scenario(self.state, compute_all(self.state, self.td))
         if pcscen_changed:
             # Selecting a postclosure scenario drives the pore-pressure axis (see
-            # picks.suggest_pp_axis); PC-D/PC-F leave the axis to the analyst.
+            # picks.suggest_pp_axis); PC-D/PC-F/PC-X leave the axis to the analyst.
             axis = picks.suggest_pp_axis(pcscen)
             if axis is not None:
                 self.state.pp_axis = axis
@@ -1338,7 +1338,7 @@ class DfitApp:
     def _reconcile_pp_axis(self):
         """Force pp_axis to the value a postclosure scenario dictates (if any), so a locked
         axis can't disagree with its scenario. pp_axis feeds compute_all, so refresh() calls
-        this before recomputing; PC-D/PC-F/unset return None and leave a manual choice intact."""
+        this before recomputing; PC-D/PC-F/PC-X/unset return None and leave a manual choice intact."""
         axis = picks.suggest_pp_axis(self.state.postclosure_scenario)
         if axis is not None and axis != self.state.pp_axis:
             self.state.pp_axis = axis
@@ -1359,7 +1359,7 @@ class DfitApp:
         further than the user has been). First-visit seeding lives here, not in Next/Skip/Back,
         so the seed always runs regardless of which control got the user there.
 
-        A destination the workflow leaves out (model.skipped_steps; PC-F drops porepressure and
+        A destination the workflow leaves out (model.skipped_steps; PC-F/PC-X drop porepressure and
         stiffness) redirects through model.resolve_step -- this one place covers the log-log
         Skip button, resume-on-load (first_not_visited_step), and any other programmatic jump."""
         if self.td is None:
@@ -1440,7 +1440,7 @@ class DfitApp:
 
     def _advance(self):
         """Bound to the Next/Finish stepbar button. On the effective last step (model.last_step,
-        normally "stiffness" but "loglog" under PC-F) the button reads
+        normally "stiffness" but "loglog" under PC-F/PC-X) the button reads
         "Finish" and exports (_finish). Otherwise it advances (_next) -- but only once the
         current step's required scenario pick is present; step_gate_error gates the forward
         jump and the inline gate_lbl says what is missing. Back/Skip/breadcrumb navigation are

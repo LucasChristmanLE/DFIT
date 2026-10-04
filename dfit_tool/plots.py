@@ -783,7 +783,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     """Step 8: relative system stiffness (semilog-y) vs effective pressure (URTeC-2019-123
     A.8/A.9) -- the upturn where the fracture walls come into contact gives a fourth,
     comparison-only Shmin estimate. Needs the min-dP/dG pick and a pore-pressure estimate (the
-    h-function's Pres term); skipped end to end under PC-F (model.skipped_steps), which
+    h-function's Pres term); skipped end to end under PC-F/PC-X (model.skipped_steps), which
     never yields one. state.stiffness_no_upturn records the negative finding "no slope change
     apparent" -- the curve still draws, but no pick vline/marker and a title saying so."""
     ax.clear()
@@ -1114,7 +1114,7 @@ def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: Derive
     """Render every step's current view to a numbered PNG in ``out_dir``, in ``STEP_KEYS``
     order, then the Expanded-results chart as ``<n+1>_summary.png`` (always written).
     Returns the written paths in that order. Steps the workflow leaves out
-    (``skipped_steps``; PC-F drops porepressure and stiffness) are omitted, but the numbering
+    (``skipped_steps``; PC-F/PC-X drop porepressure and stiffness) are omitted, but the numbering
     still runs over every step so the other filenames are unaffected. Used by ``ui._finish``,
     but headless/Tkinter-free like the rest of this module."""
     paths = []

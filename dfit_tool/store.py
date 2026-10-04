@@ -369,7 +369,7 @@ def status_for(state: Optional[PickState]) -> str:
         return "skipped"
     if not any(k in state.step_status for k in STEP_KEYS):
         return "new"
-    # A step the workflow leaves out (skipped_steps; PC-F drops porepressure and stiffness) may
+    # A step the workflow leaves out (skipped_steps; PC-F/PC-X drop porepressure and stiffness) may
     # have no step_status entry at all, and any entry it does have (from a session where the
     # analyst hit Skip before choosing PC-F) is not a user decision worth reporting.
     keys = [k for k in STEP_KEYS if k not in skipped_steps(state)]
