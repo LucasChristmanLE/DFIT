@@ -65,20 +65,6 @@ CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must
 # --------------------------------------------------------------------------------------------------
 # injection window + te
 # --------------------------------------------------------------------------------------------------
-def detect_injection_window(rate: np.ndarray, threshold: float = 0.1) -> tuple[int, int]:
-    """Return (start_idx, shutin_idx) from the rate channel.
-
-    start_idx = first sample above ``threshold``; shutin_idx = one past the last sample above
-    ``threshold`` (the instant pumping stops). Raises if the rate never exceeds the threshold.
-    """
-    active = np.where(np.asarray(rate, dtype=float) > threshold)[0]
-    if active.size == 0:
-        raise ValueError("Rate never exceeds threshold; cannot auto-detect injection window")
-    start_idx = int(active[0])
-    shutin_idx = int(active[-1]) + 1
-    return start_idx, min(shutin_idx, len(rate) - 1)
-
-
 def suggest_injection_window(
     rate: np.ndarray, volume: Optional[np.ndarray] = None, threshold: float = 0.1,
     surface_p: Optional[np.ndarray] = None,
@@ -1013,9 +999,10 @@ def loglog_window_slope(t: np.ndarray, y: np.ndarray, lo: float, hi: float) -> f
     return m
 
 
-def suggest_loglog_window(t: np.ndarray,
-                          y: np.ndarray) -> Optional[tuple[int, int, bool]]:
-    """Suggested log-log window (i0, i1, half_slope) on t*dP/dt ``y``; i0/i1 are inclusive
+def _suggest_loglog_window_reference(t: np.ndarray,
+                                     y: np.ndarray) -> Optional[tuple[int, int, bool]]:
+    """Original all-pairs (m x m arrays, O(m^2) memory) form of ``suggest_loglog_window``,
+    kept as the fuzz-test reference. Suggested window (i0, i1, half_slope); i0/i1 are inclusive
     indices into ``t``.
 
     The window always starts after the postclosure peak (``_loglog_peak``: the latest
@@ -1075,6 +1062,97 @@ def suggest_loglog_window(t: np.ndarray,
     return int(valid[off + ia]), int(valid[off + ib]), bool(good.any())
 
 
+def suggest_loglog_window(t: np.ndarray,
+                          y: np.ndarray) -> Optional[tuple[int, int, bool]]:
+    """Suggested log-log window (i0, i1, half_slope) on t*dP/dt ``y``; i0/i1 are inclusive
+    indices into ``t``.
+
+    The window always starts after the postclosure peak (``_loglog_peak``: the latest
+    prominent local maximum, so an early-time spike or a pre-closure hump is skipped). Among
+    post-peak windows of >= LOGLOG_MIN_POINTS samples, the widest (in decades) that is straight
+    (LOGLOG_MAX_RMS_DECADES), spans >= LOGLOG_MIN_SPAN_DECADES, and has a slope within
+    LOGLOG_HALF_SLOPE_TOL of -1/2 wins, with half_slope True. Without one, the straightest
+    section at any slope, with half_slope False: the widest straight window over the span
+    floor, else the lowest-RMS window. None when no such peak exists (derivative still
+    rising)."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.flatnonzero(np.isfinite(t) & np.isfinite(y) & (t > 0) & (y > 0))
+    if valid.size < LOGLOG_MIN_POINTS + 1:
+        return None
+    x = np.log10(t[valid])
+    v = np.log10(y[valid])
+    peak = _loglog_peak(v)
+    if peak is None:
+        return None
+    xs, vs = x[peak + 1:], v[peak + 1:]
+    m = xs.size
+
+    # Closed-form LS over every (a, b) window via prefix sums. Loops over the start index and
+    # vectorizes over the end index, so memory is O(m) instead of m x m. The per-window
+    # arithmetic is identical elementwise to the all-pairs form (_suggest_loglog_window_reference),
+    # and ties keep the first window in (a, b) row-major order via strict-improvement updates.
+    def _cum(z):
+        return np.concatenate([[0.0], np.cumsum(z)])
+    cx, cv, cxx, cxv, cvv = _cum(xs), _cum(vs), _cum(xs * xs), _cum(xs * vs), _cum(vs * vs)
+    # Per tier: (best score, a, b). good/straight maximize span; the two fallbacks minimize rms.
+    best_good = best_straight = (-np.inf, -1, -1)
+    best_pool = best_ok = (np.inf, -1, -1)
+    any_good = any_straight = any_pool = any_ok = False
+    for a in range(m):
+        b = np.arange(a + LOGLOG_MIN_POINTS - 1, m)
+        if b.size == 0:
+            break
+        n = (b - a + 1).astype(float)
+        sx = cx[b + 1] - cx[a]
+        sv = cv[b + 1] - cv[a]
+        sxx_c = cxx[b + 1] - cxx[a] - sx * sx / n
+        sxv_c = cxv[b + 1] - cxv[a] - sx * sv / n
+        svv_c = cvv[b + 1] - cvv[a] - sv * sv / n
+        ok = sxx_c > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            slope = np.where(ok, sxv_c / np.where(sxx_c > 0, sxx_c, 1.0), np.nan)
+            rms = np.sqrt(np.maximum(svv_c - slope * sxv_c, 0.0) / n)
+        span = xs[b] - xs[a]
+        miss = np.abs(slope + 0.5)
+        straight = ok & (rms <= LOGLOG_MAX_RMS_DECADES) & (span >= LOGLOG_MIN_SPAN_DECADES)
+        good = straight & (miss <= LOGLOG_HALF_SLOPE_TOL)
+        pool = ok & (span >= LOGLOG_MIN_SPAN_DECADES)
+        any_ok |= bool(ok.any())
+        any_pool |= bool(pool.any())
+        for flag_mask, kind in ((good, "good"), (straight, "straight")):
+            if flag_mask.any():
+                j = int(np.argmax(np.where(flag_mask, span, -np.inf)))
+                if kind == "good":
+                    any_good = True
+                    if span[j] > best_good[0]:
+                        best_good = (span[j], a, int(b[j]))
+                else:
+                    any_straight = True
+                    if span[j] > best_straight[0]:
+                        best_straight = (span[j], a, int(b[j]))
+        for mask, kind in ((pool, "pool"), (ok, "ok")):
+            if mask.any():
+                j = int(np.argmin(np.where(mask, rms, np.inf)))
+                if kind == "pool":
+                    if rms[j] < best_pool[0]:
+                        best_pool = (rms[j], a, int(b[j]))
+                elif rms[j] < best_ok[0]:
+                    best_ok = (rms[j], a, int(b[j]))
+    if any_good:
+        _, ia, ib = best_good
+    elif any_straight:
+        _, ia, ib = best_straight
+    else:
+        # Nothing is straight enough: the lowest-RMS window, over the span floor when any
+        # window reaches it.
+        _, ia, ib = best_pool if any_pool else best_ok
+        if ia < 0:
+            return None
+    off = peak + 1
+    return int(valid[off + ia]), int(valid[off + ib]), any_good
+
+
 # --------------------------------------------------------------------------------------------------
 # relative stiffness (URTeC-2019-123 A.8/A.9): the h-function is a time-convolution leakoff
 # integral against a pore-pressure estimate; relative stiffness S = -dP_eff/dh, and its upturn
@@ -1097,11 +1175,24 @@ def h_function(dt_s: np.ndarray, p_eff: np.ndarray, pore_pressure_psi: float,
     n = len(dt_s)
     term0 = (p_eff[0] - pore_pressure_psi) * np.sqrt(dt_s + te_s / 2.0)
     dp = np.diff(p_eff)
-    # outer[i, j] = dt[i] - dt[j], for j in [0, n-2] (dp's own indices); masked to the strictly
-    # lower triangle (j < i) so only the j<i terms of the sum contribute. Masking (as 0/1) BEFORE
-    # the sqrt, rather than after, keeps every sqrt argument >= 0 -- the masked-out (j >= i)
-    # entries would otherwise be negative (dt increasing) and raise/NaN for no reason, since
-    # they're zeroed out immediately after anyway.
+    # outer[i, j] = dt[i] - dt[j], for j in [0, n-2] (dp's own indices). dt is non-decreasing,
+    # so the j < i terms are >= 0 and every j >= i entry is <= 0; clamping at 0 before the sqrt
+    # zeroes exactly the entries the old strictly-lower-triangle mask zeroed (and keeps every
+    # sqrt argument >= 0), with no n x n mask. Done in place: one n x n array, not four.
+    outer = dt_s[:, None] - dt_s[None, :-1]
+    np.maximum(outer, 0.0, out=outer)
+    np.sqrt(outer, out=outer)
+    return term0 + outer @ dp
+
+
+def _h_function_reference(dt_s: np.ndarray, p_eff: np.ndarray, pore_pressure_psi: float,
+                          te_s: float) -> np.ndarray:
+    """Original ``h_function`` with the explicit float lower-triangle mask (fuzz-test reference)."""
+    dt_s = np.asarray(dt_s, dtype=float)
+    p_eff = np.asarray(p_eff, dtype=float)
+    n = len(dt_s)
+    term0 = (p_eff[0] - pore_pressure_psi) * np.sqrt(dt_s + te_s / 2.0)
+    dp = np.diff(p_eff)
     outer = dt_s[:, None] - dt_s[None, :-1]
     mask = np.tril(np.ones((n, max(n - 1, 0))), k=-1)
     sqrt_term = np.sqrt(outer * mask)

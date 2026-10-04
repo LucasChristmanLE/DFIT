@@ -1941,11 +1941,17 @@ class DfitApp:
         if renderer is None:
             return _FALLBACK_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF
         overhangs = []
-        for ax in (self.ax, self._twin_axes(), self._d2_axes()):
+        # The primary Axes keeps its full tightbbox (any title/legend/annotation could in
+        # principle reach past its right edge). The twin and d2 axes carry nothing wider than
+        # their y-axis (spine, ticks, tick labels, label), so measuring just that axis skips
+        # re-walking their lines/patches/x axis -- same extent, a fraction of the cost.
+        for ax, axis_only in ((self.ax, False), (self._twin_axes(), True),
+                              (self._d2_axes(), True)):
             if ax is None:
                 continue
             try:
-                bbox = ax.get_tightbbox(renderer)
+                bbox = (ax.yaxis.get_tightbbox(renderer) if axis_only
+                        else ax.get_tightbbox(renderer))
             except Exception:
                 continue
             if bbox is None:
@@ -1957,12 +1963,13 @@ class DfitApp:
     def _measure_bottom_overhang_px(self):
         """How far the primary Axes' own x-axis tick labels + xlabel extend below its bottom
         edge, in device pixels -- the bottom-margin counterpart of ``_measure_overhang_px``
-        (mirroring it, including the same no-renderer/``None``-tightbbox fallback)."""
+        (mirroring it, including the same no-renderer/``None``-tightbbox fallback). Measures
+        the x axis alone: nothing else on a step's Axes is drawn below it."""
         renderer = self._get_renderer()
         if renderer is None:
             return _FALLBACK_BOTTOM_OVERHANG_PX * self.fig.dpi / _LAYOUT_DPI_REF
         try:
-            bbox = self.ax.get_tightbbox(renderer)
+            bbox = self.ax.xaxis.get_tightbbox(renderer)
         except Exception:
             bbox = None
         if bbox is None:
