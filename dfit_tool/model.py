@@ -545,6 +545,9 @@ class DerivedResults:
     pce_peak_t: Optional[float] = None
     pce_peak_tdpdt: Optional[float] = None
     pce_peak_p: Optional[float] = None
+    # Shut-in time to the postclosure flow regime: first sample in the log-log window, or the
+    # PC-E peak. None under PC-F/PC-X.
+    flow_regime_time_s: Optional[float] = None
 
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
@@ -1340,6 +1343,15 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             x = dg.t[m] ** expo
             res.pore_pressure_slope, res.pore_pressure = interpret.pore_pressure_fit(x, dg.p[m])
             res.pore_pressure_n_points = int(m.sum())
+
+    if pp_from_peak(state):
+        res.flow_regime_time_s = res.pce_peak_t
+    elif (state.loglog_window is not None and res.diagnostics is not None
+            and "porepressure" not in skipped_steps(state)):
+        t = res.diagnostics.t
+        lo, hi = state.loglog_window
+        inside = t[(t >= lo) & (t <= hi) & (t > 0)]
+        res.flow_regime_time_s = float(inside[0]) if inside.size else None
 
     # Relative stiffness (URTeC-2019-123 A.8/A.9): a fourth, comparison-only Shmin estimate at
     # the upturn where the h-function-derived relative stiffness S rises off its minimum --

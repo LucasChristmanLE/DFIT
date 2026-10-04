@@ -145,8 +145,14 @@ def _closure(state: PickState, res: DerivedResults) -> Section:
 def _postclosure(state: PickState, res: DerivedResults) -> Section:
     rows = [_gate(state, "loglog", ["scenario", state.postclosure_scenario or DASH])]
     if "porepressure" in skipped_steps(state):
-        rows.append(["pore pressure fit", f"skipped ({state.postclosure_scenario[:4]})"])
+        rows += [
+            _gate(state, "loglog", ["time to flow regime (min)",
+                                    f"n/a ({state.postclosure_scenario[:4]})"]),
+            ["pore pressure fit", f"skipped ({state.postclosure_scenario[:4]})"],
+        ]
         return Section("Postclosure", ["Item", "Value"], rows)
+    rows.append(_gate(state, "loglog", ["time to flow regime (min)",
+                                        _fmt(_min(res.flow_regime_time_s), "{:.2f}")]))
     if pp_from_peak(state):
         # PC-E: no window (model.compute_all). The peak is picked on Log-log; the values gate on
         # porepressure like chart_values and the sidebar.

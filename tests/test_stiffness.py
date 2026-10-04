@@ -677,7 +677,7 @@ def test_status_for_all_eight_steps_done_is_done():
 def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
     # "stiffness_no_upturn", "tail_guard_override", and "tangent_uninterpretable" were appended
     # after these two later still, so this checks the -5:-3 slice rather than the very tail.
-    assert store.LOG_COLUMNS[-13:-11] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+    assert store.LOG_COLUMNS[-14:-12] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
 
 
 def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
@@ -857,7 +857,7 @@ def test_missing_key_decodes_to_false(tmp_path):
 def test_log_row_has_stiffness_no_upturn_column_at_the_tail(tmp_path):
     # "tail_guard_override" and "tangent_uninterpretable" were appended after this one -- see
     # tests/test_tail_trim.py's test_log_columns_tail_is_tail_guard_override.
-    assert store.LOG_COLUMNS[-11] == "stiffness_no_upturn"
+    assert store.LOG_COLUMNS[-12] == "stiffness_no_upturn"
 
     td, st, res = _state_with_pore_pressure()
     st.stiffness_no_upturn = True

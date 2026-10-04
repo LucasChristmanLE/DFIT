@@ -259,7 +259,7 @@ def test_render_step_figure_twin_ylim_equals_default(step):
 
 # ---- store ----------------------------------------------------------------------------------------
 def test_log_column_is_last_and_filled(tmp_path):
-    assert store.LOG_COLUMNS[-8] == "apparent_isip_method"
+    assert store.LOG_COLUMNS[-9] == "apparent_isip_method"
     for use_tangent, want in ((False, "shutin"), (True, "tangent")):
         td, st, res = _seeded(use_tangent=use_tangent)
         entry = store.TestEntry(test_id="w", folder=str(tmp_path))

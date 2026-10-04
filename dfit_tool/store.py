@@ -93,6 +93,9 @@ LOG_COLUMNS = [
     # "inflection" (C-B, or C-A fallback when it never rose 10%) -- tail-appended per the
     # append-only convention.
     "contact_method",
+    # Minutes after shut-in to the postclosure flow regime (first log-log window sample, or the
+    # PC-E peak); blank under PC-F/PC-X -- tail-appended per the append-only convention.
+    "flow_regime_time_min",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -619,4 +622,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "manual_keeps": len(state.keep_intervals),
         "pce_peak_min": _minutes(res.pce_peak_t),
         "contact_method": res.contact_method,
+        "flow_regime_time_min": _minutes(res.flow_regime_time_s),
     }

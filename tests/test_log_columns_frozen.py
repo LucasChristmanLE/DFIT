@@ -73,6 +73,7 @@ FROZEN = [
     'manual_keeps',
     'pce_peak_min',
     'contact_method',
+    'flow_regime_time_min',
 ]
 
 

@@ -313,8 +313,7 @@ is drawn (and draggable) on the stiffness step only.
   the dP/dG inflection right of it (`interpret.suggest_contact_ca_fallback_index`, no minimum-rise
   floor); the effective ISIP stays anchored at the min. With no interior min or no inflection,
   `contact_G` is cleared and no compliance Shmin is reported. `compute_all` derives
-  `DerivedResults.contact_method` from `PickState.contact_rule` (`rise10`/`inflection`/None; logged as `contact_method`, the last
-  `LOG_COLUMNS` entry) and adds a warning on the fallback; `picks.gfunction_alert_text` drives the
+  `DerivedResults.contact_method` from `PickState.contact_rule` (`rise10`/`inflection`/None; logged as `contact_method`) and adds a warning on the fallback; `picks.gfunction_alert_text` drives the
   orange bold `ui.alert_lbl` above the hint on the gfunction step. Auto-C-A is unchanged.
 
 Closure scenarios (`picks.apply_closure_scenario`):
@@ -366,6 +365,11 @@ with slope within 0.10 of −1/2, else the widest straight window at any slope. 
 drag, and at seed only when the suggester found a qualifying window (not its fallback). A manual
 scenario is never touched; an auto PC-A clears on a miss; any postclosure-combobox selection
 (`ui._on_pcscen_selected`, even re-picking PC-A) clears the flag. Logged as `postclosure_auto`.
+
+Time to flow regime (`DerivedResults.flow_regime_time_s`): the first diagnostics sample inside
+`loglog_window`, or the snapped PC-E peak (`res.pce_peak_t`); None under PC-F/PC-X (table shows
+`n/a`). Shown in the Expanded results Postclosure table; logged as `flow_regime_time_min`, the
+last `LOG_COLUMNS` entry.
 
 PC-E and PC-F (`model.NO_TREND_POSTCLOSURE`, gate `model.loglog_window_suppressed`) show no
 log-log window: no shading, no slope (`loglog_slope` is None), no span controller. The pick stays

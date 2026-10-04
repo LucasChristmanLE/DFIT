@@ -220,7 +220,7 @@ def _row(tmp_path, st, td):
 
 def test_log_row_pce_peak_min(tmp_path):
     td, st, _ = _pce_state()
-    assert store.LOG_COLUMNS[-2] == "pce_peak_min"
+    assert store.LOG_COLUMNS[-3] == "pce_peak_min"
     row = _row(tmp_path, st, td)
     assert row["pce_peak_min"] == pytest.approx(compute_all(st, td).pce_peak_t / 60.0)
     st.postclosure_scenario = "PC-A linear"
