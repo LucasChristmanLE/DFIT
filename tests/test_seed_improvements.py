@@ -562,3 +562,24 @@ def test_closure_departure_index_nan_inside_run_is_skipped():
     GdPdG = GdPdG.copy()
     GdPdG[(G > 10.0) & (G < 11.0)] = np.nan
     assert interpret.closure_departure_index(G, GdPdG, 50.0) == clean
+
+
+def test_closure_departure_index_takes_last_in_tolerance_sample():
+    """A manual line the curve meets, leaves, and meets again: the closure is the last sample
+    within 5%, not the end of the first in-tolerance run."""
+    G = np.linspace(0.01, 40.0, 400)
+    dPdG = np.full_like(G, 30.0)
+    dPdG[(G >= 1.0) & (G <= 10.0)] = 50.0
+    dPdG[(G > 10.0) & (G <= 20.0)] = 40.0
+    dPdG[(G > 20.0) & (G <= 25.0)] = 50.0
+    idx = interpret.closure_departure_index(G, G * dPdG, 50.0)
+    assert G[idx] == pytest.approx(25.0, abs=0.15)
+
+
+def test_closure_departure_index_nothing_in_tolerance_returns_closest_approach():
+    G = np.linspace(0.01, 40.0, 400)
+    dPdG = 100.0 - 2.0 * G  # crosses 50 at G=25 only in the continuum
+    dPdG[np.abs(dPdG - 50.0) <= 5.0] = 70.0  # remove every in-tolerance sample
+    idx = interpret.closure_departure_index(G, G * dPdG, 50.0)
+    rel = np.abs(dPdG - 50.0) / 50.0
+    assert rel[idx] == pytest.approx(rel[G >= 1.0].min())

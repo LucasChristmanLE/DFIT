@@ -899,13 +899,14 @@ def closure_departure_index(
     G: np.ndarray, GdPdG: np.ndarray, slope: float,
     tol_frac: float = CLOSURE_TANGENT_TOL_FRAC, g_min: float = 1.0,
 ) -> Optional[int]:
-    """Closure (departure) index for a given through-origin line ``slope * G``, by the same rule
-    ``suggest_closure_tangent`` uses. Used when the analyst rotates the line by hand.
+    """Closure (departure) index for a given through-origin line ``slope * G``. Used when the
+    analyst rotates the line by hand.
 
-    The walk starts at the line's touch point: the sample with the smallest relative gap
-    ``|G*dP/dG - line| / line`` among finite samples with ``G >= g_min`` (all finite ``G > 0`` if
-    none). At the seed slope that is the hump index, so the seed's closure is reproduced.
-    Returns None for a non-finite or non-positive slope, or no usable samples."""
+    Returns the last sample within ``tol_frac`` of the line (``|G*dP/dG - line| <= tol_frac *
+    line``) among finite samples with ``G >= g_min`` (all finite ``G > 0`` if none). Unlike the
+    seed's first-run walk, a curve that meets, leaves, and meets the line again closes at the
+    last meeting. With nothing in tolerance, returns the closest approach (smallest relative
+    gap). Returns None for a non-finite or non-positive slope, or no usable samples."""
     if not (np.isfinite(slope) and slope > 0):
         return None
     G = np.asarray(G, dtype=float)
@@ -919,8 +920,10 @@ def closure_departure_index(
         cand = usable
     if not cand.any():
         return None
-    start = int(np.argmin(np.where(cand, rel, np.inf)))
-    return _closure_departure_walk(y, line, start, tol_frac)
+    within = np.flatnonzero(cand & (rel <= tol_frac))
+    if within.size:
+        return int(within[-1])
+    return int(np.argmin(np.where(cand, rel, np.inf)))
 
 
 LOGLOG_HALF_SLOPE_TOL = 0.10  # |slope + 1/2| that counts as a -1/2 (PC-A) window

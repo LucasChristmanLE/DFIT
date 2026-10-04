@@ -715,11 +715,13 @@ Per-test deliverables:
   tangent point -- a later re-crossing (e.g. a rising tail) is never picked up. The pick is a
   plain `DraggablePointController`: its seeded starting position comes from this rule, so
   it stays fully draggable and a reload's saved pick is never overwritten.
-  Rotating the line by hand (`picks.commit_closure_line`) re-derives `closure_G` by the same
-  5% walk (`interpret.closure_departure_index`). With no hump index for an arbitrary slope, the
-  walk starts at the line's touch point: the smallest relative gap |G·dP/dG − line| / line over
-  G >= `g_min`. At the seed slope that is the hump, so the seed's closure is reproduced. Dragging
-  the closure marker never moves the line; the next rotation re-snaps the marker.
+  Rotating the line by hand (`picks.commit_closure_line`) re-derives `closure_G`
+  (`interpret.closure_departure_index`): the LAST sample over G >= `g_min` within 5% of the
+  line, not the end of the first run, because a rotated line can meet the curve, leave it, and
+  meet it again (a first version used the first run and stopped at the early touch). With no
+  sample in tolerance it takes the closest approach. A rising tail that re-crosses the line
+  would win, so drag the marker in that case. Dragging the marker never moves the line; the next
+  rotation re-snaps the marker.
 - **Shmin, variable** — BHP at the G-time midpoint of the contact and closure picks. This
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
   other two (Shmin, closure time, and net pressure each have compliance, tangent, and
