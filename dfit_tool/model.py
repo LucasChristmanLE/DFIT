@@ -131,6 +131,9 @@ class PickState:
     min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
     closure_scenario: str = ""  # C-A..C-D, C-X
+    # Which rule placed contact_G, set by picks.re_derive_contact_from_min / handle_min_dpdg_window:
+    # "rise10", "inflection", or "" (cleared, a manual drag leaves it, or an old save).
+    contact_rule: str = ""
     show_d2pdg2: bool = False  # overlay d2P/dG2 on the G-function step (helps spot the C-B inflection)
 
     # --- step 6: tangent-method closure (G*dP/dG through-origin departure) ---
@@ -278,7 +281,7 @@ def _decode(d: dict) -> PickState:
     # unconditionally, which raises AttributeError on None. Coerce null -> "" for every scenario
     # field so a null here never raises downstream, matching this module's "old or foreign JSON
     # never raises" contract.
-    for key in ("closure_scenario", "postclosure_scenario"):
+    for key in ("closure_scenario", "postclosure_scenario", "contact_rule"):
         if key in d and d[key] is None:
             d[key] = ""
     # Old saves store the postclosure scenario's pre-rename label (the combobox values in
@@ -585,6 +588,11 @@ class DerivedResults:
     # stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
+
+    # How the compliance contact relates to the dP/dG curve, derived in compute_all (not a stored
+    # pick): "rise10" (C-A, dP/dG rises 10% above the min), "inflection" (C-B, or C-A when dP/dG
+    # never rises 10% and the contact sits at the inflection), None (no contact).
+    contact_method: Optional[str] = None
 
     # Relative-stiffness plot arrays (URTeC-2019-123 A.8/A.9): stiffness_p_eff and stiffness_G
     # are aligned with EACH OTHER (same length, same selected samples), and stiffness_S is one
@@ -1220,6 +1228,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if not state.closure_scenario:
             res.warnings.append(
                 "No closure scenario chosen; compliance Shmin uses the seeded contact")
+        # The recorded rule, not a re-run of the 10% rule on the current curve. An old save has
+        # no rule: it read "rise10" under C-A (the old code cleared the contact on a miss).
+        if state.closure_scenario.startswith("C-B"):
+            res.contact_method = "inflection"
+        elif state.closure_scenario.startswith("C-A"):
+            res.contact_method = state.contact_rule or "rise10"
+            if res.contact_method == "inflection":
+                res.warnings.append("C-A: dP/dG rose < 10% above min; contact at inflection.")
 
     # Liberty-internal Shmin: the Liberty variant of the compliance method. The anchor is the
     # min-dP/dG pick for C-A (and a blank scenario); for C-B the inflection is the contact pick

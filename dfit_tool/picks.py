@@ -1255,6 +1255,7 @@ def commit_stiffness_point(state: PickState, x: float) -> None:
 
 
 _CA_NO_RISE_HINT = "dP/dG never rises 10% above the min -- no contact (consider C-B or C-C)."
+_CA_INFLECTION_HINT = ("dP/dG never rises 10%; contact set at the inflection right of the min.")
 _CB_NO_INFLECTION_HINT = ("No inflection found on dP/dG -- no contact. Drag the triangle, "
                           "Shift+drag a window, or consider C-C.")
 
@@ -1290,6 +1291,7 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
         return None
     if scen.startswith(NO_CONTACT_SCENARIOS):
         state.contact_G = None
+        state.contact_rule = ""
         return None
     dg = res.diagnostics
     if dg is None or len(dg.G) < 3:
@@ -1314,8 +1316,12 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
     complete commit for that gesture -- ui.py does not call this function afterward.
 
       - C-A clear: nearest-sample lookup of the dragged min, then the +10% rule from there. When
-        dP/dG never rises 10%, ``contact_G`` is cleared: a leftover seed (the hump) would
-        otherwise report a compliance Shmin the rule rejected (Arkansas 1BH, a 1.9% rise).
+        dP/dG never rises 10% but the min is a genuine interior local min, the contact is the
+        inflection on the rising limb right of it (``interpret.suggest_contact_ca_fallback_index``;
+        Arkansas 1BH, a 1.9% rise) and ``_CA_INFLECTION_HINT`` is returned; the min stays put, so
+        the effective ISIP stays anchored there. With no such min or inflection, ``contact_G`` is
+        cleared: a leftover seed (the hump) would otherwise report a compliance Shmin the rule
+        rejected.
       - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed. Both the
         contact and the triangle move to it; on no inflection, the triangle stays and
         ``contact_G`` is cleared (a leftover pick, e.g. a C-A min+10%, would otherwise report a
@@ -1335,16 +1341,26 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         min_idx = _nearest(dg.G, state.min_dpdg_G)
         idx = interpret.suggest_contact_clear_index(dg.dPdG, min_idx)
         if idx is None:
-            state.contact_G = None
-            return _CA_NO_RISE_HINT
+            idx = interpret.suggest_contact_ca_fallback_index(
+                dg.G, dg.dPdG, min_idx, d2=dg.d2PdG2)
+            if idx is None:
+                state.contact_G = None
+                state.contact_rule = ""
+                return _CA_NO_RISE_HINT
+            state.contact_G = float(dg.G[idx])
+            state.contact_rule = "inflection"
+            return _CA_INFLECTION_HINT
         state.contact_G = float(dg.G[idx])
+        state.contact_rule = "rise10"
         return None
     if scen.startswith("C-B"):
         idx = interpret.suggest_contact_inflection_index(
             dg.G, dg.dPdG, seed=state.min_dpdg_G, d2=dg.d2PdG2)
         if idx is None:
             state.contact_G = None
+            state.contact_rule = ""
             return _CB_NO_INFLECTION_HINT
+        state.contact_rule = "inflection"
         # The triangle snaps onto the inflection it seeded, as handle_min_dpdg_window does;
         # otherwise it stays at a C-A rel-min one sample short of the contact (Arkansas 1BH).
         state.contact_G = state.min_dpdg_G = float(dg.G[idx])
@@ -1372,7 +1388,9 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         (``interpret.min_index_in_window``) becomes the triangle; the +10%-rise contact rule
         (``interpret.suggest_contact_clear_index``) then runs from *that* index (unmasked, right
         of it), same as ``re_derive_contact_from_min``'s C-A branch -- just seeded from the
-        window-found min instead of a g_min-masked search.
+        window-found min instead of a g_min-masked search. When it never rises 10% but the
+        window's min is a genuine interior local min, the contact is the inflection right of it,
+        searched no further than ``hi`` (``interpret.suggest_contact_ca_fallback_index``).
       - C-B adequate: the dP/dG inflection within the window
         (``interpret.suggest_contact_inflection_index`` with ``g_range``) IS the contact -- both
         picks are set to it directly, with no further re-derive over the (possibly sub-1.0)
@@ -1381,7 +1399,8 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         anyway).
 
     Returns a user-facing hint string when the window (or, for C-A, the rise rule from the
-    window's min) holds nothing usable, else None. On a C-A rise-rule failure, ``min_dpdg_G`` is
+    window's min) holds nothing usable (``_CA_INFLECTION_HINT`` when the C-A fallback set the
+    contact), else None. On a C-A rise-rule and fallback failure, ``min_dpdg_G`` is
     still moved to the window's min (``contact_G`` is cleared) -- same partial-failure
     shape as the triangle-drag path. The caller (ui.py) does not need to re-derive the contact
     afterward; this function is the whole commit.
@@ -1399,9 +1418,17 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         state.min_dpdg_G = float(dg.G[idx])
         contact_idx = interpret.suggest_contact_clear_index(dg.dPdG, idx)
         if contact_idx is None:
-            state.contact_G = None
-            return _CA_NO_RISE_HINT
+            contact_idx = interpret.suggest_contact_ca_fallback_index(
+                dg.G, dg.dPdG, idx, d2=dg.d2PdG2, hi=hi)
+            if contact_idx is None:
+                state.contact_G = None
+                state.contact_rule = ""
+                return _CA_NO_RISE_HINT
+            state.contact_G = float(dg.G[contact_idx])
+            state.contact_rule = "inflection"
+            return _CA_INFLECTION_HINT
         state.contact_G = float(dg.G[contact_idx])
+        state.contact_rule = "rise10"
         return None
     if scen.startswith("C-B"):
         idx = interpret.suggest_contact_inflection_index(
@@ -1410,6 +1437,7 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
             return "No inflection inside the window."
         state.min_dpdg_G = float(dg.G[idx])
         state.contact_G = float(dg.G[idx])
+        state.contact_rule = "inflection"
         return None
     return None
 
@@ -1421,8 +1449,27 @@ _GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent 
 _MIN_DPDG_WINDOW_HINT = " Shift+drag a window on the plot to re-find it there."
 
 
-def gfunction_hint_text(scenario: str) -> str:
-    """Scenario-aware hint-label text for the G-function step."""
+_CA_ALERT_TEXT = ("C-A: dP/dG rose < 10% above the min. Contact set at the inflection; "
+                  "check it.")
+
+
+def gfunction_alert_text(state: PickState, res: DerivedResults, step: str) -> str:
+    """Highly visible G-function-step notice (ui.py's orange bold ``alert_lbl``): non-empty only
+    on the gfunction step under C-A when ``res.contact_method`` is ``"inflection"``. Derived from
+    ``res`` on every refresh, so it persists across redraws and revisits."""
+    if (step == "gfunction" and state.closure_scenario.startswith("C-A")
+            and res.contact_method == "inflection"):
+        return _CA_ALERT_TEXT
+    return ""
+
+
+def gfunction_hint_text(scenario: str, contact_method: Optional[str] = None) -> str:
+    """Scenario-aware hint-label text for the G-function step. ``contact_method``
+    (``DerivedResults.contact_method``) switches the C-A text when the contact is the
+    inflection fallback."""
+    if scenario.startswith("C-A") and contact_method == "inflection":
+        return ("Contact set at the inflection right of the min (dP/dG rose < 10%); drag the "
+                "triangle to move the anchor." + _MIN_DPDG_WINDOW_HINT)
     if scenario.startswith("C-A"):
         return ("Contact auto-positioned at rel-min +10%; drag the triangle to move the anchor."
                 + _MIN_DPDG_WINDOW_HINT)

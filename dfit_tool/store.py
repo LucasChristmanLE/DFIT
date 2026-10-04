@@ -89,6 +89,10 @@ LOG_COLUMNS = [
     # PC-E only: shut-in time of the t*dP/dt peak the -1/2 pore-pressure extrapolation starts
     # from (model.pp_from_peak) -- tail-appended per the append-only convention.
     "pce_peak_min",
+    # How the compliance contact was found: "rise10" (C-A, dP/dG rose 10% above the min) or
+    # "inflection" (C-B, or C-A fallback when it never rose 10%) -- tail-appended per the
+    # append-only convention.
+    "contact_method",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -614,4 +618,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "manual_masks": len(state.mask_intervals),
         "manual_keeps": len(state.keep_intervals),
         "pce_peak_min": _minutes(res.pce_peak_t),
+        "contact_method": res.contact_method,
     }

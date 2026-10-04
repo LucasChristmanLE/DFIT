@@ -659,6 +659,17 @@ def suggest_contact_clear_index(
     return None
 
 
+def _is_interior_local_min(y: np.ndarray, idx: int) -> bool:
+    """True when ``idx`` is a genuine interior local min of ``y``: finite neighbors on both
+    sides, strictly below the left one and at or below the right one (the test
+    ``suggest_min_dpdg_index`` uses), not its global-min fallback for a curve with no interior
+    min."""
+    if not 0 < idx < len(y) - 1:
+        return False
+    trio = y[idx - 1:idx + 2]
+    return bool(np.isfinite(trio).all() and trio[1] < trio[0] and trio[1] <= trio[2])
+
+
 def is_clear_closure(G: np.ndarray, dPdG: np.ndarray, min_idx: int) -> bool:
     """True when dP/dG shows a clean C-A signature at ``min_idx``: the gate for auto-assigning
     C-A on the gfunction seed (picks.seed_gfunction).
@@ -670,12 +681,9 @@ def is_clear_closure(G: np.ndarray, dPdG: np.ndarray, min_idx: int) -> bool:
         that crossing, so a single noisy sample does not count."""
     G = np.asarray(G, dtype=float)
     y = np.asarray(dPdG, dtype=float)
-    if not 0 < min_idx < len(y) - 1:
+    if not _is_interior_local_min(y, min_idx):
         return False
-    trio = y[min_idx - 1:min_idx + 2]
-    if not (np.isfinite(trio).all() and trio[1] < trio[0] and trio[1] <= trio[2]):
-        return False
-    if trio[1] <= 0:  # a fractional rise above a min <= 0 is not a rise
+    if y[min_idx] <= 0:  # a fractional rise above a min <= 0 is not a rise
         return False
     hump = suggest_hump_index(G, y)
     if hump is None or hump <= min_idx:
@@ -686,6 +694,36 @@ def is_clear_closure(G: np.ndarray, dPdG: np.ndarray, min_idx: int) -> bool:
     run = y[c:c + CLEAR_RISE_MIN_POINTS]
     threshold = y[min_idx] * (1.0 + CLEAR_RISE_FRAC)
     return len(run) == CLEAR_RISE_MIN_POINTS and bool(np.all(run >= threshold))
+
+
+def suggest_contact_ca_fallback_index(
+    G: np.ndarray,
+    dPdG: np.ndarray,
+    min_idx: int,
+    d2: Optional[np.ndarray] = None,
+    hi: Optional[float] = None,
+) -> Optional[int]:
+    """C-A fallback contact for a dP/dG that never rises ``CLEAR_RISE_FRAC`` above the min: the
+    inflection (nearest local max of d(dP/dG)/dG) on the rising limb, i.e. between the sample
+    right of ``min_idx`` and the hump, further capped at G = ``hi`` when given. The hump here is
+    the first interior local max of dP/dG right of the min, not ``suggest_hump_index``: that
+    picks the largest G*dP/dG over the whole curve, which can be a tall early hump left of a late
+    min (AEF Fed 05-61-34-5649B). When the span holds no d(dP/dG)/dG local max (a sparse rising
+    limb), the hump itself is returned. None unless ``min_idx`` is a genuine interior local min
+    (``_is_interior_local_min``) with a hump right of it (and within ``hi``). There is no
+    minimum-rise floor: the analyst chose C-A, and the effective ISIP stays anchored at the min."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(dPdG, dtype=float)
+    if not _is_interior_local_min(y, min_idx):
+        return None
+    hump = next((i for i in range(min_idx + 1, len(y) - 1)
+                 if np.isfinite(y[i - 1:i + 2]).all() and y[i] > y[i - 1] and y[i] >= y[i + 1]),
+                None)
+    if hump is None or (hi is not None and G[hump] > hi):
+        return None
+    idx = suggest_contact_inflection_index(
+        G, y, d2=d2, g_range=(float(G[min_idx + 1]), float(G[hump])), seed=float(G[min_idx]))
+    return hump if idx is None else idx
 
 
 def suggest_contact_inflection_index(

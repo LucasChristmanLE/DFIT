@@ -309,13 +309,19 @@ is drawn (and draggable) on the stiffness step only.
   unless the record barely reaches it; manual picks are not limited. Dragging re-derives the contact
   (`re_derive_contact_from_min`). Shift+drag selects a window (`handle_min_dpdg_window`). Under
   C-B, all three paths (select, drag, Shift+drag) snap the triangle onto the inflection found.
-  Under C-A, a min that never rises 10% clears `contact_G`, so no compliance Shmin is reported.
+  Under C-A, a min that never rises 10% but is a genuine interior local min puts `contact_G` at
+  the dP/dG inflection right of it (`interpret.suggest_contact_ca_fallback_index`, no minimum-rise
+  floor); the effective ISIP stays anchored at the min. With no interior min or no inflection,
+  `contact_G` is cleared and no compliance Shmin is reported. `compute_all` derives
+  `DerivedResults.contact_method` from `PickState.contact_rule` (`rise10`/`inflection`/None; logged as `contact_method`, the last
+  `LOG_COLUMNS` entry) and adds a warning on the fallback; `picks.gfunction_alert_text` drives the
+  orange bold `ui.alert_lbl` above the hint on the gfunction step. Auto-C-A is unchanged.
 
 Closure scenarios (`picks.apply_closure_scenario`):
 
 | Scenario | dP/dG shape | Stress pick |
 |---|---|---|
-| C-A clear | clear "S" (min then rise) | contact at min + 10%, − 75 psi |
+| C-A clear | clear "S" (min then rise) | contact at min + 10% (or the rising-limb inflection when it rises < 10%), − 75 psi |
 | C-B adequate | monotonic with inflection | contact at the inflection, − 75 psi |
 | C-C no-contact | monotonic, no inflection | none (no Shmin) |
 | C-D rapid | monotonic, concave-up | apparent ISIP − 175 psi (`shmin_rapid`) |

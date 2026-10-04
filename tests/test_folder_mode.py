@@ -1118,6 +1118,7 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub._update_stepbar = lambda: None
     stub._update_panel_visibility = lambda: None
     stub._update_panel = lambda: None
+    stub._update_alert = lambda: None
     stub._update_issues_panel = lambda: None
     stub._update_unit_labels = lambda: None
     stub._x_slider = None

@@ -449,6 +449,10 @@ class DfitApp:
         # Notes is squeezed first. First-packed side="bottom" is bottommost: hint, warn, notes.
         self.hint_lbl = ttk.Label(panel, text="", wraplength=300, foreground=C.UI_MUTED)
         self.hint_lbl.pack(side="bottom", anchor="w", pady=(6, 0))
+        # Persistent orange bold notice (G-function C-A inflection fallback), packed just above
+        # the hint and hidden while empty. refresh() re-derives it (_update_alert).
+        self.alert_lbl = ttk.Label(panel, text="", wraplength=300, foreground=C.UI_WARNING,
+                                   font=("TkDefaultFont", 9, "bold"), justify="left")
         self.warn_lbl = ttk.Label(panel, text="", foreground=C.UI_ERROR, wraplength=300,
                                   justify="left")
         self.warn_lbl.pack(side="bottom", anchor="w", fill="x", pady=(6, 0))
@@ -470,6 +474,7 @@ class DfitApp:
             wrap = max(event.width - 20, 100)
             self._panel_wrap = wrap
             self.hint_lbl.configure(wraplength=wrap)
+            self.alert_lbl.configure(wraplength=wrap)
             self.warn_lbl.configure(wraplength=wrap)
             for child in self.frm_issues.winfo_children():
                 if isinstance(child, ttk.Label):
@@ -1636,6 +1641,7 @@ class DfitApp:
         self.canvas.draw_idle()
         self._update_stepbar()
         self._update_panel_visibility()
+        self._update_alert()
         self._update_panel()
         self._update_issues_panel()
         self._update_unit_labels()
@@ -1644,6 +1650,17 @@ class DfitApp:
         if redirected:
             self.gate_lbl.config(text=step_gate_error(self.state, "overview")
                                  or f"{self.res.blockers[0]}; fix it before continuing.")
+
+    def _update_alert(self):
+        """Show or hide the orange alert label from ``picks.gfunction_alert_text``. Packed
+        ``after`` hint_lbl (the first bottom-packed widget, so later means higher), directly
+        above the hint however often it is re-packed."""
+        text = picks.gfunction_alert_text(self.state, self.res, self.step)
+        self.alert_lbl.config(text=text)
+        if text:
+            self.alert_lbl.pack(side="bottom", anchor="w", pady=(6, 0), after=self.hint_lbl)
+        else:
+            self.alert_lbl.pack_forget()
 
     def _update_stepbar(self):
         """Disable breadcrumb buttons for steps still ``not_visited`` (so a click is only ever
@@ -2279,7 +2296,7 @@ class DfitApp:
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            self.hint_lbl.config(text=picks.gfunction_hint_text(scenario))
+            self.hint_lbl.config(text=picks.gfunction_hint_text(scenario, res.contact_method))
         elif step == "tangent":
             res = self.res
             ax2 = self._twin_axes()

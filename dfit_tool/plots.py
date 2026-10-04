@@ -624,19 +624,16 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
                 gid="min_dpdg_point")
     # C-A only: if dP/dG never rises 10% above the picked min, suggest_contact_clear_index finds
     # no contact -- draw the 110% threshold it's checking against so the analyst can see the
-    # curve never reaches it (and knows to try C-B instead).
+    # curve never reaches it. No text label: it sat behind the legend.
     if state.closure_scenario.startswith("C-A") and state.min_dpdg_G is not None:
         min_idx = int(np.argmin(np.abs(dg.G - state.min_dpdg_G)))
         threshold = 1.10 * dg.dPdG[min_idx]
         # An all-NaN dPdG at the pick makes threshold itself NaN -- suggest_contact_clear_index
-        # already returns None for it (never rises), but drawing an axhline at NaN leaves an
-        # invisible line with a visible "never reached" label, so gate on finiteness too.
+        # already returns None for it (never rises), but an axhline at NaN is invisible, so gate
+        # on finiteness too.
         if np.isfinite(threshold) and interpret.suggest_contact_clear_index(dg.dPdG, min_idx) is None:
             ax2.axhline(threshold, ls="--", color=C.DERIVATIVE, alpha=0.6,
                         gid="clear_threshold_line")
-            ax2.text(0.02, 0.02, "min +10% -- never reached; consider C-B",
-                     transform=ax2.transAxes, fontsize=7, color=C.DERIVATIVE, va="bottom",
-                     ha="left")
     if state.contact_G is not None and res.contact_pressure is not None:
         ax.plot(state.contact_G, res.contact_pressure, "s", color=C.PICK, ms=7, label="contact",
                gid="contact_point")

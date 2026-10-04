@@ -72,6 +72,7 @@ FROZEN = [
     'manual_masks',
     'manual_keeps',
     'pce_peak_min',
+    'contact_method',
 ]
 
 

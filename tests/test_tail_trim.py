@@ -680,7 +680,7 @@ def test_compute_all_emits_explanatory_line_for_low_pressure_trim():
 # store.LOG_COLUMNS / build_log_row: tail_guard_override, tail-appended (Finding 6)
 # --------------------------------------------------------------------------------------------------
 def test_log_columns_tail_is_tail_guard_override():
-    assert store.LOG_COLUMNS[-9] == "tail_guard_override"
+    assert store.LOG_COLUMNS[-10] == "tail_guard_override"
 
 
 def test_build_log_row_populates_tail_guard_override(tmp_path):

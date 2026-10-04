@@ -1366,7 +1366,7 @@ Closure scenarios drive the contact pick and effective ISIP:
 
 | Scenario | dP/dG shape | Stress pick |
 |---|---|---|
-| C-A clear | clear "S" (min then rise) | contact at min + 10%, − 75 psi |
+| C-A clear | clear "S" (min then rise) | contact at min + 10% (or the rising-limb inflection when it rises < 10%), − 75 psi |
 | C-B adequate | monotonic with inflection | contact at the inflection, − 75 psi |
 | C-C no-contact | monotonic, no inflection | none (no Shmin) |
 | C-D rapid | monotonic, concave-up, no tortuosity | apparent ISIP − 100–250 psi (methodology; see note) |
@@ -1464,10 +1464,39 @@ triangle at the window's dP/dG min and the contact by the +10% rule from there; 
 triangle *and* the contact at the inflection found inside the window
 (`suggest_contact_inflection_index(g_range=...)`, no g_min mask, so a below-G=1 inflection
 stays where the analyst put the window). The span is a live gesture only -- never persisted,
-never rendered in exports. When C-A is active and dP/dG never reaches 110% of the picked min
+never rendered in exports.
+
+C-A inflection fallback. When dP/dG never rises 10% above the picked min but the pick is a genuine
+interior local min (`interpret._is_interior_local_min`, the trio test `is_clear_closure` also
+uses), the contact goes to the dP/dG inflection on the rising limb right of the min
+(`interpret.suggest_contact_ca_fallback_index`: `suggest_contact_inflection_index` with
+`g_range=(G[min+1], hi)` and `seed=G[min]`; `hi` is the Shift+drag window's upper edge, else the
+last sample), and never past the hump: the first interior local max of dP/dG right of the min.
+Not `suggest_hump_index`: on AEF Fed 05-61-34-5649B its largest-G*dP/dG hump is an early one (resampled
+index 7), left of the min at G = 5.4, so the fallback found nothing. The search span is
+`G[min+1]..G[hump]`, and a sparse rising limb with no d(dP/dG)/dG local max there returns the hump
+itself; no hump right of the min returns None. There is no minimum-rise floor: the analyst chose
+C-A. The min stays where it is, so `compliance_isip_anchor_G` still anchors the effective ISIP at
+the min (URTeC 3.1.1) while the compliance Shmin comes from the inflection contact. Motivating
+file: AEF Fed 05-61-34-5649B, a clear interior min (G = 5.4) with a 5.9% rise (contact lands at
+G = 8.5; Arkansas 1BH is the same shape at 1.9%), which used to clear the contact
+and push the analyst to C-B (anchor at the inflection instead of the min). A monotonic curve or
+a missing inflection keeps the old behavior (clear `contact_G`, `_CA_NO_RISE_HINT`). Auto-C-A
+(`is_clear_closure`) still requires the 10% rise. `compute_all` derives
+`DerivedResults.contact_method` from `PickState.contact_rule`, which `re_derive_contact_from_min`
+and `handle_min_dpdg_window` record (`rise10`, `inflection`, or "" when cleared; a manual contact
+drag leaves it). C-A reads a blank rule as `rise10` (old saves: the old code cleared the contact on
+a miss), C-B as `inflection`, no contact as None. It
+appends a warning on the C-A fallback. It is logged as the last `LOG_COLUMNS` entry
+`contact_method`. The warning alone is easy to miss, so `picks.gfunction_alert_text(state, res,
+step)` feeds a dedicated orange bold `ui.alert_lbl` (`C.UI_WARNING`) packed above `hint_lbl`;
+`ui._update_alert` runs on every `refresh()` and hides the label when the text is empty.
+
+When C-A is active and dP/dG never reaches 110% of the picked min
 (no clear contact), `render_gfunction` draws a dashed hline at that threshold on the dP/dG
-axis (`gid="clear_threshold_line"`, skipped when the threshold is non-finite) with a
-"consider C-B" label; it appears in exported PNGs whenever the condition holds.
+axis (`gid="clear_threshold_line"`, skipped when the threshold is non-finite), with no text
+label (an earlier "min +10% -- never reached" label sat behind the legend and was removed); it
+appears in exported PNGs whenever the condition holds.
 
 Postclosure scenarios drive the pore-pressure axis:
 
