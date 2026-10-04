@@ -231,6 +231,8 @@ class VolumeResult:
     vinj_integral: float
     source: str             # "volume_channel" or "rate_integral"
     disagreement_frac: Optional[float]  # |delta - integral| / delta, if both available
+    n_nonfinite_skipped: int = 0   # rate/time samples in the window dropped for being non-finite
+    volume_unusable: bool = False  # a volume channel was given but its delta was NaN or <= 0
 
 
 def injected_volume(
@@ -244,22 +246,37 @@ def injected_volume(
 
     Primary = cumulative-volume-channel delta when a volume channel is present; the rate integral is
     always computed as a QC cross-check (and is the fallback when no volume channel exists).
+
+    Non-finite rate/time samples are dropped pairwise before the trapezoid (counted in
+    ``n_nonfinite_skipped``). The volume delta is taken between the nearest finite volume samples
+    inside [start, shutin]; a delta that is missing or <= 0 (a counter reset) is unusable
+    (``volume_unusable``) and the rate integral is used instead.
     """
     t_min = np.asarray(t_s, dtype=float) / 60.0
     q = np.asarray(rate, dtype=float)
-    integral = float(np.trapezoid(q[start:shutin], t_min[start:shutin]))
+    seg_t, seg_q = t_min[start:shutin], q[start:shutin]
+    ok = np.isfinite(seg_t) & np.isfinite(seg_q)
+    n_skipped = int(np.count_nonzero(~ok))
+    integral = float(np.trapezoid(seg_q[ok], seg_t[ok])) if np.count_nonzero(ok) >= 2 else float("nan")
 
     delta = None
+    volume_unusable = False
     if volume is not None:
-        v = np.asarray(volume, dtype=float)
-        delta = float(v[shutin] - v[start])
+        v = np.asarray(volume, dtype=float)[start:shutin + 1]
+        fin = np.flatnonzero(np.isfinite(v))
+        if fin.size >= 2 and v[fin[-1]] - v[fin[0]] > 0:
+            delta = float(v[fin[-1]] - v[fin[0]])
+        else:
+            volume_unusable = True
 
     if delta is not None:
         disagree = abs(delta - integral) / delta if delta else None
         return VolumeResult(vinj=delta, vinj_delta=delta, vinj_integral=integral,
-                            source="volume_channel", disagreement_frac=disagree)
+                            source="volume_channel", disagreement_frac=disagree,
+                            n_nonfinite_skipped=n_skipped)
     return VolumeResult(vinj=integral, vinj_delta=None, vinj_integral=integral,
-                        source="rate_integral", disagreement_frac=None)
+                        source="rate_integral", disagreement_frac=None,
+                        n_nonfinite_skipped=n_skipped, volume_unusable=volume_unusable)
 
 
 def effective_te_seconds(vinj_bbl: float, qmax_bpm: float) -> float:

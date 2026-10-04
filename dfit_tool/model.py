@@ -82,8 +82,9 @@ class PickState:
     # --- G-function / resampling ---
     alpha: float = 1.0
     resample_step: float = 30.0
-    # Manual-only tail trim (no auto-detect seeder): shut-in-relative seconds beyond which the
-    # post-shut-in record is discarded before diagnostics. Stored in seconds (not an index or a
+    # Tail trim (seeded on Overview's first visit by picks.seed_tail_trim; also draggable):
+    # shut-in-relative seconds beyond which the post-shut-in record is discarded before
+    # diagnostics. Stored in seconds (not an index or a
     # G value) so it stays stable across alpha/resample_step changes. None = no trim (use the
     # full record). Old saves lack this key and take the default via _decode's known-field
     # filter -- no migration needed.
@@ -128,7 +129,7 @@ class PickState:
     # DerivedResults.eff_isip_line_compliance) + compliance contact (gates that tangent) ---
     min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
-    closure_scenario: str = ""  # C-A..C-D
+    closure_scenario: str = ""  # C-A..C-D, C-X
     show_d2pdg2: bool = False  # overlay d2P/dG2 on the G-function step (helps spot the C-B inflection)
 
     # --- step 6: tangent-method closure (G*dP/dG through-origin departure) ---
@@ -742,7 +743,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # Injection window + te. t_shutin_s needs only the two picks; qmax/Vinj (and the
     # effective te = Vinj/qmax) need a rate channel. When the effective te is unavailable
     # (no rate channel, or a degenerate one), te falls back to the wall-clock pump duration
-    # (TODO pair: rate-less datasets), with a warning so the analyst knows te is not the
+    # (the rate-less dataset fallback), with a warning so the analyst knows te is not the
     # Vinj/qmax effective time.
     start_idx, shutin_idx = state.start_idx, state.shutin_idx
     if any(i is not None and not (0 <= i < td.n) for i in (start_idx, shutin_idx)):
@@ -752,6 +753,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         start_idx = shutin_idx = None
     if start_idx is not None and shutin_idx is not None:
         start, shutin = start_idx, shutin_idx
+        if shutin <= start:
+            res.warnings.append("Injection start is at or after shut-in; re-pick the injection window")
         res.t_shutin_s = float(td.t_s[shutin])
         if res.rate_all is not None:
             res.qmax_bpm = state.qmax_bpm or interpret.max_sustained_rate(res.rate_all, start, shutin)
@@ -760,6 +763,13 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             res.vinj, res.vinj_delta = vr.vinj, vr.vinj_delta
             res.vinj_integral, res.vinj_source = vr.vinj_integral, vr.source
             res.vinj_disagreement = vr.disagreement_frac
+            vinj_notes = []
+            if vr.n_nonfinite_skipped:
+                vinj_notes.append(f"{vr.n_nonfinite_skipped} non-finite skipped")
+            if vr.volume_unusable:
+                vinj_notes.append("volume delta unusable, used rate integral")
+            if vinj_notes:
+                res.warnings.append("Vinj: " + "; ".join(vinj_notes))
             if vr.disagreement_frac is not None and vr.disagreement_frac > 0.05:
                 res.warnings.append(
                     f"Vinj: volume and rate integral disagree by {vr.disagreement_frac:.0%}")
@@ -1049,10 +1059,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # samples excluded)" here would read as a confusing, near-contradictory two-line
                 # combo about the same cut, and the honest warning already says everything this
                 # one would.
-                n_excluded = int(np.sum(dt_all[post] > state.tail_trim_dt))
+                # Report the effective cutoff (a trim past the guard without an override is
+                # clamped to guard_dt), counted with the same strict/inclusive edge as the mask.
+                if rs_full.guard_dt is not None and cutoff == rs_full.guard_dt:
+                    n_excluded = int(np.sum(dt_all[post] >= cutoff))
+                else:
+                    n_excluded = int(np.sum(dt_all[post] > cutoff))
                 res.warnings.insert(0,
-                    f"Tail trimmed at {state.tail_trim_dt/60:.0f} min "
-                    f"({n_excluded} samples excluded)")
+                    f"Tail trimmed at {cutoff/60:.0f} min ({n_excluded} samples excluded)")
         res.resampled = rs
         if len(rs.p) >= 3:
             res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)
@@ -1100,12 +1114,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             res.warnings.append("Surface pressure fell below 100 psi after shut-in; BHP "
                                 "unreliable there")
 
-    # Stale-pick warning: only meaningful once a trim is actually in effect -- gating on
-    # state.tail_trim_dt avoids misleadingly reporting picks as "beyond the tail trim" for a
-    # reloaded save against a shorter *source* with no trim set at all. np.interp silently
-    # clamps an out-of-range G to the trimmed edge, which would otherwise produce a stale-but-
-    # plausible number for a pick that now lies beyond the trimmed tail.
-    if state.tail_trim_dt is not None and res.diagnostics is not None and len(res.diagnostics.G):
+    # Stale-pick warning: gated on diagnostics existing, not on an explicit trim -- the tail guard
+    # can also move the effective cutoff earlier than the picks. np.interp silently clamps an
+    # out-of-range G to the trimmed edge, which would otherwise produce a stale-but-plausible
+    # number for a pick that now lies beyond the trimmed tail.
+    if res.diagnostics is not None and len(res.diagnostics.G):
         edge = res.diagnostics.G[-1]
         # Picks suppressed by an uninterpretable finding report nothing, so they can't be stale:
         # C-X blanks everything the min-dP/dG pick feeds (Liberty, stiffness), and
@@ -1179,6 +1192,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.shmin_compliance = interpret.shmin_compliance(res.contact_pressure)
         res.closure_time_compliance_s = float(np.interp(state.contact_G, res.diagnostics.G,
                                                           res.resampled.dt))
+        if not state.closure_scenario:
+            res.warnings.append(
+                "No closure scenario chosen; compliance Shmin uses the seeded contact")
 
     # Liberty-internal Shmin: the Liberty variant of the compliance method. The anchor is the
     # min-dP/dG pick for C-A (and a blank scenario); for C-B the inflection is the contact pick

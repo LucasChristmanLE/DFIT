@@ -106,9 +106,10 @@ def test_stale_contact_pick_beyond_trim_warns():
     assert any("contact" in w for w in res3.warnings)
 
 
-def test_stale_pick_warning_absent_when_no_trim_set():
-    """Gated on state.tail_trim_dt being set -- a reloaded save against a shorter *source* (no
-    trim) must not be misreported as "beyond the tail trim"."""
+def test_stale_pick_warning_fires_without_explicit_trim():
+    """Gated on diagnostics existing, not on state.tail_trim_dt: the tail guard (or a reloaded
+    save against a shorter source) can leave a pick beyond the diagnostics edge with no trim set,
+    and np.interp would clamp it silently."""
     td = make_testdata()
     st = injection_state(td)
     picks.seed_injection(st, td)
@@ -117,10 +118,10 @@ def test_stale_pick_warning_absent_when_no_trim_set():
     res = compute_all(st, td)
     assert st.tail_trim_dt is None
 
-    st.contact_G = float(res.diagnostics.G[-1]) + 5.0  # would be "stale" if a trim were set
+    st.contact_G = float(res.diagnostics.G[-1]) + 5.0
     res2 = compute_all(st, td)
 
-    assert not any("beyond the tail trim" in w for w in res2.warnings)
+    assert any("contact" in w and "beyond the tail trim" in w for w in res2.warnings)
 
 
 def test_pp_window_beyond_trim_warns():
