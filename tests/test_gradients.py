@@ -135,6 +135,7 @@ def test_all_gradients_none_when_tvd_invalid(bad_tvd, expected_warning):
 def test_no_gradient_warning_when_no_source_values_exist(bad_tvd):
     td = make_testdata()
     st = injection_state(td)  # channel mapping only -- no isip/gfunction/tangent/pp picks
+    st.isip_use_tangent = True  # tangent mode with no tangent placed: no apparent ISIP
     st.tvd_ft = bad_tvd
     res = compute_all(st, td)
 

@@ -1,5 +1,6 @@
-"""Apparent ISIP taken directly at the shut-in sample (PickState.isip_at_shutin), plus the
-low-riding rate axis (plots.RATE_VIEW_FACTOR) on overview/injection/ISIP.
+"""Apparent ISIP method: the BHP at the shut-in sample by default, the early-decline tangent with
+PickState.isip_use_tangent; plus the low-riding rate axis (plots.RATE_VIEW_FACTOR) on
+overview/injection/ISIP.
 """
 
 from __future__ import annotations
@@ -17,13 +18,13 @@ from dfit_tool.ui import DfitApp
 from tests.helpers import SHUTIN_IDX, injection_state, make_testdata
 
 
-def _seeded(at_shutin=False):
+def _seeded(use_tangent=False):
     td = make_testdata()
     st = injection_state(td)
     picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
-    st.isip_at_shutin = at_shutin
+    st.isip_use_tangent = use_tangent
     res = compute_all(st, td)
     assert st.isip_tangent is not None
     return td, st, res
@@ -36,48 +37,47 @@ def _no_rate(td, st):
 
 
 # ---- model ----------------------------------------------------------------------------------------
-def test_default_is_tangent_method():
+def test_default_is_shutin_method():
     td, st, res = _seeded()
-    assert st.isip_at_shutin is False
+    assert PickState().isip_use_tangent is False
+    assert res.apparent_isip_method == "shutin"
+    assert res.apparent_isip == res.bhp_all[st.shutin_idx]
+
+
+def test_use_tangent_uses_tangent_and_keeps_pick():
+    td, st, res_s = _seeded()
+    tangent_pick = st.isip_tangent
+    st.isip_use_tangent = True
+    res = compute_all(st, td)
     assert res.apparent_isip_method == "tangent"
     assert res.apparent_isip is not None
-
-
-def test_at_shutin_uses_bhp_at_shutin_sample_and_keeps_tangent():
-    td, st, res_t = _seeded()
-    tangent_pick = st.isip_tangent
-    st.isip_at_shutin = True
-    res = compute_all(st, td)
-    assert res.apparent_isip == res.bhp_all[st.shutin_idx]
-    assert res.apparent_isip_method == "shutin"
     assert st.isip_tangent is tangent_pick
-    assert res.apparent_isip != res_t.apparent_isip
+    assert res.apparent_isip != res_s.apparent_isip
 
 
-def test_at_shutin_needs_no_tangent_pick():
+def test_shutin_needs_no_tangent_pick():
     td, st, _ = _seeded()
     st.isip_tangent = None
-    st.isip_at_shutin = True
     res = compute_all(st, td)
     assert res.apparent_isip == res.bhp_all[st.shutin_idx]
 
 
-def test_at_shutin_follows_shutin_line():
-    td, st, _ = _seeded(at_shutin=True)
+def test_shutin_follows_shutin_line():
+    td, st, _ = _seeded()
     st.shutin_idx = SHUTIN_IDX + 5
     res = compute_all(st, td)
     assert res.apparent_isip == res.bhp_all[SHUTIN_IDX + 5]
 
 
-def test_at_shutin_nan_sample_is_blank_with_warning():
-    td, st, _ = _seeded(at_shutin=True)
+def test_shutin_nan_sample_is_blank_with_warning():
+    td, st, _ = _seeded()
     td.df.loc[st.shutin_idx, "PRESSURE"] = np.nan
     res = compute_all(st, td)
     assert res.apparent_isip is None
     assert any("Apparent ISIP at shut-in" in w for w in res.warnings)
 
 
-def test_at_shutin_dropout_masked_sample_is_blank_with_warning(monkeypatch):
+def test_shutin_dropout_masked_sample_is_blank_with_warning(monkeypatch):
     # detect_dropouts never masks the very first post-shut-in sample (no lead-in reference), so
     # force the mask to cover it: the branch must still treat a masked sample as missing.
     from dfit_tool import resample
@@ -90,7 +90,7 @@ def test_at_shutin_dropout_masked_sample_is_blank_with_warning(monkeypatch):
         return mask, events
 
     monkeypatch.setattr(resample, "detect_dropouts", fake)
-    td, st, _ = _seeded(at_shutin=True)
+    td, st, _ = _seeded()
     res = compute_all(st, td)
     assert res.dropout_mask[st.shutin_idx]
     assert res.apparent_isip is None
@@ -98,7 +98,7 @@ def test_at_shutin_dropout_masked_sample_is_blank_with_warning(monkeypatch):
 
 
 def test_downstream_sees_shutin_value():
-    td, st, _ = _seeded(at_shutin=True)
+    td, st, _ = _seeded()
     st.tvd_ft = 10000.0
     res = compute_all(st, td)
     assert res.apparent_isip_gradient == pytest.approx(res.apparent_isip / 10000.0)
@@ -112,25 +112,42 @@ def test_method_blank_without_shutin():
 def test_method_blank_whenever_value_blank():
     # The log must never pair a method with a blank ISIP: no tangent placed, or an unusable
     # shut-in sample, both leave the method blank.
-    td, st, _ = _seeded()
+    td, st, _ = _seeded(use_tangent=True)
     st.isip_tangent = None
     res = compute_all(st, td)
     assert res.apparent_isip is None and res.apparent_isip_method == ""
-    td, st, _ = _seeded(at_shutin=True)
+    td, st, _ = _seeded()
     td.df.loc[st.shutin_idx, "PRESSURE"] = np.nan
     res = compute_all(st, td)
     assert res.apparent_isip is None and res.apparent_isip_method == ""
 
 
-def test_json_round_trip_and_old_save_default(tmp_path):
+def test_json_round_trip(tmp_path):
     path = str(tmp_path / "p.json")
-    PickState(isip_at_shutin=True).to_json(path)
-    assert PickState.from_json(path).isip_at_shutin is True
-    assert model._decode({"well_name": "w1"}).isip_at_shutin is False
+    PickState(isip_use_tangent=True).to_json(path)
+    assert PickState.from_json(path).isip_use_tangent is True
 
 
-def test_infer_step_status_isip_done_for_shutin_flag():
-    assert infer_step_status(PickState(isip_at_shutin=True))["isip"] == "done"
+_TG = {"anchor_x": 1.0, "anchor_y": 2.0, "slope": 3.0}
+
+
+@pytest.mark.parametrize("raw, want", [
+    ({"isip_tangent": dict(_TG)}, True),                          # pre-option save: tangent
+    ({"isip_tangent": dict(_TG), "isip_at_shutin": False}, True),  # chose tangent (old default)
+    ({"isip_tangent": dict(_TG), "isip_at_shutin": True}, False),  # chose shut-in
+    ({"isip_at_shutin": False}, False),                            # never reached isip
+    ({"well_name": "w1"}, False),
+    ({"isip_tangent": dict(_TG), "isip_use_tangent": False}, False),  # new key wins
+])
+def test_decode_migrates_old_isip_method(raw, want):
+    st = model._decode(raw)
+    assert st.isip_use_tangent is want
+    assert not hasattr(st, "isip_at_shutin")
+
+
+def test_infer_step_status_isip_done_only_with_tangent():
+    from dfit_tool.model import TangentPick
+    assert infer_step_status(PickState(isip_tangent=TangentPick(1.0, 2.0, 3.0)))["isip"] == "done"
     assert "isip" not in infer_step_status(PickState())
 
 
@@ -207,29 +224,28 @@ def _gids(ax):
 
 
 def test_isip_tangent_mode_draws_tangent():
-    td, st, res = _seeded()
+    td, st, res = _seeded(use_tangent=True)
     _, ax, _ = _render(plots.render_isip, td, st, res)
     assert "isip_tangent_segment" in _gids(ax)
     assert "isip_shutin_dot" not in _gids(ax)
 
 
-def test_isip_at_shutin_draws_dot_not_tangent():
-    td, st, res = _seeded(at_shutin=True)
+def test_isip_shutin_draws_dot_not_tangent():
+    td, st, res = _seeded()
     _, ax, _ = _render(plots.render_isip, td, st, res)
     gids = _gids(ax)
     assert "isip_shutin_dot" in gids
     assert not any(g and g.startswith("isip_tangent_") for g in gids)
-    assert "(At Shut-In)" in ax.get_title()
-    assert f"{res.apparent_isip:.0f}" in ax.get_title()
+    assert ax.get_title() == f"Apparent ISIP = {res.apparent_isip:.0f} psi"
 
 
-def test_isip_at_shutin_none_value_has_placeholder_title():
-    td, st, _ = _seeded(at_shutin=True)
+def test_isip_shutin_none_value_has_placeholder_title():
+    td, st, _ = _seeded()
     td.df.loc[st.shutin_idx, "PRESSURE"] = np.nan
     res = compute_all(st, td)
     _, ax, _ = _render(plots.render_isip, td, st, res)
     assert "isip_shutin_dot" not in _gids(ax)
-    assert "Apparent ISIP" in ax.get_title()
+    assert ax.get_title() == "Apparent ISIP -- No BHP at the Shut-In Sample"
 
 
 @pytest.mark.parametrize("step", ["overview", "injection", "isip"])
@@ -244,8 +260,8 @@ def test_render_step_figure_twin_ylim_equals_default(step):
 # ---- store ----------------------------------------------------------------------------------------
 def test_log_column_is_last_and_filled(tmp_path):
     assert store.LOG_COLUMNS[-7] == "apparent_isip_method"
-    for at_shutin, want in ((False, "tangent"), (True, "shutin")):
-        td, st, res = _seeded(at_shutin=at_shutin)
+    for use_tangent, want in ((False, "shutin"), (True, "tangent")):
+        td, st, res = _seeded(use_tangent=use_tangent)
         entry = store.TestEntry(test_id="w", folder=str(tmp_path))
         row = store.build_log_row(entry, str(tmp_path / "w.csv"), str(tmp_path), st, td, res)
         assert list(row.keys()) == store.LOG_COLUMNS
@@ -253,16 +269,27 @@ def test_log_column_is_last_and_filled(tmp_path):
 
 
 # ---- ui -------------------------------------------------------------------------------------------
-def test_on_isip_at_shutin_sets_state_and_refreshes():
+def test_on_isip_use_tangent_sets_state_and_refreshes():
     td, st, res = _seeded()
     calls = []
     fake = types.SimpleNamespace(
         state=st, td=td, res=res,
-        var_isip_at_shutin=types.SimpleNamespace(get=lambda: True),
+        var_isip_use_tangent=types.SimpleNamespace(get=lambda: True),
         refresh=lambda: calls.append("refresh"))
-    DfitApp._on_isip_at_shutin(fake)
-    assert st.isip_at_shutin is True
+    DfitApp._on_isip_use_tangent(fake)
+    assert st.isip_use_tangent is True
     assert calls == ["refresh"]
+
+
+def test_on_isip_use_tangent_seeds_missing_tangent():
+    td, st, res = _seeded()
+    st.isip_tangent = None
+    fake = types.SimpleNamespace(
+        state=st, td=td, res=res,
+        var_isip_use_tangent=types.SimpleNamespace(get=lambda: True),
+        refresh=lambda: None)
+    DfitApp._on_isip_use_tangent(fake)
+    assert st.isip_tangent is not None
 
 
 def test_update_panel_visibility_frm_isip_only_on_isip_step_and_resyncs_var():
@@ -270,11 +297,11 @@ def test_update_panel_visibility_frm_isip_only_on_isip_step_and_resyncs_var():
     from tests.test_stiffness import _panel_visibility_stub
 
     stub = _panel_visibility_stub()
-    stub.state.isip_at_shutin = True
+    stub.state.isip_use_tangent = True
     for key, _ in ui.STEPS:
         stub.step = key
         stub._update_panel_visibility()
         assert stub.frm_isip.packed == (key == "isip")
     stub.step = "isip"
     stub._update_panel_visibility()
-    assert stub.var_isip_at_shutin.get() is True
+    assert stub.var_isip_use_tangent.get() is True

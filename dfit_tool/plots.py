@@ -486,13 +486,13 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
     ylim = _pressure_ylim(p_view)
 
     tg = state.isip_tangent
-    if state.isip_at_shutin:
-        # No tangent: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
+    if not state.isip_use_tangent:
+        # Default: the apparent ISIP is the BHP at the shut-in sample, drawn at (0, P).
         if res.apparent_isip is not None:
             ax.plot(0.0, res.apparent_isip, "o", color=C.ISIP_LINE, gid="isip_shutin_dot")
-            ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi (At Shut-In)", fontsize=10)
+            ax.set_title(f"Apparent ISIP = {res.apparent_isip:.0f} psi", fontsize=10)
         else:
-            ax.set_title("Apparent ISIP (At Shut-In) -- No BHP at the Shut-In Sample", fontsize=10)
+            ax.set_title("Apparent ISIP -- No BHP at the Shut-In Sample", fontsize=10)
         ax.legend(loc="upper right", fontsize=8)
         return ViewDefaults(xlim=_ISIP_DEFAULT_XLIM, ylim=ylim, y2lim=y2lim,
                             y_color=press_color, y2_color=y2_color)

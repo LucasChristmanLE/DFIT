@@ -1026,7 +1026,7 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.sep_after_results = object()
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
-    stub.var_isip_at_shutin = _Var()
+    stub.var_isip_use_tangent = _Var()
     stub.state = PickState(stiffness_no_upturn=stiffness_no_upturn)
     stub._update_ppaxis_enabled = lambda: None
     stub._update_masks_button = types.MethodType(DfitApp._update_masks_button, stub)

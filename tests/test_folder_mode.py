@@ -448,7 +448,7 @@ def _apply_stub():
     stub.var_showd2 = _Var()
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
-    stub.var_isip_at_shutin = _Var()
+    stub.var_isip_use_tangent = _Var()
     stub._quest_lines = ["stale"]
     stub.txt_notes = _Text()
     stub._views = {"stale": "leftover"}
@@ -718,7 +718,7 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     stub.var_showd2 = _Var(True)
     stub.var_stiffness_no_upturn = _Var(True)
     stub.var_tangent_uninterpretable = _Var(True)
-    stub.var_isip_at_shutin = _Var(True)
+    stub.var_isip_use_tangent = _Var(True)
     stub._views = {"gfunction": "stale"}
     stub._goto_calls = []
     stub._goto = lambda step: stub._goto_calls.append(step)

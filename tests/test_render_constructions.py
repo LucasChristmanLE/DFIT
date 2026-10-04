@@ -30,6 +30,7 @@ def _seeded():
     picks.seed_injection(st, td)
     res = compute_all(st, td)
     picks.seed_isip(st, td, res)
+    st.isip_use_tangent = True  # the ISIP tangent construction is drawn only in tangent mode
     res = compute_all(st, td)
     picks.seed_gfunction(st, res)
     picks.seed_tangent(st, res)

@@ -50,11 +50,10 @@ def test_missing_tvd_gradient_message_is_a_note():
     td = make_testdata()
     st = injection_state(td)
     st.pressure_is_bhp = True
-    seeded = compute_all(st, td)
-    assert seeded.t_shutin_s is not None
-    # isip_at_shutin gives an apparent ISIP, so there is a gradient source to report against.
-    st.isip_at_shutin = True
+    # The default shut-in ISIP gives an apparent ISIP, so there is a gradient source to report
+    # against.
     res = compute_all(st, td)
+    assert res.t_shutin_s is not None
     assert res.apparent_isip is not None
     assert any("TVD" in n and "gradient" in n.lower() for n in res.notes), res.notes
     assert not any("gradient" in w.lower() for w in res.warnings), res.warnings

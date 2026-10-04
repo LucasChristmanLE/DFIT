@@ -120,10 +120,11 @@ class PickState:
 
     # --- step 3: apparent ISIP tangent (BHP vs time-seconds axis) ---
     isip_tangent: Optional[TangentPick] = None
-    # Take the apparent ISIP as the BHP at the shut-in sample instead of the tangent (tests with
-    # no water hammer). The tangent pick is left in state so unchecking restores it. Old saves
-    # take the default via _decode's known-field filter, no migration needed.
-    isip_at_shutin: bool = False
+    # False (default): the apparent ISIP is the BHP at the shut-in sample. True: it is the
+    # isip_tangent extrapolated to shut-in (tests with water hammer). The tangent pick is seeded
+    # and kept in state either way, so toggling restores it. _decode migrates the older inverse
+    # flag (isip_at_shutin) so existing saves keep the method they were interpreted with.
+    isip_use_tangent: bool = False
 
     # --- step 5: min-dP/dG point + compliance contact; together they position the derived
     # effective-ISIP tangent (compliance_isip_anchor_G, DerivedResults.eff_isip_line_compliance) ---
@@ -256,6 +257,12 @@ def _decode(d: dict) -> PickState:
     # Nested dataclass dicts are filtered to known fields (a newer build may add keys); one that
     # is not a dict or lacks a required field decodes to None rather than raising.
     d["isip_tangent"] = _decode_dataclass(TangentPick, d.get("isip_tangent"))
+    # Saves from before the shut-in default carry the inverse flag isip_at_shutin (absent or
+    # False meant tangent). A save that reached the isip step has a seeded tangent: keep the
+    # tangent unless it chose shut-in. One that never reached isip takes the new default.
+    if "isip_use_tangent" not in d:
+        d["isip_use_tangent"] = (d["isip_tangent"] is not None
+                                 and not d.get("isip_at_shutin", False))
     for key in ("loglog_window", "pp_window"):
         d[key] = _clean_window(d.get(key))
     if not isinstance(d.get("step_status"), dict):
@@ -315,7 +322,7 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     # pre-step_status saves, which predate the "overview" step entirely.
     if state.start_idx is not None or state.shutin_idx is not None:
         status["injection"] = "done"
-    if state.isip_tangent is not None or state.isip_at_shutin:
+    if state.isip_tangent is not None:
         status["isip"] = "done"
     if state.min_dpdg_G is not None or state.contact_G is not None:
         status["gfunction"] = "done"
@@ -797,10 +804,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 res.te_s = dur
                 res.warnings.append("No usable rate: te = pump duration, no Vinj/qmax")
 
-    # Apparent ISIP (needs shut-in time). The at-shut-in branch needs res.dropout_mask, so it
-    # is evaluated just after the mask is built below. apparent_isip_method is set only when a
-    # value results, so the log never pairs a method with a blank ISIP.
-    if state.isip_tangent and res.t_shutin_s is not None and not state.isip_at_shutin:
+    # Apparent ISIP (needs shut-in time). The default at-shut-in branch needs res.dropout_mask,
+    # so it is evaluated just after the mask is built below. apparent_isip_method is set only
+    # when a value results, so the log never pairs a method with a blank ISIP.
+    if state.isip_use_tangent and state.isip_tangent and res.t_shutin_s is not None:
         tg = state.isip_tangent
         res.apparent_isip = interpret.apparent_isip(tg.anchor_x, tg.anchor_y, tg.slope, res.t_shutin_s)
         res.apparent_isip_method = "tangent"
@@ -902,7 +909,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     f"{len(res.rise_excursions)} pressure rises masked, first at "
                     f"{_min_label(first.dt_start)} min")
 
-    if state.isip_at_shutin and res.t_shutin_s is not None and shutin_idx is not None:
+    if not state.isip_use_tangent and res.t_shutin_s is not None and shutin_idx is not None:
         p_shutin = (float(res.bhp_all[shutin_idx])
                     if res.bhp_all is not None else float("nan"))
         if res.dropout_mask[shutin_idx] or not np.isfinite(p_shutin):

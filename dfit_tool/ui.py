@@ -562,13 +562,13 @@ class DfitApp:
                         variable=self.var_tangent_uninterpretable,
                         command=self._on_tangent_uninterpretable).pack(anchor="w")
 
-        # ISIP step's "use shut-in pressure" option (no water hammer) -- same pattern, shown only
-        # on "isip".
+        # ISIP step's "use tangent line" option (water hammer; default is the shut-in pressure)
+        # -- same pattern, shown only on "isip".
         self.frm_isip = ttk.Frame(panel)
-        self.var_isip_at_shutin = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.frm_isip, text="Use shut-in pressure (no tangent)",
-                        variable=self.var_isip_at_shutin,
-                        command=self._on_isip_at_shutin).pack(anchor="w")
+        self.var_isip_use_tangent = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_isip, text="Use tangent line (water hammer)",
+                        variable=self.var_isip_use_tangent,
+                        command=self._on_isip_use_tangent).pack(anchor="w")
 
         # Injection step's zoom toggle: show the whole record to find a missed injection, then
         # zoom back to the (moved) window.
@@ -682,7 +682,7 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
-        self.var_isip_at_shutin.set(False)
+        self.var_isip_use_tangent.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
@@ -968,7 +968,7 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
-        self.var_isip_at_shutin.set(False)
+        self.var_isip_use_tangent.set(False)
         self._views = {k: None for k, _ in STEPS}
         self._injection_full = False
         self._goto("overview")
@@ -1243,10 +1243,12 @@ class DfitApp:
             picks.seed_tangent(self.state, self.res)
         self.refresh()
 
-    def _on_isip_at_shutin(self):
-        """Toggle taking the apparent ISIP at the shut-in sample instead of the tangent. The
-        tangent pick stays in state (hidden), so unchecking restores it."""
-        self.state.isip_at_shutin = self.var_isip_at_shutin.get()
+    def _on_isip_use_tangent(self):
+        """Toggle taking the apparent ISIP from the tangent instead of the shut-in sample. The
+        tangent pick stays in state (hidden) while unchecked, so checking again restores it."""
+        self.state.isip_use_tangent = self.var_isip_use_tangent.get()
+        if self.state.isip_use_tangent and self.state.isip_tangent is None:
+            picks.seed_isip(self.state, self.td, self.res)
         self.refresh()
 
     # ---- expanded results window ------------------------------------------------------------------
@@ -1697,7 +1699,7 @@ class DfitApp:
         if self.step == "gfunction":
             self.frm_cscen.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "isip":
-            self.var_isip_at_shutin.set(self.state.isip_at_shutin)
+            self.var_isip_use_tangent.set(self.state.isip_use_tangent)
             self.frm_isip.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "tangent":
             self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
@@ -2185,7 +2187,7 @@ class DfitApp:
             res = self.res
             step_ctrls = []
             if (res.bhp_all is not None and res.t_shutin_s is not None
-                    and not self.state.isip_at_shutin):
+                    and self.state.isip_use_tangent):
                 t_min = (self.td.t_s - res.t_shutin_s) / 60.0
                 gate = picks._CaptureGate()
 
@@ -2212,14 +2214,14 @@ class DfitApp:
             self._controllers.extend(step_ctrls)
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
-            if self.state.isip_at_shutin:
-                self.hint_lbl.config(
-                    text="Apparent ISIP is the pressure at the shut-in line. Move shut-in on the "
-                         "Injection step to change it.")
-            else:
+            if self.state.isip_use_tangent:
                 self.hint_lbl.config(
                     text="Drag the anchor along the curve, the body to pan, or an end to rotate "
                          "the ISIP tangent.")
+            else:
+                self.hint_lbl.config(
+                    text="Apparent ISIP is the pressure at the shut-in line. Move shut-in on the "
+                         "Injection step to change it. Check Use tangent line if water hammer is present.")
         elif step == "gfunction":
             res = self.res
             ax2 = self._twin_axes()
@@ -2640,7 +2642,7 @@ class DfitApp:
         self.var_showd2.set(self.state.show_d2pdg2)
         self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
         self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
-        self.var_isip_at_shutin.set(self.state.isip_at_shutin)
+        self.var_isip_use_tangent.set(self.state.isip_use_tangent)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
         # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
