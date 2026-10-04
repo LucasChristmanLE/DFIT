@@ -158,6 +158,25 @@ class TestEntry:
 # root itself) that holds data files becomes one or more tests, keyed by a path-qualified,
 # forward-slash-separated test_id unique within the root.
 # --------------------------------------------------------------------------------------------------
+# (abspath, size, mtime_ns) -> sniff result. A folder rescan re-sniffs every .xlsx (36-80 ms
+# each); an unchanged file keeps its answer, and any edit changes size or mtime and so misses.
+_SNIFF_CACHE: dict[tuple[str, int, int], bool] = {}
+
+
+def _sniff_xlsx_cached(path: str) -> bool:
+    """``io_load.sniff_xlsx_data`` memoized on (abspath, size, mtime_ns). A file that cannot be
+    stat'ed is passed straight through (uncached) so the sniff reports it as before."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return io_load.sniff_xlsx_data(path)
+    key = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    hit = _SNIFF_CACHE.get(key)
+    if hit is None:
+        hit = _SNIFF_CACHE[key] = bool(io_load.sniff_xlsx_data(path))
+    return hit
+
+
 def _group_data_files(filenames: list[str], dirpath: str) -> dict[str, dict[str, str]]:
     """Group one directory's filenames by stem: `{stem: {"csv": name, "dbs": name, "xlsx":
     name}}`. Files that are not `.csv`/`.dbs`/`.xlsx` (case-insensitive) are skipped, as is
@@ -191,7 +210,7 @@ def _group_data_files(filenames: list[str], dirpath: str) -> dict[str, dict[str,
                 continue
             if is_questionnaire_filename(name):
                 continue
-            if not io_load.sniff_xlsx_data(os.path.join(dirpath, name)):
+            if not _sniff_xlsx_cached(os.path.join(dirpath, name)):
                 continue
             ext = "xlsx"
         else:
