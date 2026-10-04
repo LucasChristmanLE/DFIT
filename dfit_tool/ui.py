@@ -570,6 +570,13 @@ class DfitApp:
                         variable=self.var_isip_at_shutin,
                         command=self._on_isip_at_shutin).pack(anchor="w")
 
+        # Injection step's zoom toggle: show the whole record to find a missed injection, then
+        # zoom back to the (moved) window.
+        self.frm_injection = ttk.Frame(panel)
+        self.btn_injection_full = ttk.Button(self.frm_injection, text="Show all data",
+                                             command=self._on_injection_full_toggle)
+        self.btn_injection_full.pack(anchor="w")
+
         # Overview's manual-mask tool: one button that drops every analyst mask/keep band.
         self.frm_masks = ttk.Frame(panel)
         self.btn_clear_masks = ttk.Button(self.frm_masks, text="Clear manual masks (0)",
@@ -668,6 +675,7 @@ class DfitApp:
         self.var_volume_unit.set("auto")
         self.state = PickState()
         self._views = {k: None for k, _ in STEPS}
+        self._injection_full = False
         self.var_cscen.set("")
         self.var_pcscen.set("")
         self.var_ppaxis.set("tm12")
@@ -962,6 +970,7 @@ class DfitApp:
         self.var_tangent_uninterpretable.set(False)
         self.var_isip_at_shutin.set(False)
         self._views = {k: None for k, _ in STEPS}
+        self._injection_full = False
         self._goto("overview")
 
     def _reset_picks_keep_mapping(self):
@@ -1597,7 +1606,8 @@ class DfitApp:
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
-        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res)
+        kwargs = {"full_record": self._injection_full} if self.step == "injection" else {}
+        defaults = plots.RENDERERS[self.step](self.ax, self.td, self.state, self.res, **kwargs)
 
         sv = plots.apply_step_view(self.step, self.ax, defaults, self._views.get(self.step))
         self._views[self.step] = sv.view
@@ -1659,6 +1669,11 @@ class DfitApp:
         self.frm_isip.pack_forget()
         self.frm_stiffness.pack_forget()
         self.frm_masks.pack_forget()
+        self.frm_injection.pack_forget()
+        if self.step == "injection":
+            self.btn_injection_full.config(
+                text="Zoom to injection" if self._injection_full else "Show all data")
+            self.frm_injection.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "overview":
             self.frm_masks.pack(side="bottom", fill="x", after=self.frm_notes)
             self._update_masks_button()
@@ -1691,6 +1706,14 @@ class DfitApp:
         n = len(self.state.mask_intervals) + len(self.state.keep_intervals)
         self.btn_clear_masks.config(text=f"Clear manual masks ({n})",
                                     state="normal" if n else "disabled")
+
+    def _on_injection_full_toggle(self):
+        """Flip the Injection step between the whole record and the injection-window zoom. The
+        stored view is dropped either way so the new default (full extent, or the window around
+        the current picks) applies."""
+        self._injection_full = not self._injection_full
+        self._views["injection"] = None
+        self.refresh()
 
     def _on_clear_masks(self):
         picks.clear_manual_masks(self.state)
@@ -2145,7 +2168,9 @@ class DfitApp:
             self._controllers.append(drag_ctrl)
             self._controllers.append(picks.HoverCursorController(self.canvas, [drag_ctrl]))
             self.hint_lbl.config(
-                text="Drag the injection-start and shut-in lines to adjust the window.")
+                text="Drag the injection-start and shut-in lines to adjust the window."
+                + ("" if self._injection_full
+                   else " Use Show all data to find a missed injection."))
         elif step == "isip":
             res = self.res
             step_ctrls = []
@@ -2573,6 +2598,7 @@ class DfitApp:
             # otherwise runs only on the step's first visit and a stale index crashes the plots.
             picks.reseed_out_of_range_injection(self.state, self.td)
         self._views = {k: None for k, _ in STEPS}
+        self._injection_full = False
         if not self.state.step_status:
             # An old save has real picks but no breadcrumb history -- infer it so the
             # breadcrumb doesn't present the whole workflow as unreached.

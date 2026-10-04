@@ -287,6 +287,82 @@ def test_injection_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
     assert defaults.xlim[1] == pytest.approx(t_end_h)
 
 
+def test_injection_full_record_plots_whole_file_with_no_default_xlim():
+    """"Show all data": the whole record is plotted (past the 15-min clamp) and the default view
+    is the full autoscaled extent, so a missed injection anywhere in the file is reachable."""
+    td = make_testdata(n=3000, dt=1.0)
+    state = injection_state(td)
+    res = compute_all(state, td)
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = plots.render_injection(ax, td, state, res, full_record=True)
+
+    t_h = td.t_s / 3600.0
+    assert ax.get_lines()[0].get_xdata().max() == pytest.approx(float(t_h[-1]))
+    twin = next(a for a in fig.axes if a is not ax)
+    assert twin.get_lines()[0].get_xdata().max() == pytest.approx(float(t_h[-1]))
+    assert defaults.xlim is None
+
+
+def test_injection_clamp_extends_to_cover_shutin_past_last_rate():
+    """A shut-in dragged (in full view) past the last nonzero rate + 15 min must still be
+    plotted and inside the default view after zooming back in."""
+    td = make_testdata(n=3000, dt=1.0)
+    state = injection_state(td)
+    res = compute_all(state, td)
+    last_active = int(np.where(res.rate_all > 0)[0][-1])
+    t_h = td.t_s / 3600.0
+    state.shutin_idx = int(np.searchsorted(t_h, t_h[last_active] + 0.40))
+    res = compute_all(state, td)
+    fig, ax, defaults = _render(plots.render_injection, td, state, res)
+
+    assert ax.get_lines()[0].get_xdata().max() >= t_h[state.shutin_idx]
+    lo, hi = defaults.xlim
+    assert lo <= t_h[state.start_idx] and hi >= t_h[state.shutin_idx]
+
+
+def test_injection_full_toggle_flips_flag_and_resets_view():
+    calls = []
+    stub = types.SimpleNamespace(_injection_full=False, _views={"injection": object()},
+                                 refresh=lambda: calls.append("refresh"))
+    DfitApp._on_injection_full_toggle(stub)
+    assert stub._injection_full is True
+    assert stub._views["injection"] is None
+    assert calls == ["refresh"]
+    stub._views["injection"] = object()
+    DfitApp._on_injection_full_toggle(stub)
+    assert stub._injection_full is False
+    assert stub._views["injection"] is None
+
+
+def test_refresh_injection_full_view_spans_whole_record():
+    td = make_testdata(n=3000, dt=1.0)
+    st = injection_state(td)
+    stub = _refresh_stub(td, st, "injection")
+    stub.refresh()
+    zoomed_hi = stub._views["injection"].xlim[1]
+    stub._injection_full = True
+    stub._views["injection"] = None
+    stub.refresh()
+    assert stub._views["injection"].xlim[1] >= float(td.t_s[-1]) / 3600.0
+    assert stub._views["injection"].xlim[1] > zoomed_hi
+
+
+def test_injection_panel_frame_only_on_injection_with_toggle_label():
+    from tests.test_stiffness import _panel_visibility_stub
+    stub = _panel_visibility_stub()
+    for key, _ in ui_module.STEPS:
+        stub.step = key
+        stub._update_panel_visibility()
+        assert stub.frm_injection.packed == (key == "injection")
+    stub.step = "injection"
+    stub._update_panel_visibility()
+    assert stub.btn_injection_full.text == "Show all data"
+    stub._injection_full = True
+    stub._update_panel_visibility()
+    assert stub.btn_injection_full.text == "Zoom to injection"
+
+
 def test_injection_no_clamp_when_rate_is_none():
     td = make_testdata()
     state = PickState(pressure_col=PRESSURE_COL)
@@ -342,6 +418,7 @@ def _refresh_stub(td, state, step):
     stub.state = state
     stub.step = step
     stub._views = {}
+    stub._injection_full = False
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "")
     stub.gate_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub._attach_controllers = lambda: None

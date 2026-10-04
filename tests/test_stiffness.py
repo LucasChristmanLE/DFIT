@@ -1015,6 +1015,10 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.frm_isip = _FakeFrame()
     stub.frm_masks = _FakeFrame()
     stub.btn_clear_masks = types.SimpleNamespace(config=lambda **kw: None)
+    stub.frm_injection = _FakeFrame()
+    stub.btn_injection_full = types.SimpleNamespace(
+        text=None, config=lambda **kw: setattr(stub.btn_injection_full, "text", kw.get("text")))
+    stub._injection_full = False
     stub.sep_before_notes = object()
     stub.frm_notes = object()
     stub.frm_results = _FakeFrame()

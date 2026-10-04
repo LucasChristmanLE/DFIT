@@ -576,6 +576,7 @@ def test_injection_shutin_drag_resyncs_stale_auto_trim():
     stub.res = res
     stub.state = st
     stub.step = "injection"
+    stub._injection_full = False
     stub._controllers = []
     stub.hint_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.refresh = lambda: None
@@ -613,6 +614,7 @@ def test_injection_start_drag_does_not_resync_tail_trim():
     stub.res = res
     stub.state = st
     stub.step = "injection"
+    stub._injection_full = False
     stub._controllers = []
     stub.hint_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.refresh = lambda: None

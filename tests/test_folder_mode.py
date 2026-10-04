@@ -1110,6 +1110,7 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub.ax = stub.fig.add_subplot(111)
     stub.canvas = FigureCanvasAgg(stub.fig)
     stub._views = {}
+    stub._injection_full = False
     stub.gate_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub._attach_controllers = lambda: None
     stub._update_stepbar = lambda: None

@@ -291,7 +291,7 @@ def test_step_frames_pack_bottom_above_notes():
         stub.step = key
         stub._update_panel_visibility()
     packed = [kw for fr in (stub.frm_cscen, stub.frm_isip, stub.frm_tangent, stub.frm_pcscen,
-                            stub.frm_stiffness) for kw in fr.pack_calls]
+                            stub.frm_stiffness, stub.frm_injection) for kw in fr.pack_calls]
     assert packed
     for kw in packed:
         # Slotted right after frm_notes in the pack order. A bare pack() appends after the

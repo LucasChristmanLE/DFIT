@@ -350,23 +350,30 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
                         y_color=press_color, y2_color=y2_color)
 
 
-def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
+def render_injection(ax, td: TestData, state: PickState, res: DerivedResults,
+                     full_record: bool = False) -> ViewDefaults:
     """Step 2: BHP (or surface P) and rate vs time, with injection-start / shut-in markers.
 
     The falloff tail can run for weeks and would otherwise dwarf the active-injection region in
     both the autoscaled extent and the x-slider's full range, so -- following ``render_isip``'s
     precedent of clamping the *plotted data* -- every trace is masked to the last nonzero rate +
     15 min before decimation when a rate channel exists and pumped at all; otherwise the full
-    record is plotted, unclamped.
+    record is plotted, unclamped. When shut-in sits past the clamp, the clamp moves to shut-in +
+    15 min instead, so the picks are never cut off.
+
+    ``full_record`` (the "Show all data" button) plots the whole record with no default xlim, so
+    the analyst can find a missed injection and drag the lines to it.
     """
     ax.clear()
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
 
     t_end_h = None
-    if res.rate_all is not None and np.any(res.rate_all > 0):
+    if not full_record and res.rate_all is not None and np.any(res.rate_all > 0):
         last_active = int(np.where(res.rate_all > 0)[0][-1])
         t_end_h = t_h[last_active] + 0.25
+        if state.shutin_idx is not None and t_h[state.shutin_idx] > t_end_h:
+            t_end_h = t_h[state.shutin_idx] + 0.25
     m = (t_h <= t_end_h) if t_end_h is not None else np.ones_like(t_h, dtype=bool)
 
     xt, xp = _decimate(t_h[m], p[m])
@@ -394,7 +401,9 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults) ->
     # The default view zooms to the active injection region (the falloff tail can be weeks long);
     # the full autoscaled extent stays available for the caller to zoom back out to.
     xlim = None
-    if state.start_idx is not None and state.shutin_idx is not None:
+    if full_record:
+        pass  # no default: autoscale over the whole record
+    elif state.start_idx is not None and state.shutin_idx is not None:
         span_h = max(t_h[state.shutin_idx] - t_h[state.start_idx], 0.25)
         xlim = (t_h[state.start_idx] - 0.5 * span_h, t_h[state.shutin_idx] + 2.0 * span_h)
     elif res.rate_all is not None:
