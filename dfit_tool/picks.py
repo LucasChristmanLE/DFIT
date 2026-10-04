@@ -1569,7 +1569,10 @@ def _seed_surface_pressure(state: PickState, td: TestData) -> Optional[np.ndarra
 def seed_injection(state: PickState, td: TestData) -> None:
     """Injection window (start/shut-in indices) from the rate (+ optional volume) curve,
     falling back to the pressure shape when no usable rate channel exists -- the vlines must
-    always exist for the analyst to drag, rate or not."""
+    always exist for the analyst to drag, rate or not. Picks outside [0, td.n) (a save from a
+    different or longer file) count as unset and are re-seeded."""
+    if any(i is not None and not (0 <= i < td.n) for i in (state.start_idx, state.shutin_idx)):
+        state.start_idx = state.shutin_idx = None
     if state.start_idx is not None or state.shutin_idx is not None:
         return
     if state.rate_col:

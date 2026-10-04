@@ -748,8 +748,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     start_idx, shutin_idx = state.start_idx, state.shutin_idx
     if any(i is not None and not (0 <= i < td.n) for i in (start_idx, shutin_idx)):
         # Saved indices from a different/shorter file: out of range raises, negative wraps. Treat
-        # both picks as unset for this compute and say why.
-        res.blockers.append(OUT_OF_RANGE_INJECTION)
+        # both picks as unset for this compute and say why. A warning, not a blocker: a blocker
+        # pins the UI to Overview, which has no injection lines; picks.seed_injection re-seeds.
+        res.warnings.insert(0, OUT_OF_RANGE_INJECTION)
         start_idx = shutin_idx = None
     if start_idx is not None and shutin_idx is not None:
         start, shutin = start_idx, shutin_idx

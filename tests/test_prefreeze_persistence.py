@@ -8,7 +8,7 @@ import types
 
 import pytest
 
-from dfit_tool import model, store, ui
+from dfit_tool import model, picks, store, ui
 from dfit_tool.model import PickState, compute_all
 from dfit_tool.ui import DfitApp
 from tests.helpers import injection_state, make_testdata
@@ -163,20 +163,36 @@ def test_list_tests_status_failure_marks_entry_new(tmp_path, monkeypatch):
 
 # ---- Q5 --------------------------------------------------------------------------------------
 @pytest.mark.parametrize("start,shutin", [(-5, 200), (50, 10_000), (50, -1), (10_000, 20_000)])
-def test_out_of_range_indices_blocked_not_raised(start, shutin):
+def test_out_of_range_indices_warned_not_raised(start, shutin):
+    """A warning, not a blocker: a blocker pins the UI to Overview, which has no injection
+    lines, so the analyst could never re-pick. seed_injection re-seeds them instead."""
     td = make_testdata()
     st = injection_state(td)
     st.start_idx, st.shutin_idx = start, shutin
     res = compute_all(st, td)
-    assert any("outside this file's data" in b for b in res.blockers)
-    assert all(len(b) <= 90 for b in res.blockers)
+    assert model.OUT_OF_RANGE_INJECTION not in res.blockers
+    assert any("outside this file's data" in w for w in res.warnings)
     assert res.t_shutin_s is None
+
+
+@pytest.mark.parametrize("start, shutin", [(10, 10**9), (-5, 100), (10**9, 10**9 + 1)])
+def test_seed_injection_reseeds_out_of_range_picks(start, shutin):
+    td = make_testdata()
+    fresh = injection_state(td)
+    fresh.start_idx = fresh.shutin_idx = None
+    picks.seed_injection(fresh, td)
+    good = (fresh.start_idx, fresh.shutin_idx)
+    assert None not in good
+    st = injection_state(td)
+    st.start_idx, st.shutin_idx = start, shutin
+    picks.seed_injection(st, td)
+    assert (st.start_idx, st.shutin_idx) == good
 
 
 def test_in_range_indices_not_blocked():
     td = make_testdata()
     res = compute_all(injection_state(td), td)
-    assert not any("outside this file's data" in b for b in res.blockers)
+    assert not any("outside this file's data" in b for b in res.blockers + res.warnings)
 
 
 def test_load_picks_failure_shows_error(monkeypatch, tmp_path):
