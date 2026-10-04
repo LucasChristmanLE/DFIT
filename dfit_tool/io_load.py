@@ -1850,7 +1850,7 @@ def _is_numeric_field(field: str) -> bool:
         return False
 
 
-def _detect_header_skiprows(path: str) -> int:
+def _detect_header_skiprows(path: str, encoding: str = "utf-8-sig") -> int:
     """Find the header row of a CSV that carries a leading preamble, by field count.
 
     Measured case: 16 corpus files carry a "Job ID: ..., Spotter: ..." line and a "Row(s): N"
@@ -1879,7 +1879,7 @@ def _detect_header_skiprows(path: str) -> int:
     rather than escaping in place of the caller's informative ``ParserError``.
     """
     try:
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(path, "r", encoding=encoding, newline="") as f:
             reader = csv.reader(f)
             lines = list(itertools.islice(reader, 20))
     except (csv.Error, UnicodeDecodeError, OSError):
@@ -2162,14 +2162,25 @@ def _read_csv_frame(path: str) -> pd.DataFrame:
     on ``ParserError``, see ``_detect_header_skiprows``) plus the column-name strip. Everything
     after this -- datetime choice, elapsed/clock fallbacks, extrapolation, the outlier guard --
     lives in ``_finish_frame`` so ``load_xlsx`` can share it against a frame built its own way.
+
+    Tries UTF-8 (BOM-tolerant) first and re-reads as Latin-1 on a ``UnicodeDecodeError`` (the
+    ``Sn#...`` downhole-gauge exports carry a bare 0xB0 degree byte); that fallback sets
+    ``df.attrs["encoding_warning"]`` for ``load_csv`` to surface.
     """
+    def _read(encoding: str) -> pd.DataFrame:
+        try:
+            return pd.read_csv(path, encoding=encoding)
+        except pd.errors.ParserError:
+            skiprows = _detect_header_skiprows(path, encoding)
+            if skiprows == 0:
+                raise
+            return pd.read_csv(path, encoding=encoding, skiprows=skiprows)
+
     try:
-        df = pd.read_csv(path, encoding="utf-8-sig")
-    except pd.errors.ParserError:
-        skiprows = _detect_header_skiprows(path)
-        if skiprows == 0:
-            raise
-        df = pd.read_csv(path, encoding="utf-8-sig", skiprows=skiprows)
+        df = _read("utf-8-sig")
+    except UnicodeDecodeError:
+        df = _read("latin-1")
+        df.attrs["encoding_warning"] = "File is not UTF-8; read as Latin-1"
 
     df.columns = [c.strip() for c in df.columns]
     return df
@@ -2363,7 +2374,11 @@ def _finish_frame(df: pd.DataFrame, path: str) -> TestData:
 def load_csv(path: str) -> TestData:
     """Load a DFIT CSV and attach an elapsed-seconds time base."""
     df = _read_csv_frame(path)
-    return _finish_frame(df, path)
+    enc_warning = df.attrs.get("encoding_warning")
+    td = _finish_frame(df, path)
+    if enc_warning:
+        td.load_warnings.append(enc_warning)
+    return td
 
 
 # --------------------------------------------------------------------------------------------------
