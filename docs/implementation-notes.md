@@ -713,8 +713,13 @@ Per-test deliverables:
   fewer than 2 finite, positive-`G` samples). Closure = the last sample within 5%
   (`CLOSURE_TANGENT_TOL_FRAC`) of the line before the first departure, walking forward from the
   tangent point -- a later re-crossing (e.g. a rising tail) is never picked up. The pick is a
-  plain `DraggablePointController`: only its seeded starting position comes from this rule, so
+  plain `DraggablePointController`: its seeded starting position comes from this rule, so
   it stays fully draggable and a reload's saved pick is never overwritten.
+  Rotating the line by hand (`picks.commit_closure_line`) re-derives `closure_G` by the same
+  5% walk (`interpret.closure_departure_index`). With no hump index for an arbitrary slope, the
+  walk starts at the line's touch point: the smallest relative gap |G·dP/dG − line| / line over
+  G >= `g_min`. At the seed slope that is the hump, so the seed's closure is reproduced. Dragging
+  the closure marker never moves the line; the next rotation re-snaps the marker.
 - **Shmin, variable** — BHP at the G-time midpoint of the contact and closure picks. This
   third "variable-compliance" method is computed by `compute_all` and reported alongside the
   other two (Shmin, closure time, and net pressure each have compliance, tangent, and

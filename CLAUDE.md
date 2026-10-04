@@ -238,7 +238,7 @@ Per-test deliverables (all computed in `compute_all`):
 | Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step), or, with `state.isip_at_shutin` ("Use shut-in pressure", for tests with no water hammer), `bhp_all[shutin_idx]`; blank with a warning when that sample is NaN or dropout-masked. The tangent pick is kept in state. Method logged as `apparent_isip_method` (`tangent`/`shutin`) |
 | Effective ISIP | P-vs-G straight line extrapolated to G = 0 |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
-| Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
+| Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point: last sample within 5% of the line. Rotating the line re-derives the closure pick by that rule (`interpret.closure_departure_index`); the marker stays draggable and never moves the line. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
 | Shmin variable | BHP at the G-time midpoint of contact and closure picks. Blank when either is unavailable (C-C/C-D/C-X, or the tangent checkbox) |
 | Shmin Liberty | BHP at the anchor pick − 200 psi (`LIBERTY_OFFSET_PSI`); anchor is the min-dP/dG pick for C-A/blank, the contact pick for C-B; requires `contact_G` set; blank for C-C/C-D/C-X. Comparison only. |
 | Shmin stiffness | stiffness-step pick − 75 psi. Comparison only. Blank when "No slope change apparent" (`state.stiffness_no_upturn`) is checked or under C-X |

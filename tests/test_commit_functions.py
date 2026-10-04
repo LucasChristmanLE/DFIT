@@ -72,12 +72,30 @@ def test_commit_min_dpdg_point_alone_does_not_derive_eff_isip_line():
     assert res2.effective_isip_compliance is None
 
 
-def test_commit_closure_line_sets_only_slope():
+def test_commit_closure_line_rederives_closure():
     td, st, res = _res()
+    dg = res.diagnostics
+    seed_slope, seed_idx = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
+
+    state = PickState(closure_G=42.0)
+    picks.commit_closure_line(state, res, "end", anchor_x=0.0, anchor_y=0.0, slope=seed_slope)
+    assert state.closure_slope == pytest.approx(seed_slope)
+    assert state.closure_G == pytest.approx(float(dg.G[seed_idx]))
+
+    new_slope = 0.8 * seed_slope
+    idx = interpret.closure_departure_index(dg.G, dg.GdPdG, new_slope)
+    picks.commit_closure_line(state, res, "end", anchor_x=0.0, anchor_y=0.0, slope=new_slope)
+    assert state.closure_slope == pytest.approx(new_slope)
+    assert state.closure_G == pytest.approx(float(dg.G[idx]))
+
+
+def test_commit_closure_line_without_diagnostics_keeps_closure():
+    td, st, res = _res()
+    res.diagnostics = None
     state = PickState(closure_G=42.0)
     picks.commit_closure_line(state, res, "end", anchor_x=0.0, anchor_y=0.0, slope=0.75)
     assert state.closure_slope == pytest.approx(0.75)
-    assert state.closure_G == 42.0  # untouched
+    assert state.closure_G == 42.0
 
 
 def test_commit_contact_point_sets_contact_g():

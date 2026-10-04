@@ -1191,9 +1191,19 @@ def commit_closure_line(state: PickState, res: DerivedResults,
     """Commit the through-origin tangent-closure line (tangent-method step). The controller for
     this line is always constructed pinned (``curve=None, allow_anchor=False, allow_body=False``),
     so only "end" is ever reached and only the slope is meaningful -- the anchor stays fixed at
-    the origin. ``res``/``kind``/``anchor_x``/``anchor_y`` are accepted for signature symmetry
-    with the other AnchorLineController commit functions but are not needed here."""
+    the origin. ``kind``/``anchor_x``/``anchor_y`` are accepted for signature symmetry with the
+    other AnchorLineController commit functions but are not needed here.
+
+    The closure pick follows the rotated line: ``closure_G`` is re-derived by the seed's 5%
+    departure rule (``interpret.closure_departure_index``). It is left as is when there are no
+    diagnostics or no index comes back. The closure marker can still be dragged afterwards."""
     state.closure_slope = float(slope)
+    dg = res.diagnostics
+    if dg is None or len(dg.G) <= 5:
+        return
+    idx = interpret.closure_departure_index(dg.G, dg.GdPdG, state.closure_slope)
+    if idx is not None:
+        state.closure_G = float(dg.G[idx])
 
 
 def commit_min_dpdg_point(state: PickState, x: float) -> None:

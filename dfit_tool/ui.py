@@ -2173,7 +2173,8 @@ class DfitApp:
             if step_ctrls:
                 self._controllers.append(picks.HoverCursorController(self.canvas, step_ctrls))
             self.hint_lbl.config(
-                text="Rotate the through-origin line; drag the closure marker or its vertical line.")
+                text="Rotate the through-origin line (the closure marker follows); "
+                         "drag the closure marker or its vertical line.")
         elif step == "loglog":
             def on_span(lo, hi):
                 picks.handle_loglog_span(self.state, lo, hi)

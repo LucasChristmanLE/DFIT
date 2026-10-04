@@ -510,3 +510,55 @@ def test_seed_tangent_dragged_closure_survives_reseed():
 
     picks.seed_tangent(st, res)
     assert st.closure_G == dragged_G
+
+
+# --------------------------------------------------------------------------------------------------
+# closure_departure_index: the closure pick for a given (manually rotated) through-origin line
+# --------------------------------------------------------------------------------------------------
+def _flat_then_bend(n=300, level=50.0):
+    G = np.linspace(0.01, 30.0, n)
+    dPdG = np.full(n, level)
+    bend = G > 20.0
+    dPdG[bend] = np.clip(level - 4.0 * (G[bend] - 20.0), 0.1, None)
+    return G, G * dPdG
+
+
+def test_closure_departure_index_matches_seed_at_seed_slope():
+    G = np.r_[np.linspace(0.01, 1.0, 80), np.linspace(1.1, 40.0, 40)]
+    dPdG = np.full_like(G, 5.0)
+    dPdG[np.abs(G - 0.2) < 0.05] = 3000.0
+    m = (G >= 1.0) & (G <= 8.0)
+    dPdG[m] = 40.0 - 3.0 * (G[m] - 1.0)
+    m = (G > 8.0) & (G <= 12.0)
+    dPdG[m] = 21.0 + 1.5 * (G[m] - 8.0)
+    m = G > 12.0
+    dPdG[m] = 27.0 - 0.3 * (G[m] - 12.0)
+    GdPdG = G * dPdG
+    slope, idx = interpret.suggest_closure_tangent(G, GdPdG)
+    assert interpret.closure_departure_index(G, GdPdG, slope) == idx
+
+
+def test_closure_departure_index_follows_line_rotation():
+    G, GdPdG = _flat_then_bend()
+    i50 = interpret.closure_departure_index(G, GdPdG, 50.0)
+    i47 = interpret.closure_departure_index(G, GdPdG, 47.0)  # shallower: touches later on the bend
+    i52 = interpret.closure_departure_index(G, GdPdG, 52.0)  # steeper: departs sooner
+    # dP/dG falls below 95% of the line at G = 20 + (level - 0.95 * slope) / 4.
+    assert G[i50] == pytest.approx(20.625, abs=0.15)
+    assert G[i47] == pytest.approx(20.0 + (50.0 - 0.95 * 47.0) / 4.0, abs=0.15)
+    assert G[i52] == pytest.approx(20.0 + (50.0 - 0.95 * 52.0) / 4.0, abs=0.15)
+    assert G[i52] < G[i50] < G[i47]
+
+
+@pytest.mark.parametrize("slope", [float("nan"), float("inf"), 0.0, -3.0])
+def test_closure_departure_index_bad_slope_returns_none(slope):
+    G, GdPdG = _flat_then_bend()
+    assert interpret.closure_departure_index(G, GdPdG, slope) is None
+
+
+def test_closure_departure_index_nan_inside_run_is_skipped():
+    G, GdPdG = _flat_then_bend()
+    clean = interpret.closure_departure_index(G, GdPdG, 50.0)
+    GdPdG = GdPdG.copy()
+    GdPdG[(G > 10.0) & (G < 11.0)] = np.nan
+    assert interpret.closure_departure_index(G, GdPdG, 50.0) == clean
