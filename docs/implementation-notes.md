@@ -717,14 +717,23 @@ Per-test deliverables:
   water-hammer spike (masked below `g_min`) and a small noise-driven local max further out on
   the curve (low prominence). Falls back to a through-origin least-squares fit over the first
   third of the `G >= g_min` samples when no candidate survives (unmasked when that segment has
-  fewer than 2 finite, positive-`G` samples). Closure = the last sample within 2%
-  (`CLOSURE_TANGENT_TOL_FRAC`) of the line before the first departure, walking forward from the
-  tangent point -- a later re-crossing (e.g. a rising tail) is never picked up. The pick is a
+  fewer than 2 finite, positive-`G` samples). Closure = the last sample within tolerance
+  of the line before the first departure, walking forward from the tangent point -- a later
+  re-crossing (e.g. a rising tail) is never picked up. Tolerance is visual
+  (`interpret.tangent_visual_gap`): the perpendicular distance to the line in the tangent step's
+  default view (x over G_max at a nominal 1.5:1 aspect, y over 1.5x the p95 of G·dP/dG over
+  G >= 1, `interpret.tangent_view_y_top`, which `render_tangent` also uses for its default y2
+  top so the spike below G = 1 no longer stretches it), at most `CLOSURE_TANGENT_VISUAL_TOL` (0.010) plot heights. It replaced a relative
+  vertical test (`|y - line| <= tol * line`): 5% was too loose and 2% too strict, and the
+  relative band is a cone (tight near the origin, wide at large G) that only measures the
+  vertical gap. On 16 saved corpus tests, 0.010 matches relative 3.5% on steep lines; on the
+  long shallow Caprito 99-202H line it follows the curve to the hump (G 28.2 vs 24.7). The
+  default view is used rather than the current zoom so the pick is reproducible. The pick is a
   plain `DraggablePointController`: its seeded starting position comes from this rule, so
   it stays fully draggable and a reload's saved pick is never overwritten.
   Rotating the line by hand (`picks.commit_closure_line`) re-derives `closure_G`
-  (`interpret.closure_departure_index`): the LAST sample over G >= `g_min` within 2% of the
-  line, not the end of the first run, because a rotated line can meet the curve, leave it, and
+  (`interpret.closure_departure_index`): the LAST sample over G >= `g_min` within the visual
+  tolerance, not the end of the first run, because a rotated line can meet the curve, leave it, and
   meet it again (a first version used the first run and stopped at the early touch). With no
   sample in tolerance it takes the closest approach. A rising tail that re-crosses the line
   would win, so drag the marker in that case. Dragging the marker never moves the line; the next

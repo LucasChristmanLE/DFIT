@@ -439,7 +439,7 @@ def test_suggest_closure_tangent_fallback_walk_start_out_of_tolerance_returns_st
     # G=3. dP/dG increases monotonically throughout (5,10,50,60,...,120) so no interior local
     # max ever forms and the fallback fit is used. The through-origin LS over G=[2,3] pulls the
     # line to slope (2*20+3*150)/(2**2+3**2) = 37.69..., which G=3's own y=150 departs from by
-    # far more than the 2% tolerance -- immediately, at the walk's very first checked sample.
+    # far more than the tolerance -- immediately, at the walk's very first checked sample.
     G = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=float)
     dPdG = np.array([5, 10, 50, 60, 70, 80, 90, 100, 110, 120], dtype=float)
     GdPdG = G * dPdG
@@ -538,18 +538,104 @@ def test_closure_departure_index_matches_seed_at_seed_slope():
     assert interpret.closure_departure_index(G, GdPdG, slope) == idx
 
 
+def _last_within(G, GdPdG, slope):
+    """Reference: last G >= 1 sample whose visual gap is within tolerance."""
+    d = interpret.tangent_visual_gap(G, GdPdG, slope)
+    ok = np.flatnonzero((G >= 1.0) & (d <= interpret.CLOSURE_TANGENT_VISUAL_TOL))
+    return int(ok[-1])
+
+
 def test_closure_departure_index_follows_line_rotation():
-    assert interpret.CLOSURE_TANGENT_TOL_FRAC == 0.02
-    keep = 1.0 - interpret.CLOSURE_TANGENT_TOL_FRAC
     G, GdPdG = _flat_then_bend()
     i50 = interpret.closure_departure_index(G, GdPdG, 50.0)
-    i49 = interpret.closure_departure_index(G, GdPdG, 49.0)  # shallower: touches later on the bend
-    i505 = interpret.closure_departure_index(G, GdPdG, 50.5)  # steeper: departs sooner
-    # dP/dG falls below 98% of the line at G = 20 + (level - 0.98 * slope) / 4.
-    assert G[i50] == pytest.approx(20.25, abs=0.15)
-    assert G[i49] == pytest.approx(20.0 + (50.0 - keep * 49.0) / 4.0, abs=0.15)
-    assert G[i505] == pytest.approx(20.0 + (50.0 - keep * 50.5) / 4.0, abs=0.15)
-    assert G[i505] < G[i50] < G[i49]
+    i48 = interpret.closure_departure_index(G, GdPdG, 48.0)  # shallower: touches later on the bend
+    i52 = interpret.closure_departure_index(G, GdPdG, 52.0)  # steeper: departs sooner
+    for idx, slope in ((i50, 50.0), (i48, 48.0), (i52, 52.0)):
+        assert idx == _last_within(G, GdPdG, slope)
+    assert 20.0 < G[i50] < 21.0  # just onto the bend
+    assert G[i52] < 20.0  # a 4% steeper line leaves the flat run before the bend
+    assert G[i52] < G[i50] < G[i48]
+
+
+def test_tangent_visual_gap_is_perpendicular_distance_in_default_view():
+    """The gap is the straight-line distance to the line in normalized default-view
+    coordinates (x over G_max scaled by the nominal aspect, y over 1.5 x p95 of G*dP/dG over
+    G >= 1), in plot-height units -- not the vertical gap."""
+    G, GdPdG = _flat_then_bend()
+    slope = 48.0
+    A = interpret.TANGENT_VIEW_ASPECT
+    Rx = G.max()
+    Ry = 1.5 * np.percentile(GdPdG[G >= 1.0], 95)
+    u, v = A * G / Rx, GdPdG / Ry
+    k = slope * Rx / (A * Ry)  # visual slope
+    # distance from (u, v) to the line through the origin along direction (1, k)
+    expected = np.abs(v - k * u) / np.hypot(1.0, k)
+    assert interpret.tangent_visual_gap(G, GdPdG, slope) == pytest.approx(expected)
+
+
+def test_closure_follows_a_long_shallow_line_the_relative_test_rejects():
+    """The case the visual rule exists for: a long, shallow line the curve tracks 2.5% under,
+    out to a hump at G = 29. A relative 2% band rejects every sample; the visual gap stays in
+    tolerance until the curve falls off the hump."""
+    G = np.linspace(0.01, 100.0, 400)
+    slope = 26.7
+    dPdG = np.where(G <= 29.0, 0.975 * slope, 0.975 * slope - 2.0 * (G - 29.0))
+    dPdG = np.clip(dPdG, 2.0, None)
+    GdPdG = G * dPdG
+    rel = np.abs(GdPdG - slope * G) / (slope * G)
+    assert np.all(rel[G >= 1.0] > 0.02)
+    idx = interpret.closure_departure_index(G, GdPdG, slope)
+    assert 28.5 <= G[idx] < 30.0  # last grid sample before the hump
+
+
+def test_tangent_view_y_top_ignores_spike_below_g_min():
+    """The y scale (shared with render_tangent's default view) comes from G >= g_min only, so
+    a water-hammer spike below G = 1 does not stretch it."""
+    G = np.r_[np.linspace(0.01, 1.0, 80), np.linspace(1.1, 40.0, 40)]
+    y = np.where(G < 1.0, 3000.0 * G, 20.0 * G)
+    expected = interpret.TANGENT_VIEW_Y_FACTOR * np.percentile(y[G >= 1.0], 95)
+    assert interpret.tangent_view_y_top(G, y) == pytest.approx(expected)
+
+
+def test_render_tangent_default_y2_uses_the_closure_scale():
+    td = make_testdata()
+    st = injection_state(td)
+    picks.seed_injection(st, td)
+    res = compute_all(st, td)
+    import matplotlib.pyplot as plt
+    from dfit_tool import plots
+    fig, ax = plt.subplots()
+    vd = plots.render_tangent(ax, td, st, res)
+    plt.close(fig)
+    dg = res.diagnostics
+    top = interpret.tangent_view_y_top(dg.G, dg.GdPdG)
+    assert vd.y2lim == plots.nice_limits(0.0, max(top, 1.0))
+
+
+def test_tangent_visual_gap_degenerate_scale_is_all_nan():
+    """A record whose G*dP/dG p95 is <= 0 has no usable view scale: the gap is all NaN, so
+    closure_departure_index returns None and a rotation leaves the closure pick alone."""
+    G = np.linspace(0.0, 10.0, 50)
+    y = -G
+    assert np.all(np.isnan(interpret.tangent_visual_gap(G, y, 1.0)))
+    assert interpret.closure_departure_index(G, y, 1.0) is None
+    assert np.all(np.isnan(interpret.tangent_visual_gap(G, G, float("nan"))))
+
+
+def test_tangent_visual_gap_is_unit_free():
+    """Rescaling G and G*dP/dG (with the slope rescaled to match) leaves the gap unchanged."""
+    G, GdPdG = _flat_then_bend()
+    base = interpret.tangent_visual_gap(G, GdPdG, 48.0)
+    scaled = interpret.tangent_visual_gap(G * 3.0, GdPdG * 10.0, 48.0 * 10.0 / 3.0, g_min=3.0)
+    assert scaled == pytest.approx(base)
+
+
+def test_tangent_visual_gap_nan_where_not_finite():
+    G, GdPdG = _flat_then_bend()
+    GdPdG = GdPdG.copy()
+    GdPdG[5] = np.nan
+    d = interpret.tangent_visual_gap(G, GdPdG, 50.0)
+    assert np.isnan(d[5]) and np.isfinite(d[6])
 
 
 @pytest.mark.parametrize("slope", [float("nan"), float("inf"), 0.0, -3.0])
@@ -568,7 +654,7 @@ def test_closure_departure_index_nan_inside_run_is_skipped():
 
 def test_closure_departure_index_takes_last_in_tolerance_sample():
     """A manual line the curve meets, leaves, and meets again: the closure is the last sample
-    within 2%, not the end of the first in-tolerance run."""
+    within tolerance, not the end of the first in-tolerance run."""
     G = np.linspace(0.01, 40.0, 400)
     dPdG = np.full_like(G, 30.0)
     dPdG[(G >= 1.0) & (G <= 10.0)] = 50.0
@@ -583,5 +669,6 @@ def test_closure_departure_index_nothing_in_tolerance_returns_closest_approach()
     dPdG = 100.0 - 2.0 * G  # crosses 50 at G=25 only in the continuum
     dPdG[np.abs(dPdG - 50.0) <= 5.0] = 70.0  # remove every in-tolerance sample
     idx = interpret.closure_departure_index(G, G * dPdG, 50.0)
-    rel = np.abs(dPdG - 50.0) / 50.0
-    assert rel[idx] == pytest.approx(rel[G >= 1.0].min())
+    d = interpret.tangent_visual_gap(G, G * dPdG, 50.0)
+    assert d[G >= 1.0].min() > interpret.CLOSURE_TANGENT_VISUAL_TOL
+    assert d[idx] == pytest.approx(d[G >= 1.0].min())

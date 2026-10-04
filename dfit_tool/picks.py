@@ -1194,7 +1194,7 @@ def commit_closure_line(state: PickState, res: DerivedResults,
     the origin. ``kind``/``anchor_x``/``anchor_y`` are accepted for signature symmetry with the
     other AnchorLineController commit functions but are not needed here.
 
-    The closure pick follows the rotated line: ``closure_G`` is re-derived by the seed's 2%
+    The closure pick follows the rotated line: ``closure_G`` is re-derived by the seed's visual
     departure rule (``interpret.closure_departure_index``). It is left as is when there are no
     diagnostics or no index comes back. The closure marker can still be dragged afterwards."""
     state.closure_slope = float(slope)

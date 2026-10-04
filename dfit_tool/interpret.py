@@ -40,8 +40,11 @@ LEADING_SPIKE_FACTOR = 5.0  # leading_spike_end: early dP/dG beyond this x the m
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
-CLOSURE_TANGENT_TOL_FRAC = 0.02  # suggest_closure_tangent: departure tolerance as a fraction of
-                                 # the tangent line's value at each sample.
+CLOSURE_TANGENT_VISUAL_TOL = 0.010  # tangent closure: max perpendicular distance from a sample
+                                    # to the through-origin line, in plot heights of the tangent
+                                    # step's default view (tangent_visual_gap).
+TANGENT_VIEW_ASPECT = 1.5  # nominal width/height of the tangent axes (9x6 figure)
+TANGENT_VIEW_Y_FACTOR = 1.5  # default G*dP/dG view top = this x p95 (tangent_view_y_top)
 CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hump must stand at
                                        # least this fraction of its own height above the higher
                                        # of its two flanking bases to be eligible as the tangent
@@ -843,7 +846,7 @@ def _prominent_hump_index(
 
 
 def suggest_closure_tangent(
-    G: np.ndarray, GdPdG: np.ndarray, tol_frac: float = CLOSURE_TANGENT_TOL_FRAC, g_min: float = 1.0
+    G: np.ndarray, GdPdG: np.ndarray, tol: float = CLOSURE_TANGENT_VISUAL_TOL, g_min: float = 1.0
 ) -> tuple[float, int]:
     """Through-origin tangent line to G*dP/dG, and the closure (departure) point.
 
@@ -868,8 +871,8 @@ def suggest_closure_tangent(
     entirely below ``g_min``).
 
     Closure: walking forward from the tangent index (fallback: from the last index of the fit
-    segment), returns the last index with ``line > 0`` and ``|G*dP/dG - line| <= tol_frac *
-    line`` before the first departure -- a non-finite sample is skipped rather than counted as a
+    segment), returns the last index with ``line > 0`` and ``tangent_visual_gap <= tol``
+    before the first departure -- a non-finite sample is skipped rather than counted as a
     departure, but does not extend the in-tolerance run either. This is deliberately the *first*
     contiguous in-tolerance run: a later re-crossing of the line (e.g. a rising tail) is never
     picked up. If the walk's own start index is itself out of tolerance (or non-finite, with
@@ -918,20 +921,63 @@ def suggest_closure_tangent(
     if not np.isfinite(slope):
         return float("nan"), n - 1
 
-    return slope, _closure_departure_walk(y, slope * G, walk_start, tol_frac)
+    gap = tangent_visual_gap(G, y, slope, g_min=g_min)
+    return slope, _closure_departure_walk(gap, slope * G, walk_start, tol)
 
 
-def _closure_departure_walk(y: np.ndarray, line: np.ndarray, walk_start: int, tol_frac: float) -> int:
-    """Last index of the first contiguous run with ``line > 0`` and ``|y - line| <= tol_frac *
-    line``, walking forward from ``walk_start``. Non-finite ``y`` is skipped, not a departure.
+def tangent_view_y_top(G: np.ndarray, GdPdG: np.ndarray, g_min: float = 1.0) -> float:
+    """Top of the tangent step's default G*dP/dG view, before ``plots.nice_limits`` rounding:
+    ``TANGENT_VIEW_Y_FACTOR`` x the p95 of G*dP/dG over finite samples with G >= ``g_min``
+    (all finite samples if none), so the water-hammer spike below G = 1 does not stretch it.
+    Shared by ``render_tangent`` and ``tangent_visual_gap``. NaN when nothing is finite."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(GdPdG, dtype=float)
+    ok = np.isfinite(G) & np.isfinite(y)
+    base = ok & (G >= g_min)
+    if not base.any():
+        base = ok
+    if not base.any():
+        return float("nan")
+    return TANGENT_VIEW_Y_FACTOR * float(np.percentile(y[base], 95))
+
+
+def tangent_visual_gap(
+    G: np.ndarray, GdPdG: np.ndarray, slope: float, g_min: float = 1.0,
+) -> np.ndarray:
+    """Perpendicular distance from each (G, G*dP/dG) sample to the line ``slope * G``, as seen
+    on the tangent step's default view, in plot heights.
+
+    Coordinates are normalized to that view, not the current zoom, so the closure pick is
+    reproducible: x = ``TANGENT_VIEW_ASPECT * G / G_max``, y = ``G*dP/dG / Ry`` with
+    ``Ry = tangent_view_y_top`` (the drawn view also rounds up to a tick and pads x ~5%).
+    The gap is ``|y - line| / Ry / sqrt(1 + k^2)`` with k the line's slope in those
+    coordinates, so a point just off a steep line reads as close, as it looks. NaN where a
+    sample is not finite; all NaN when the scales cannot be set."""
+    G = np.asarray(G, dtype=float)
+    y = np.asarray(GdPdG, dtype=float)
+    out = np.full(len(G), np.nan)
+    ok = np.isfinite(G) & np.isfinite(y)
+    if not ok.any() or not np.isfinite(slope):
+        return out
+    rx = float(np.max(G[ok]))
+    ry = tangent_view_y_top(G, y, g_min=g_min)
+    if not (rx > 0 and ry > 0):
+        return out
+    k = slope * rx / (TANGENT_VIEW_ASPECT * ry)
+    out[ok] = np.abs(y[ok] - slope * G[ok]) / ry / np.hypot(1.0, k)
+    return out
+
+
+def _closure_departure_walk(gap: np.ndarray, line: np.ndarray, walk_start: int, tol: float) -> int:
+    """Last index of the first contiguous run with ``line > 0`` and ``gap <= tol``, walking
+    forward from ``walk_start``. A NaN gap (non-finite sample) is skipped, not a departure.
     Returns ``walk_start`` when nothing is in tolerance, ``n - 1`` when the curve never departs."""
     last_good = None
-    for i in range(walk_start, len(y)):
-        yi = y[i]
-        if not np.isfinite(yi):
+    for i in range(walk_start, len(gap)):
+        gi = gap[i]
+        if not np.isfinite(gi):
             continue  # a dropout is skipped, not treated as a departure
-        li = line[i]
-        if li > 0 and abs(yi - li) <= tol_frac * li:
+        if line[i] > 0 and gi <= tol:
             last_good = i
         else:
             break
@@ -940,33 +986,30 @@ def _closure_departure_walk(y: np.ndarray, line: np.ndarray, walk_start: int, to
 
 def closure_departure_index(
     G: np.ndarray, GdPdG: np.ndarray, slope: float,
-    tol_frac: float = CLOSURE_TANGENT_TOL_FRAC, g_min: float = 1.0,
+    tol: float = CLOSURE_TANGENT_VISUAL_TOL, g_min: float = 1.0,
 ) -> Optional[int]:
     """Closure (departure) index for a given through-origin line ``slope * G``. Used when the
     analyst rotates the line by hand.
 
-    Returns the last sample within ``tol_frac`` of the line (``|G*dP/dG - line| <= tol_frac *
-    line``) among finite samples with ``G >= g_min`` (all finite ``G > 0`` if none). Unlike the
-    seed's first-run walk, a curve that meets, leaves, and meets the line again closes at the
-    last meeting. With nothing in tolerance, returns the closest approach (smallest relative
-    gap). Returns None for a non-finite or non-positive slope, or no usable samples."""
+    Returns the last sample with ``tangent_visual_gap <= tol`` among finite samples with
+    ``G >= g_min`` (all finite ``G > 0`` if none). Unlike the seed's first-run walk, a curve
+    that meets, leaves, and meets the line again closes at the last meeting. With nothing in
+    tolerance, returns the closest approach (smallest gap). Returns None for a non-finite or
+    non-positive slope, or no usable samples."""
     if not (np.isfinite(slope) and slope > 0):
         return None
     G = np.asarray(G, dtype=float)
-    y = np.asarray(GdPdG, dtype=float)
-    line = slope * G
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rel = np.abs(y - line) / line
-    usable = np.isfinite(G) & (G > 0) & np.isfinite(rel)
+    gap = tangent_visual_gap(G, GdPdG, slope, g_min=g_min)
+    usable = np.isfinite(G) & (G > 0) & np.isfinite(gap)
     cand = usable & (G >= g_min)
     if not cand.any():
         cand = usable
     if not cand.any():
         return None
-    within = np.flatnonzero(cand & (rel <= tol_frac))
+    within = np.flatnonzero(cand & (gap <= tol))
     if within.size:
         return int(within[-1])
-    return int(np.argmin(np.where(cand, rel, np.inf)))
+    return int(np.argmin(np.where(cand, gap, np.inf)))
 
 
 LOGLOG_HALF_SLOPE_TOL = 0.10  # |slope + 1/2| that counts as a -1/2 (PC-A) window

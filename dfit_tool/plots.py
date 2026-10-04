@@ -677,10 +677,11 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
     ax2.set_ylabel("G*dP/dG", color=C.DERIVATIVE)
     ax2.tick_params(axis="y", labelcolor=C.DERIVATIVE)
     y2lim = None
-    finite = np.isfinite(dg.GdPdG)
-    if finite.any():  # clip early water-hammer spike off-scale (in the default view only)
-        hi = np.percentile(dg.GdPdG[finite], 95)
-        y2lim = nice_limits(0.0, max(hi * 1.5, 1.0))
+    # Clip the early water-hammer spike off-scale (default view only). Same scale the closure
+    # tolerance is measured in (interpret.tangent_visual_gap).
+    top = interpret.tangent_view_y_top(dg.G, dg.GdPdG)
+    if np.isfinite(top):
+        y2lim = nice_limits(0.0, max(top, 1.0))
 
     if state.tangent_uninterpretable:
         # Explicit negative finding, same precedent as render_stiffness's stiffness_no_upturn:
