@@ -136,14 +136,49 @@ def test_scenario_ca_sets_contact_right_of_min():
     assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1
 
 
-def test_scenario_ca_uses_existing_min_pick():
-    """The rule anchors at the user's (possibly dragged) min pick, not a re-detected min."""
+def test_scenario_ca_reseeds_existing_min_pick():
+    """A scenario change is a full reset: a previous (dragged) min pick is re-suggested from the
+    curve, and the +10% rule runs from the fresh min."""
     G, dPdG = _s_curve()
     state = PickState(closure_scenario="C-A clear", min_dpdg_G=6.0)
     picks.apply_closure_scenario(state, _res_with(G, dPdG))
-    assert state.min_dpdg_G == 6.0  # untouched
-    # threshold from the value AT the pick: (50 + 1) * 1.1 = 56.1 -> (G-5)^2 >= 6.1
-    assert abs(state.contact_G - (5.0 + np.sqrt(6.1))) < 0.1
+    assert abs(state.min_dpdg_G - 5.0) < 0.1
+    assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1
+
+
+def test_switch_cb_to_ca_reseeds_min():
+    """C-B snaps the triangle onto the inflection; switching to C-A must not treat that point
+    as the min and add 10% to it."""
+    G, dPdG = _s_curve()
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=8.0, contact_G=8.0)
+    assert picks.apply_closure_scenario(state, _res_with(G, dPdG)) is None
+    assert abs(state.min_dpdg_G - 5.0) < 0.1
+    assert abs(state.contact_G - (5.0 + np.sqrt(5.0))) < 0.1
+
+
+def test_switch_ca_to_cb_matches_fresh_selection():
+    """A stale triangle left near one inflection must not steer the C-B search."""
+    G, dPdG = _two_bump_decline()
+    res = _res_with(G, dPdG)
+    fresh = PickState(closure_scenario="C-B adequate")
+    picks.apply_closure_scenario(fresh, res)
+    other = 9.0 if abs(fresh.contact_G - 3.0) < 1.0 else 3.0
+    stale = PickState(closure_scenario="C-B adequate", min_dpdg_G=other, contact_G=other + 0.5)
+    picks.apply_closure_scenario(stale, res)
+    assert stale.contact_G == fresh.contact_G
+    assert stale.min_dpdg_G == fresh.min_dpdg_G
+
+
+def test_switch_reseed_respects_seed_floor():
+    """The re-seed uses the same G >= SEED_MIN_G mask as the first-visit seed: a deeper
+    early-decline dip at G=0.5 is not taken as the min."""
+    G = np.linspace(0.0, 12.0, 481)
+    dPdG = 50.0 + (G - 5.0) ** 2 - 60.0 * np.exp(-(((G - 0.5) / 0.1) ** 2))
+    assert G[interpret.suggest_min_dpdg_index(G, dPdG)] < 1.0  # sanity: unmasked lands early
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=8.0)
+    picks.apply_closure_scenario(state, _res_with(G, dPdG))
+    assert state.min_dpdg_G >= interpret.SEED_MIN_G
+    assert abs(state.min_dpdg_G - 5.0) < 0.1
 
 
 def test_scenario_ca_hints_when_no_rise():
@@ -167,7 +202,7 @@ def test_scenario_cb_hints_when_no_inflection():
     state = PickState(closure_scenario="C-B adequate", contact_G=3.0)
     hint = picks.apply_closure_scenario(state, _res_with(G, dPdG))
     assert hint is not None
-    assert state.contact_G == 3.0
+    assert state.contact_G is None  # no stale contact (e.g. an old C-A min+10%) survives
 
 
 def test_scenario_cc_cd_clear_contact():
@@ -242,7 +277,7 @@ def test_cb_no_inflection_leaves_triangle():
     state = PickState(closure_scenario="C-B adequate", min_dpdg_G=5.0, contact_G=3.0)
     assert picks.re_derive_contact_from_min(state, _res_with(G, dPdG)) is not None
     assert state.min_dpdg_G == 5.0
-    assert state.contact_G == 3.0
+    assert state.contact_G is None
 
 
 def test_re_derive_contact_from_min_no_op_cases():

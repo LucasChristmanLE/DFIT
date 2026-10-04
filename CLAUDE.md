@@ -325,6 +325,11 @@ a genuine interior local min (not the suggester's fallback), a rise of `CLEAR_RI
 reached at or before the hump, held for `CLEAR_RISE_MIN_POINTS` (3) samples. Nothing records
 that it was automatic (no state field, no log column); the hint shows once, after the seed.
 
+Changing the closure scenario is a full reset under C-A and C-B: `apply_closure_scenario`
+re-seeds the min-dP/dG pick (same masking as `seed_gfunction`, `picks._seed_dpdg`) before the
+contact rule runs, so a manual triangle placement does not survive a switch. A failed C-A or C-B
+rule clears `contact_G`.
+
 C-C, C-D, and C-X (`model.NO_CONTACT_SCENARIOS`) clear the contact pick, so none gets a
 compliance Shmin or compliance effective ISIP. C-X logs `closure_quality = "uninterpretable"`.
 The tangent step's independent negative finding is the `tangent_uninterpretable` checkbox

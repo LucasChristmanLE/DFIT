@@ -1255,27 +1255,35 @@ def commit_stiffness_point(state: PickState, x: float) -> None:
 
 
 _CA_NO_RISE_HINT = "dP/dG never rises 10% above the min -- no contact (consider C-B or C-C)."
+_CB_NO_INFLECTION_HINT = ("No inflection found on dP/dG -- no contact. Drag the triangle, "
+                          "Shift+drag a window, or consider C-C.")
 
 
 def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[str]:
-    """Re-suggest the contact pick from the just-selected closure scenario (an explicit user
-    action, so it may overwrite a previous contact pick). Pure state mutation -- no matplotlib.
+    """Re-suggest the min-dP/dG and contact picks from the just-selected closure scenario (an
+    explicit user action, so it overwrites both). Pure state mutation -- no matplotlib.
+
+    A scenario change is a full reset: under C-A and C-B the triangle is re-suggested from the
+    curve (the first-visit seed's masking, ``_seed_dpdg``) before the scenario's rule runs, so a
+    triangle C-B snapped onto an inflection is never read as a C-A min, and a stale C-A min never
+    steers the C-B inflection search. Drag and Shift+drag corrections still stick within a
+    scenario; ui.py calls this only when the selection actually changes.
 
     Rules (URTeC-2019-123 / ../CLAUDE.md scenario table):
       - C-A clear: contact = first sample right of the min-dP/dG pick where dP/dG >= 110% of
-        the value at that pick. Anchors at ``state.min_dpdg_G`` (suggesting it first if unset)
-        so a dragged min pick drives the rule.
-      - C-B adequate: contact = the dP/dG inflection (flattest point of the decline). Also seeds
-        ``state.min_dpdg_G`` if unset -- for this scenario the triangle is the inflection *seed*,
-        not a rel-min pick (decision 4), and it must exist for the marker to be drawn/draggable.
+        the value at that pick.
+      - C-B adequate: contact = the dP/dG inflection (flattest point of the decline) nearest the
+        re-seeded triangle -- for this scenario the triangle is the inflection *seed*, not a
+        rel-min pick (decision 4), and it must exist for the marker to be drawn/draggable.
       - C-C no-contact / C-D rapid / C-X uninterpretable: no contact pick -> Shmin(compliance)
         and the *compliance* effective ISIP become None downstream (model.compute_all). The
         tangent effective ISIP
         is unaffected -- it builds off ``closure_G``, so it still feeds the shared
         net-pressure/complexity reference.
 
-    Returns a user-facing hint string when the rule finds nothing, else None. A failed C-A rule
-    clears ``contact_G`` (see ``re_derive_contact_from_min``); a failed C-B leaves it unchanged. Degrades to a no-op when diagnostics aren't ready.
+    Returns a user-facing hint string when the rule finds nothing, else None. A failed C-A or
+    C-B rule clears ``contact_G`` (see ``re_derive_contact_from_min``). Degrades to a no-op when
+    diagnostics aren't ready.
     """
     scen = state.closure_scenario
     if not scen:
@@ -1286,8 +1294,8 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
     dg = res.diagnostics
     if dg is None or len(dg.G) < 3:
         return None
-    if scen.startswith(("C-A", "C-B")) and state.min_dpdg_G is None:
-        idx = interpret.suggest_min_dpdg_index(dg.G, dg.dPdG)
+    if scen.startswith(("C-A", "C-B")):
+        idx = interpret.suggest_min_dpdg_index(dg.G, _seed_dpdg(dg))
         state.min_dpdg_G = float(dg.G[idx])
     return re_derive_contact_from_min(state, res)
 
@@ -1309,7 +1317,9 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         dP/dG never rises 10%, ``contact_G`` is cleared: a leftover seed (the hump) would
         otherwise report a compliance Shmin the rule rejected (Arkansas 1BH, a 1.9% rise).
       - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed. Both the
-        contact and the triangle move to it; on no inflection, neither moves.
+        contact and the triangle move to it; on no inflection, the triangle stays and
+        ``contact_G`` is cleared (a leftover pick, e.g. a C-A min+10%, would otherwise report a
+        compliance Shmin the rule did not find).
       - blank / C-C / C-D / C-X / missing min pick or diagnostics: no-op (nothing to re-derive).
 
     Returns a user-facing hint string on failure (same convention as ``apply_closure_scenario``),
@@ -1333,7 +1343,8 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         idx = interpret.suggest_contact_inflection_index(
             dg.G, dg.dPdG, seed=state.min_dpdg_G, d2=dg.d2PdG2)
         if idx is None:
-            return "No inflection found on dP/dG -- drag the contact marker manually."
+            state.contact_G = None
+            return _CB_NO_INFLECTION_HINT
         # The triangle snaps onto the inflection it seeded, as handle_min_dpdg_window does;
         # otherwise it stays at a C-A rel-min one sample short of the contact (Arkansas 1BH).
         state.contact_G = state.min_dpdg_G = float(dg.G[idx])
@@ -1619,6 +1630,27 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
     state.isip_tangent = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
 
 
+def _seed_dpdg(dg) -> np.ndarray:
+    """dP/dG with the regions the auto-seed suggesters must not see set to NaN (indices stay
+    aligned with ``dg.G``). Shared by ``seed_gfunction`` and ``apply_closure_scenario``."""
+    # The auto-seed never lands below G = SEED_MIN_G: early-decline noise there (1BH MERGED: a
+    # +-10x dP/dG swing on 1-s data) otherwise reads as a min and a hump, and passes the C-A
+    # gate. A record that barely reaches the floor seeds on the whole curve. The analyst can
+    # still drag the pick below it.
+    y_seed = np.where(dg.G >= interpret.SEED_MIN_G, dg.dPdG, np.nan)
+    if int(np.isfinite(y_seed).sum()) < 6:
+        y_seed = dg.dPdG
+    # A crash spike at the end of the record (a bleed-off the tail trim can't see) would
+    # otherwise be the "hump" and make every earlier min, plus the climb into it, a clear C-A.
+    spike = interpret.terminal_spike_start(dg.G, y_seed)
+    if spike < len(y_seed):
+        trimmed = y_seed.copy()
+        trimmed[spike:] = np.nan
+        if int(np.isfinite(trimmed).sum()) >= 6:
+            y_seed = trimmed
+    return y_seed
+
+
 def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
     """The min-dP/dG point plus the compliance contact pick at the dP/dG hump -- together they
     position the derived effective-ISIP tangent, see model.compliance_isip_anchor_G.
@@ -1631,21 +1663,7 @@ def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
     dg = res.diagnostics
     if dg is None or res.resampled is None or len(dg.G) <= 5:
         return None
-    # The auto-seed never lands below G = SEED_MIN_G: early-decline noise there (1BH MERGED: a
-    # +-10x dP/dG swing on 1-s data) otherwise reads as a min and a hump, and passes the C-A
-    # gate. Indices stay aligned with dg.G (masked = NaN). A record that barely reaches the floor
-    # seeds on the whole curve. The analyst can still drag the pick below it.
-    y_seed = np.where(dg.G >= interpret.SEED_MIN_G, dg.dPdG, np.nan)
-    if int(np.isfinite(y_seed).sum()) < 6:
-        y_seed = dg.dPdG
-    # A crash spike at the end of the record (a bleed-off the tail trim can't see) would
-    # otherwise be the "hump" and make every earlier min, plus the climb into it, a clear C-A.
-    spike = interpret.terminal_spike_start(dg.G, y_seed)
-    if spike < len(y_seed):
-        trimmed = y_seed.copy()
-        trimmed[spike:] = np.nan
-        if int(np.isfinite(trimmed).sum()) >= 6:
-            y_seed = trimmed
+    y_seed = _seed_dpdg(dg)
     fresh_idx = None
     if state.min_dpdg_G is None:
         fresh_idx = interpret.suggest_min_dpdg_index(dg.G, y_seed)
