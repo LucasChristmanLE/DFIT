@@ -86,6 +86,9 @@ LOG_COLUMNS = [
     "rises_masked",
     "manual_masks",
     "manual_keeps",
+    # PC-E only: shut-in time of the t*dP/dt peak the -1/2 pore-pressure extrapolation starts
+    # from (model.pp_from_peak) -- tail-appended per the append-only convention.
+    "pce_peak_min",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -541,4 +544,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "rises_masked": len(res.rise_excursions),
         "manual_masks": len(state.mask_intervals),
         "manual_keeps": len(state.keep_intervals),
+        "pce_peak_min": _minutes(res.pce_peak_t),
     }

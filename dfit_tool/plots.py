@@ -26,7 +26,7 @@ from matplotlib.ticker import MaxNLocator
 from . import colors as C
 from . import interpret, summary
 from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
-                    loglog_window_suppressed, skipped_steps)
+                    loglog_window_suppressed, pp_from_peak, skipped_steps)
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -715,7 +715,19 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
     ax.set_ylabel("dp, t*dP/dt (psi)")
     ax.grid(True, which="both", alpha=0.3)
 
-    if loglog_window_suppressed(state):
+    if pp_from_peak(state) and res.pce_peak_t is not None:
+        # PC-E: the -1/2 line from the peak that the pore pressure is extrapolated on, drawn
+        # one decade past the last sample. dataLim is snapshotted and restored (same pattern as
+        # _plot_dropout_markers) so the extension never widens the default view.
+        t_pk, d_pk = res.pce_peak_t, res.pce_peak_tdpdt
+        tt = np.geomspace(t_pk, max(float(dg.t[-1]), t_pk) * 10.0, 50)
+        saved_points = ax.dataLim.get_points().copy()
+        ax.plot(tt, d_pk * (tt / t_pk) ** -0.5, color=C.PORE_PRESSURE, ls="--", lw=1.3,
+                label="-1/2 from peak", gid="pce_halfslope", scalex=False, scaley=False)
+        ax.dataLim.set_points(saved_points)
+        ax.plot(t_pk, d_pk, "o", color=C.PICK, ms=7, label="peak", gid="pce_peak")
+        ax.set_title(f"Log-Log   ({state.postclosure_scenario})   -1/2 From Peak", fontsize=10)
+    elif loglog_window_suppressed(state):
         # PC-E/PC-F: no straight trend, so no window or slope (the pick stays in state).
         ax.set_title(f"Log-Log   ({state.postclosure_scenario})", fontsize=10)
     elif state.loglog_window is not None:
@@ -747,6 +759,22 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
     ax.grid(True, alpha=0.3)
     xmax = float(np.nanmax(x)) if x.size else 1.0
 
+    if pp_from_peak(state):
+        if res.pce_peak_t is not None and res.pore_pressure is not None:
+            # P = Pp + m*t^(-1/2) from the peak to t -> inf (x = 0); a curve on the t^-1 axis.
+            tt = np.geomspace(res.pce_peak_t, res.pce_peak_t * 1e8, 60)
+            xs = np.append(tt ** expo, 0.0)
+            ys = np.append(res.pore_pressure + res.pore_pressure_slope * tt ** -0.5,
+                           res.pore_pressure)
+            ax.plot(xs, ys, color=C.PORE_PRESSURE, ls="--", lw=1.3, gid="pce_extrapolation")
+            ax.plot(res.pce_peak_t ** expo, res.pce_peak_p, "o", color=C.PICK, ms=6)
+            ax.plot(0.0, res.pore_pressure, "o", color=C.PORE_PRESSURE)
+            ax.set_title(f"Pore Pressure = {res.pore_pressure:.0f} psi  (-1/2 From Peak)",
+                         fontsize=10)
+        else:
+            ax.set_title("Pore Pressure -- Pick the Peak on Log-Log", fontsize=10)
+        return _porepressure_view(state, dg, res, press_color)
+
     if state.pp_window is not None:
         lo, hi = state.pp_window
         x_lo = 0.0 if not np.isfinite(hi) else hi ** expo
@@ -773,6 +801,10 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             ax.set_title(f"Pore Pressure = {res.pore_pressure:.0f} psi", fontsize=10)
     else:
         ax.set_title("Pore Pressure -- Select the Late-Time Window", fontsize=10)
+    return _porepressure_view(state, dg, res, press_color)
+
+
+def _porepressure_view(state: PickState, dg, res: DerivedResults, press_color) -> ViewDefaults:
     xhi = 0.05 if state.pp_axis == "tm12" else 0.0025
     # The pick sits at x = 0, normally below every observed sample; keep it in the default view.
     p_view = dg.p if res.pore_pressure is None else np.append(dg.p, res.pore_pressure)

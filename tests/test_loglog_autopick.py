@@ -258,7 +258,7 @@ def test_seed_does_not_auto_assign_from_fallback_window():
 
 
 def test_log_column_postclosure_auto_at_end(tmp_path):
-    assert store.LOG_COLUMNS[-5] == "postclosure_auto"
+    assert store.LOG_COLUMNS[-6] == "postclosure_auto"
     td, st, res = _seeded_state()
     picks.auto_assign_postclosure(st, -0.5)
     entry = store.TestEntry(test_id="well1", folder=str(tmp_path))

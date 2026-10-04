@@ -1470,7 +1470,7 @@ Postclosure scenarios drive the pore-pressure axis:
 | PC-B false-radial | −1 after peak | t^(−1) |
 | PC-C false radial to genuine linear | −1 then −1/2 | t^(−1/2) |
 | PC-D genuine linear to genuine radial | −1/2 then −1 | either |
-| PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
+| PC-E no trend | peak, no clear slope | −1/2 from the peak, low confidence |
 | PC-F no peak | derivative still rising | pore-pressure step skipped |
 | PC-X uninterpretable | can't be read (bad data) | pore-pressure step skipped |
 
@@ -1523,6 +1523,43 @@ shaded window and a fitted slope would misread as one. `model.loglog_window_supp
 `loglog_window` pick stays in state, so switching back to PC-A..PC-D restores it. PC-X keeps the
 window and slope on purpose: a test can show a clear slope far from both −1/2 and −1, and the
 analyst should see it.
+
+**PC-E pore pressure from the peak.** The ResFrac guide says to extrapolate a t^(−1/2) trend
+from the peak when the derivative peaks but never establishes a slope. The model assumes linear
+flow starts at the t·dP/dt peak: P = Pp + m·t^(−1/2), whose positive-up derivative
+(m/2)·t^(−1/2) is a −1/2 line through the peak. That gives m = 2·D_pk·√t_pk and
+Pp = P_pk − 2·D_pk (`interpret.pore_pressure_from_peak`).
+
+The anchor is the peak, not the final sample. The peak is a central-difference interior point,
+while the final t·dP/dt is a one-sided difference over sparse 30-psi increments. A late peak
+leaves too few post-peak points to fit, and those points are not on −1/2 yet.
+
+The estimate is not a bound. If the derivative stays flatter than −1/2 after the peak, the real
+Pp is lower. If it rolls to radial, the real Pp is higher. A warning fires when Pp >= the lowest
+post-peak BHP.
+
+The peak is a pick, `PickState.pce_peak_t` (shut-in seconds; old saves decode to None). In the
+guide figure the early water-hammer peak is about as tall as the late one, so the seed takes the
+latest prominent peak: `_loglog_peak(min_after=1)`, since a PC-E peak can sit two samples from
+the end, which the window seed's 5-sample requirement would reject. The fallback is the largest
+t·dP/dt over the last decade.
+
+Seeding happens in `seed_loglog`, in `ui._on_scenario` on selecting PC-E, and in every
+`ui._goto` through `ui._ensure_pce_peak`. The `_goto` path is not limited to loglog/porepressure:
+a 7-step-era save resumes onto stiffness, and Skip/Unskip from Overview logs a row, and both
+would otherwise log a blank Pp where the old window fit had a value.
+
+`_ensure_pce_peak` also re-seeds an unusable pick, with a one-shot hint. Unusable means the
+pick is past the last sample or has no positive t·dP/dt; in that case `res.pce_peak_t` stays
+None and no marker can be drawn to drag. If no seed is found, the old pick is kept.
+
+`compute_all` snaps the pick to the nearest diagnostic sample. It never snaps a pick that lies
+past the last sample (a tail trim or shut-in move cut the peak off). That case blanks Pp with a
+front-of-list warning. The tail-trim stale check skips `pp_window` under PC-E.
+
+The −1/2 extension on log-log is kept out of `dataLim` (the same pattern as
+`_plot_dropout_markers`), so it does not widen the default view. `seed_pp` is a no-op under PC-E, and `pp_window` is ignored but
+kept. The summary shows the method and the peak time in place of the window rows.
 
 **PC-X uninterpretable.** The postclosure mirror of C-X: the analyst's explicit "this log-log
 can't be read". It skips porepressure and stiffness exactly like PC-F (below), logs

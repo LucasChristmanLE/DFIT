@@ -14,7 +14,7 @@ from typing import Optional
 import numpy as np
 
 from . import interpret
-from .model import DerivedResults, PickState, skipped_steps
+from .model import DerivedResults, PickState, pp_from_peak, skipped_steps
 
 DASH = "-"
 
@@ -146,6 +146,20 @@ def _postclosure(state: PickState, res: DerivedResults) -> Section:
     rows = [_gate(state, "loglog", ["scenario", state.postclosure_scenario or DASH])]
     if "porepressure" in skipped_steps(state):
         rows.append(["pore pressure fit", f"skipped ({state.postclosure_scenario[:4]})"])
+        return Section("Postclosure", ["Item", "Value"], rows)
+    if pp_from_peak(state):
+        # PC-E: no window (model.compute_all). The peak is picked on Log-log; the values gate on
+        # porepressure like chart_values and the sidebar.
+        peak = None if res.pce_peak_t is None else res.pce_peak_t / 60.0
+        rows += [
+            _gate(state, "loglog", ["method", "-1/2 from peak"]),
+            _gate(state, "loglog", ["peak (min)", _fmt(peak, "{:.2f}")]),
+            _gate(state, "porepressure", ["slope (psi per t^(-1/2))",
+                                          _fmt(res.pore_pressure_slope, "{:.1f}")]),
+            _gate(state, "porepressure", ["pore pressure (psi)", _fmt(res.pore_pressure)]),
+            _gate(state, "porepressure", ["gradient (psi/ft)",
+                                          _fmt(res.pore_pressure_gradient, "{:.3f}")]),
+        ]
         return Section("Postclosure", ["Item", "Value"], rows)
     axis = {"tm12": "t^(-1/2)", "tm1": "t^(-1)"}.get(state.pp_axis, state.pp_axis)
     if state.pp_window is not None:

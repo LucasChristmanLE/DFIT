@@ -27,7 +27,7 @@ from . import (colors as C, guide_content, interpret, io_load, picks, plots, sli
 from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
                     closure_uninterpretable, compute_all, first_not_visited_step,
                     infer_step_status, last_step, loglog_window_suppressed, next_step,
-                    prev_step, resolve_step, skipped_steps, step_gate_error)
+                    pp_from_peak, prev_step, resolve_step, skipped_steps, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults, ViewState
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -80,7 +80,7 @@ POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
 # window (guide_content.py / _open_guide below); this dict is still consulted by _on_scenario.
 _PC_HINTS = {
     "PC-D": "either axis valid -- choose t^(-1/2) or t^(-1) manually",
-    "PC-E": "no clear slope -- no log-log window; t^(-1/2) set; pore pressure is low-confidence",
+    "PC-E": "no clear slope -- pore pressure from a -1/2 line off the t*dP/dt peak; low confidence",
     "PC-F": "derivative still rising -- no log-log window; pore pressure step is skipped, "
             "Finish is available on this (log-log) step",
     "PC-X": "postclosure uninterpretable -- pore pressure and stiffness steps are skipped, "
@@ -1113,6 +1113,8 @@ class DfitApp:
                 self.state.pp_axis = axis
             self.var_ppaxis.set(self.state.pp_axis)
             hint = _PC_HINTS.get(pcscen[:4]) or hint
+            if pp_from_peak(self.state):
+                hint = self._ensure_pce_peak() or hint
         self._update_ppaxis_enabled()
         if pcscen_changed and self.step in skipped_steps(self.state):
             # PC-F/PC-X just got selected while sitting on the now-skipped pore-pressure step -- the
@@ -1374,6 +1376,9 @@ class DfitApp:
         if self.state.step_status.get(step, "not_visited") == "not_visited":
             seed_hint = self._seed_step(step)
             self.state.step_status[step] = "visited"
+        if pp_from_peak(self.state):
+            # Any step, so a resume onto stiffness or Overview (then Skip/Finish) still logs Pp.
+            seed_hint = self._ensure_pce_peak() or seed_hint
         self.step = step
         self.refresh()
         if seed_hint:
@@ -1381,6 +1386,26 @@ class DfitApp:
             self.hint_lbl.config(text=seed_hint)
         if blocked:
             self.gate_lbl.config(text=step_gate_error(self.state, "overview"))
+
+    def _ensure_pce_peak(self) -> Optional[str]:
+        """Seed the PC-E peak pick when PC-E is set and the pick is missing (a save made before
+        the pick existed) or unusable (past the last sample after a trim, or no positive
+        t*dP/dt there, which also leaves no marker to drag). Runs on selecting PC-E and on every
+        _goto. Returns a hint when an unusable pick was replaced, else None."""
+        if self.td is None or not pp_from_peak(self.state):
+            return None
+        res = compute_all(self.state, self.td)
+        old = self.state.pce_peak_t
+        if old is not None and res.pce_peak_t is not None:
+            return None
+        self.state.pce_peak_t = None
+        picks.seed_pce_peak(self.state, res)
+        if self.state.pce_peak_t is None:
+            self.state.pce_peak_t = old  # nothing better to offer; keep the analyst's pick
+            return None
+        if old is not None:
+            return "PC-E peak re-seeded: the old pick was unusable. Check it on Log-log."
+        return None
 
     def _seed_step(self, key: str) -> Optional[str]:
         """Pre-populate reasonable default picks for ``key`` on its first visit, via
@@ -2177,8 +2202,26 @@ class DfitApp:
             self.hint_lbl.config(
                 text="Rotate the through-origin line (the closure marker follows); "
                          "drag the closure marker or its vertical line.")
+        elif step == "loglog" and pp_from_peak(self.state):
+            # PC-E: no window; drag the peak marker the -1/2 extrapolation starts from.
+            res = self.res
+            dg = res.diagnostics
+            if dg is not None and res.pce_peak_t is not None:
+                good = (dg.t > 0) & (dg.tdpdt > 0)
+
+                def commit_peak(x):
+                    picks.commit_pce_peak(self.state, x)
+                    self.refresh()
+
+                ctrl = picks.DraggablePointController(
+                    self.canvas, self.ax, "pce_peak", dg.t[good], dg.tdpdt[good],
+                    commit_fn=commit_peak)
+                self._controllers.extend([ctrl, picks.HoverCursorController(self.canvas, [ctrl])])
+            self.hint_lbl.config(
+                text=f"{self.state.postclosure_scenario}: drag the peak marker; "
+                     "pore pressure = P_peak - 2*(t*dP/dt)_peak.")
         elif step == "loglog" and loglog_window_suppressed(self.state):
-            # PC-E/PC-F draw no window, so a drag would set a pick the analyst never sees.
+            # PC-F draws no window, so a drag would set a pick the analyst never sees.
             self.hint_lbl.config(
                 text=f"No log-log window under {self.state.postclosure_scenario}; "
                      "pick another scenario to select one.")
@@ -2198,6 +2241,9 @@ class DfitApp:
             else:
                 self.hint_lbl.config(
                     text="Drag to select the late-time window; set postclosure scenario.")
+        elif step == "porepressure" and pp_from_peak(self.state):
+            self.hint_lbl.config(
+                text="PC-E: pore pressure is the -1/2 line from the Log-log peak; no window.")
         elif step == "porepressure":
             def on_span(lo, hi):
                 picks.handle_pp_span(self.state, lo, hi)

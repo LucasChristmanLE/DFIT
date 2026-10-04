@@ -24,7 +24,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
 from . import colors as C, interpret, io_load
-from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick
+from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick, pp_from_peak
 from .io_load import TestData
 
 
@@ -1696,6 +1696,7 @@ def seed_loglog(state: PickState, res: DerivedResults) -> None:
     the t*dP/dt peak, preferring a -1/2 slope), else the last 40% of samples. Auto-assigns PC-A
     (auto_assign_postclosure) only when the suggester found a qualifying -1/2 window, not
     from its straightest-section fallback."""
+    seed_pce_peak(state, res)
     if state.loglog_window is not None:
         return
     dg = res.diagnostics
@@ -1712,9 +1713,28 @@ def seed_loglog(state: PickState, res: DerivedResults) -> None:
                                                                      *state.loglog_window))
 
 
+def seed_pce_peak(state: PickState, res: DerivedResults) -> None:
+    """PC-E peak pick from interpret.suggest_pce_peak_index. No-op unless the scenario is PC-E
+    and the pick is unset."""
+    if not pp_from_peak(state) or state.pce_peak_t is not None:
+        return
+    dg = res.diagnostics
+    if dg is None:
+        return
+    i = interpret.suggest_pce_peak_index(dg.t, dg.tdpdt)
+    if i is not None:
+        state.pce_peak_t = float(dg.t[i])
+
+
+def commit_pce_peak(state: PickState, t: float) -> None:
+    """DraggablePointController commit for the PC-E peak (already snapped to a sample)."""
+    state.pce_peak_t = float(t)
+
+
 def seed_pp(state: PickState, res: DerivedResults) -> None:
-    """Late-time window for the pore-pressure diagnostic plot."""
-    if state.pp_window is not None:
+    """Late-time window for the pore-pressure diagnostic plot. None under PC-E, which uses the
+    peak extrapolation instead of a window."""
+    if state.pp_window is not None or pp_from_peak(state):
         return
     dg = res.diagnostics
     if dg is None or len(dg.t) <= 6:

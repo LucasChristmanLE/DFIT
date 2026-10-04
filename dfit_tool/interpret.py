@@ -11,6 +11,7 @@ rapid-closure 100-250 psi) are defined in ../CLAUDE.md.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -934,16 +935,16 @@ LOGLOG_PEAK_PROMINENCE_DECADES = 0.15  # a t*dP/dt local max must stand this far
 LOGLOG_PEAK_HALF_WIDTH = 3  # a peak is the max over +-this many samples
 
 
-def _loglog_peak(v: np.ndarray) -> Optional[int]:
+def _loglog_peak(v: np.ndarray, min_after: int = LOGLOG_MIN_POINTS) -> Optional[int]:
     """Index of the latest prominent local maximum of log10 t*dP/dt ``v`` that still has
-    >= LOGLOG_MIN_POINTS samples after it, or None. Prominence is the usual topographic one:
+    >= ``min_after`` samples after it, or None. Prominence is the usual topographic one:
     the peak minus the higher of its two bases, each base being the minimum between the peak
     and the nearest higher sample on that side (or the array end). "Latest" rather than
     "tallest" so a tall early-time spike or a pre-closure hump never outranks the postclosure
     peak the log-log window has to follow."""
     n = v.size
     w = LOGLOG_PEAK_HALF_WIDTH
-    for i in range(n - 1 - LOGLOG_MIN_POINTS, 0, -1):
+    for i in range(n - 1 - min_after, 0, -1):
         if v[i] < np.max(v[max(0, i - w):i + w + 1]):
             continue
         higher_l = np.flatnonzero(v[:i] > v[i])
@@ -953,6 +954,33 @@ def _loglog_peak(v: np.ndarray) -> Optional[int]:
         if v[i] - max(left_base, right_base) >= LOGLOG_PEAK_PROMINENCE_DECADES:
             return i
     return None
+
+
+def suggest_pce_peak_index(t: np.ndarray, tdpdt: np.ndarray) -> Optional[int]:
+    """PC-E peak seed: index into ``t`` of the latest prominent t*dP/dt peak (``_loglog_peak``
+    with only one sample required after it, since a PC-E peak often sits near the end), else
+    the largest t*dP/dt over the last decade of shut-in time. None with < 3 usable samples."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(tdpdt, dtype=float)
+    valid = np.flatnonzero(np.isfinite(t) & np.isfinite(y) & (t > 0) & (y > 0))
+    if valid.size < 3:
+        return None
+    peak = _loglog_peak(np.log10(y[valid]), min_after=1)
+    if peak is not None:
+        return int(valid[peak])
+    late = valid[t[valid] >= t[valid[-1]] / 10.0]
+    return int(late[np.argmax(y[late])])
+
+
+def pore_pressure_from_peak(t: np.ndarray, p: np.ndarray, tdpdt: np.ndarray,
+                            i: int) -> Optional[tuple[float, float]]:
+    """PC-E pore pressure ``(Pp, m)``: linear flow assumed to start at sample ``i`` (the t*dP/dt
+    peak), so P = Pp + m*t^(-1/2) with t*dP/dt = (m/2)*t^(-1/2) through the peak. Then
+    m = 2*D*sqrt(t) and Pp = P - 2*D. None unless t > 0 and P, D are finite with D > 0."""
+    ti, pi, di = float(t[i]), float(p[i]), float(tdpdt[i])
+    if not (math.isfinite(ti) and math.isfinite(pi) and math.isfinite(di)) or ti <= 0 or di <= 0:
+        return None
+    return pi - 2.0 * di, 2.0 * di * math.sqrt(ti)
 
 
 def loglog_window_slope(t: np.ndarray, y: np.ndarray, lo: float, hi: float) -> float:

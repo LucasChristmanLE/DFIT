@@ -45,6 +45,11 @@ def loglog_window_suppressed(state: "PickState") -> bool:
     return state.postclosure_scenario.startswith(NO_TREND_POSTCLOSURE)
 
 
+def pp_from_peak(state: "PickState") -> bool:
+    """PC-E: pore pressure comes from a -1/2 line off the t*dP/dt peak, not a window fit."""
+    return state.postclosure_scenario.startswith("PC-E")
+
+
 # --------------------------------------------------------------------------------------------------
 # pick state (serializable)
 # --------------------------------------------------------------------------------------------------
@@ -143,6 +148,9 @@ class PickState:
     postclosure_auto: bool = False
     pp_axis: str = "tm12"  # "tm12" (t^-1/2) or "tm1" (t^-1)
     pp_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
+    # PC-E only: shut-in seconds of the postclosure t*dP/dt peak that the -1/2 extrapolation
+    # starts from (pp_from_peak). Old saves take the default via _decode's known-field filter.
+    pce_peak_t: Optional[float] = None
 
     # --- step 9: relative stiffness (URTeC-2019-123 A.8/A.9) -- a draggable vline pick on the
     # semilog-y stiffness-vs-effective-pressure plot, in psi. Comparison-only: feeds
@@ -482,6 +490,10 @@ class DerivedResults:
     pore_pressure_slope: Optional[float] = None
     pore_pressure_n_points: Optional[int] = None
     loglog_slope: Optional[float] = None  # t*dP/dt log-log slope over state.loglog_window
+    # PC-E peak sample the pore pressure was extrapolated from (snapped to diagnostics).
+    pce_peak_t: Optional[float] = None
+    pce_peak_tdpdt: Optional[float] = None
+    pce_peak_p: Optional[float] = None
 
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
@@ -1091,7 +1103,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         # emptied case is the pp block's own `m.sum() >= 2` guard, mirrored here. An open-ended
         # *upper* bound (t_hi = inf, "to the end of the data") naturally shrinks with the trim
         # instead of emptying, so it's exempt from the shrunk-but-still-fitting check.
-        if state.pp_window is not None and len(res.diagnostics.t):
+        # PC-E ignores pp_window; its peak pick gets its own check in the pp block below.
+        if (state.pp_window is not None and len(res.diagnostics.t)
+                and not pp_from_peak(state)):
             pp_lo, pp_hi = state.pp_window
             t = res.diagnostics.t
             edge_t = t[-1]
@@ -1200,7 +1214,30 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
     # postclosure line exists (PC-X: none can be read) -- suppress the fit even if a stale
     # pp_window pick is present.
-    if (state.pp_window and res.diagnostics is not None
+    # PC-E: no window fit; a -1/2 line from the t*dP/dt peak (pce_peak_t) gives Pp = P - 2*D
+    # there. pp_window is ignored but kept in state.
+    if pp_from_peak(state) and res.diagnostics is not None:
+        dg = res.diagnostics
+        if state.pce_peak_t is None or not dg.t.size:
+            res.notes.append("PC-E: pick the t*dP/dt peak on Log-log for pore pressure")
+        elif state.pce_peak_t > float(dg.t[-1]) * (1.0 + 1e-9):
+            # A tail trim or shut-in move cut the peak off: never snap it to a different sample.
+            res.warnings.insert(0, "PC-E peak pick is past the last sample; pore pressure blank")
+        else:
+            i = int(np.argmin(np.abs(dg.t - state.pce_peak_t)))
+            fit = interpret.pore_pressure_from_peak(dg.t, dg.p, dg.tdpdt, i)
+            if fit is None:
+                res.warnings.append("PC-E peak has no positive t*dP/dt; pore pressure blank")
+            else:
+                res.pore_pressure, res.pore_pressure_slope = fit
+                res.pore_pressure_n_points = 1
+                res.pce_peak_t = float(dg.t[i])
+                res.pce_peak_tdpdt = float(dg.tdpdt[i])
+                res.pce_peak_p = float(dg.p[i])
+                if res.pore_pressure >= np.nanmin(dg.p[i:]):
+                    res.warnings.append(
+                        "PC-E pore pressure >= observed post-peak BHP; check the peak pick")
+    elif (state.pp_window and res.diagnostics is not None
             and "porepressure" not in skipped_steps(state)):
         dg = res.diagnostics
         lo, hi = state.pp_window

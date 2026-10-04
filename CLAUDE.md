@@ -245,7 +245,7 @@ Per-test deliverables (all computed in `compute_all`):
 | Shmin rapid | C-D only: apparent ISIP − 175 psi (`RAPID_CLOSURE_OFFSET_PSI`) |
 | Net pressure | shared reference ISIP − that method's Shmin (compliance, tangent, variable) |
 | NWB complexity | apparent ISIP − shared reference ISIP; negative reported as-is |
-| Pore pressure | intercept of the late postclosure line on t^(−1/2) or t^(−1) |
+| Pore pressure | intercept of the late postclosure line on t^(−1/2) or t^(−1); under PC-E, `P_peak − 2·(t·dP/dt)_peak` from a −1/2 line off the derivative peak |
 | Gradients | value / `state.tvd_ft`; blank unless TVD is finite and > 0 (warns when blank) |
 
 "Comparison only" values are shown in the panel and logged, but never feed net pressure, the
@@ -342,7 +342,7 @@ Postclosure scenarios (`picks.suggest_pp_axis` maps by `scenario[:4]`):
 | PC-B false-radial | −1 after peak | t^(−1) |
 | PC-C false radial to genuine linear | −1 then −1/2 | t^(−1/2) |
 | PC-D genuine linear to genuine radial | −1/2 then −1 | either (analyst picks) |
-| PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
+| PC-E no trend | peak, no clear slope | −1/2 extrapolated from the peak, low confidence |
 | PC-F no peak | derivative still rising | porepressure and stiffness skipped |
 | PC-X uninterpretable | can't be read (bad data) | porepressure and stiffness skipped |
 
@@ -358,6 +358,17 @@ PC-E and PC-F (`model.NO_TREND_POSTCLOSURE`, gate `model.loglog_window_suppresse
 log-log window: no shading, no slope (`loglog_slope` is None), no span controller. The pick stays
 in state and returns on a switch back. PC-X keeps the window and slope (a clear slope far from
 −1/2 and −1 is worth seeing).
+
+PC-E pore pressure (`model.pp_from_peak`): linear flow is assumed to start at the postclosure
+t·dP/dt peak, so P = Pp + m·t^(−1/2) through the peak, m = 2·D_pk·√t_pk, Pp = P_pk − 2·D_pk
+(`interpret.pore_pressure_from_peak`). `pp_window` is ignored. The peak is a pick
+(`PickState.pce_peak_t`), seeded by `interpret.suggest_pce_peak_index` (`_loglog_peak` with
+`min_after=1`, else the largest t·dP/dt over the last decade) and draggable on log-log. Log-log
+draws the −1/2 line from the peak; porepressure draws the extrapolation to x = 0 with no window
+or span controller. Warns when Pp >= the lowest post-peak BHP. Logged as `pce_peak_min`.
+A pick past the last sample (trimmed off) blanks Pp with a warning and is never snapped.
+`ui._ensure_pce_peak` runs on every `_goto` and on selecting PC-E, seeding a missing pick and
+re-seeding an unusable one.
 
 PC-F and PC-X: `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}`. It is the only place
 the rule lives; callers ask it rather than checking the scenario. `model.last_step` returns

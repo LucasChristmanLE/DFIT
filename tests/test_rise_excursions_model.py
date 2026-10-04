@@ -207,7 +207,7 @@ def test_json_round_trip_preserves_tuples(tmp_path):
 
 # ---- log ------------------------------------------------------------------------------------------
 def test_log_columns_are_last_four_and_filled(tmp_path):
-    assert store.LOG_COLUMNS[-4:] == ["dropouts_masked", "rises_masked", "manual_masks",
+    assert store.LOG_COLUMNS[-5:-1] == ["dropouts_masked", "rises_masked", "manual_masks",
                                       "manual_keeps"]
     td, st = _fixture()
     st.mask_intervals = [(_abs_t(10), _abs_t(12)), (_abs_t(20), _abs_t(22))]
