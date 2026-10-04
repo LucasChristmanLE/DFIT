@@ -1208,14 +1208,13 @@ def commit_closure_line(state: PickState, res: DerivedResults,
 
 def commit_min_dpdg_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the min-dP/dG pick (G-function step, dP/dG twin axis).
-    A diagnostic pick only -- it does not feed the effective-ISIP tangent (that's contact_G,
-    see commit_contact_point / model.compute_all)."""
+    The effective-ISIP tangent is anchored here, derived in model.compute_all, not stored."""
     state.min_dpdg_G = float(x)
 
 
 def commit_contact_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the compliance-method contact pick (G-function step).
-    The effective-ISIP tangent is derived from this in model.compute_all, not stored here."""
+    It gates the effective-ISIP tangent (see model.compute_all) but does not position it."""
     state.contact_G = float(x)
 
 
@@ -1403,8 +1402,8 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
     return None
 
 
-_GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent follows it) or "
-                           "the min-dP/dG marker.")
+_GFUNCTION_HINT_DEFAULT = ("Drag the min-dP/dG marker (the effective-ISIP tangent follows it) or "
+                           "the contact marker.")
 
 
 _MIN_DPDG_WINDOW_HINT = " Shift+drag a window on the plot to re-find it there."
@@ -1605,9 +1604,9 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
 
 
 def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
-    """The min-dP/dG point (a diagnostic pick), plus the compliance contact pick at the dP/dG
-    hump -- the contact pick feeds the derived effective-ISIP tangent, see
-    model.compute_all/DerivedResults.eff_isip_line_compliance.
+    """The min-dP/dG point (anchors the derived effective-ISIP tangent, see
+    model.compute_all/DerivedResults.eff_isip_line_compliance), plus the compliance contact pick
+    at the dP/dG hump.
 
     When the min is freshly seeded, the scenario is blank, and interpret.is_clear_closure holds,
     also sets "C-A clear" and applies its +10% contact rule (apply_closure_scenario), returning

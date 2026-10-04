@@ -701,7 +701,11 @@ Per-test deliverables:
 
 - **Apparent ISIP** — early BHP-decline tangent extrapolated back to the shut-in instant
   (FracPro-style construction; a manual pick on the isip step).
-- **Effective ISIP** — the P-vs-G straight line extrapolated to G = 0.
+- **Effective ISIP** — the P-vs-G straight line extrapolated to G = 0. The compliance line is
+  anchored at the min-dP/dG pick (URTeC-2019-123 §2.2 step 5, §3.1.1; ResFrac "starting from the
+  point of minimum dP/dG"), falling back to the contact when no min pick exists; `contact_G`
+  still gates it. 7cd2b98 (2026-07-22) had moved the anchor to the contact, which read ~30 psi
+  high under C-A on a synthetic case; reverted 2026-10-03 to match the references.
 - **Shmin, compliance** — contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`).
 - **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point. The
   through-origin line's seed (`interpret.suggest_closure_tangent`, `picks.seed_tangent`)

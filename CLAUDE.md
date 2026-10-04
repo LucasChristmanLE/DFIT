@@ -236,7 +236,7 @@ Per-test deliverables (all computed in `compute_all`):
 | Value | Construction |
 |---|---|
 | Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step), or, with `state.isip_at_shutin` ("Use shut-in pressure", for tests with no water hammer), `bhp_all[shutin_idx]`; blank with a warning when that sample is NaN or dropout-masked. The tangent pick is kept in state. Method logged as `apparent_isip_method` (`tangent`/`shutin`) |
-| Effective ISIP | P-vs-G straight line extrapolated to G = 0 |
+| Effective ISIP | P-vs-G straight line extrapolated to G = 0. Compliance: anchored at the min-dP/dG pick (contact if unset), gated on `contact_G` (URTeC §3.1.1); the stiffness `p_eff` uses the same line |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
 | Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point: last sample within 5% of the line. Rotating the line moves the closure pick to the last sample (G >= 1) within 5% of the rotated line (`interpret.closure_departure_index`); the marker stays draggable and never moves the line. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
 | Shmin variable | BHP at the G-time midpoint of contact and closure picks. Blank when either is unavailable (C-C/C-D/C-X, or the tangent checkbox) |
@@ -361,7 +361,8 @@ in state and returns on a switch back. PC-X keeps the window and slope (a clear 
 
 PC-E pore pressure (`model.pp_from_peak`): linear flow is assumed to start at the postclosure
 t·dP/dt peak, so P = Pp + m·t^(−1/2) through the peak, m = 2·D_pk·√t_pk, Pp = P_pk − 2·D_pk
-(`interpret.pore_pressure_from_peak`). `pp_window` is ignored. The peak is a pick
+(`interpret.pore_pressure_from_peak`). This deliberately departs from the ResFrac guide's "line
+from the final point in the data". `pp_window` is ignored. The peak is a pick
 (`PickState.pce_peak_t`), seeded by `interpret.suggest_pce_peak_index` (`_loglog_peak` with
 `min_after=1`, else the largest t·dP/dt over the last decade) and draggable on log-log. Log-log
 draws the −1/2 line from the peak; porepressure draws the extrapolation to x = 0 with no window

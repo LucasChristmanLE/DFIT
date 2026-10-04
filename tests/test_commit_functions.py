@@ -104,10 +104,34 @@ def test_commit_contact_point_sets_contact_g():
     assert state.contact_G == pytest.approx(12.5)
 
 
+def test_eff_isip_line_anchors_at_min_dpdg_when_both_picks_set():
+    """URTeC-2019-123 §2.2 step 5 / §3.1.1 and the ResFrac guide: the P-vs-G line starts at the
+    min-dP/dG point, not the contact. contact_G gates the line (no contact, no compliance ISIP)
+    but does not position it."""
+    td, st, res = _res()
+    dg = res.diagnostics
+    min_G = float(dg.G[dg.G.size // 3])
+    contact_G = float(dg.G[2 * dg.G.size // 3])
+
+    picks.commit_min_dpdg_point(st, min_G)
+    picks.commit_contact_point(st, contact_G)
+    res2 = compute_all(st, td)
+
+    idx = int(np.nanargmin(np.abs(dg.G - min_G)))
+    expected_x, expected_y, expected_slope = interpret.tangent_from_index(
+        dg.G, res.resampled.p, idx, half=4)
+    ln = res2.eff_isip_line_compliance
+    assert ln is not None
+    assert ln.anchor_x == pytest.approx(expected_x)
+    assert ln.anchor_y == pytest.approx(expected_y)
+    assert ln.slope == pytest.approx(expected_slope)
+    assert res2.effective_isip_compliance == pytest.approx(
+        interpret.effective_isip(expected_x, expected_y, expected_slope))
+
+
 def test_commit_contact_point_then_compute_all_derives_eff_isip_line_compliance():
-    """commit_contact_point only sets state.contact_G; the effective-ISIP tangent it feeds is
-    derived by compute_all (model.py), not stored -- see
-    DerivedResults.eff_isip_line_compliance."""
+    """With no min-dP/dG pick, the effective-ISIP tangent falls back to the contact point. Derived
+    by compute_all (model.py), not stored -- see DerivedResults.eff_isip_line_compliance."""
     td, st, res = _res()
     dg = res.diagnostics
     target_G = float(dg.G[dg.G.size // 2])

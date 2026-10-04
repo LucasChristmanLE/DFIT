@@ -124,8 +124,8 @@ class PickState:
     # take the default via _decode's known-field filter, no migration needed.
     isip_at_shutin: bool = False
 
-    # --- step 5: min-dP/dG point (P vs G axis; a diagnostic pick) + compliance contact (feeds
-    # the derived effective-ISIP tangent, see DerivedResults.eff_isip_line) ---
+    # --- step 5: min-dP/dG point (anchors the derived effective-ISIP tangent, see
+    # DerivedResults.eff_isip_line_compliance) + compliance contact (gates that tangent) ---
     min_dpdg_G: Optional[float] = None
     contact_G: Optional[float] = None
     closure_scenario: str = ""  # C-A..C-D
@@ -533,7 +533,8 @@ class DerivedResults:
     n_manual_masked: int = 0
     n_keep_restored: int = 0
 
-    # The effective-ISIP tangent (P vs G): derived from state.contact_G, not a stored pick --
+    # The effective-ISIP tangent (P vs G): anchored at state.min_dpdg_G (contact_G when unset),
+    # gated on state.contact_G, not a stored pick --
     # see compute_all. Not serialized (DerivedResults never is).
     eff_isip_line_compliance: Optional[TangentPick] = field(default=None, repr=False)
 
@@ -1116,14 +1117,16 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         if stale:
             res.warnings.append(f"{', '.join(stale)} pick(s) beyond the tail trim; may be stale")
 
-    # Effective ISIP: tangent to P-vs-G at the contact point, extrapolated to G=0. Derived here
-    # (not a stored pick) -- the anchor is the diagnostics sample nearest state.contact_G, the
-    # slope a local fit (half=4) around it, same math the old draggable "anchor" commit used. The
-    # min-dP/dG point (state.min_dpdg_G) stays a separate diagnostic pick -- it no longer feeds
-    # this line.
+    # Effective ISIP: tangent to P-vs-G at the min-dP/dG point, extrapolated to G=0 (URTeC-2019-123
+    # §2.2 step 5, §3.1.1; ResFrac "starting from the point of minimum dP/dG"). Derived here (not a
+    # stored pick) -- the anchor is the diagnostics sample nearest state.min_dpdg_G, the slope a
+    # local fit (half=4) around it; the stiffness block's p_eff uses the same line. contact_G gates
+    # it (no contact, no compliance ISIP) and is the anchor only when there is no min-dP/dG pick.
+    # Under C-B the min triangle snaps onto the inflection, so the two coincide there.
     if state.contact_G is not None and res.diagnostics is not None and res.resampled is not None:
         dg = res.diagnostics
-        idx = int(np.nanargmin(np.abs(dg.G - state.contact_G)))
+        anchor_G = state.min_dpdg_G if state.min_dpdg_G is not None else state.contact_G
+        idx = int(np.nanargmin(np.abs(dg.G - anchor_G)))
         anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, idx,
                                                                   half=4)
         res.eff_isip_line_compliance = TangentPick(anchor_x=anchor_x, anchor_y=anchor_y, slope=slope)
@@ -1252,8 +1255,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # the upturn where the h-function-derived relative stiffness S rises off its minimum --
     # i.e. where the fracture walls come into contact. p_eff (effective pressure, paper 3.1.1)
     # is the actual resampled pressure at/after the min-dP/dG pick, and the P-vs-G tangent
-    # extrapolation from that pick before it (same construction as eff_isip_line_compliance,
-    # anchored at min_dpdg_G instead of contact_G). Gated on the pore-pressure estimate (the
+    # extrapolation from that pick before it (the same line as eff_isip_line_compliance). Gated on the pore-pressure estimate (the
     # h-function's Pres term) existing -- which transitively covers PC-F, see
     # skipped_steps -- and on >= 4 resampled points, the minimum this O(n^2) construction
     # needs to be meaningful. shmin_stiffness is set INSIDE this gate: a stale pick whose

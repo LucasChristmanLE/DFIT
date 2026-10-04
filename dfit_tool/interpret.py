@@ -327,7 +327,8 @@ def apparent_isip(anchor_t: float, anchor_p: float, slope_psi_per_s: float, t_sh
 
 
 def effective_isip(anchor_G: float, anchor_P: float, slope_P_per_G: float) -> float:
-    """Effective ISIP: the P-vs-G straight line (from the min-dP/dG point) at G = 0."""
+    """Effective ISIP: a P-vs-G straight line through (anchor_G, anchor_P) at G = 0. The compliance
+    line is anchored at the min-dP/dG point, the tangent and variable lines at their closure G."""
     return extrapolate(anchor_G, anchor_P, slope_P_per_G, 0.0)
 
 
