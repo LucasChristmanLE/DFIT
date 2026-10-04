@@ -86,4 +86,4 @@ def test_log_row_writes_minutes(tmp_path):
     td, st, t_first = _state()
     row = _log_row(tmp_path, st, td)
     assert row["flow_regime_time_min"] == pytest.approx(t_first / 60.0)
-    assert store.LOG_COLUMNS[-1] == "flow_regime_time_min"
+    assert store.LOG_COLUMNS[-2] == "flow_regime_time_min"

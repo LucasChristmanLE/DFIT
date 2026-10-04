@@ -96,6 +96,9 @@ LOG_COLUMNS = [
     # Minutes after shut-in to the postclosure flow regime (first log-log window sample, or the
     # PC-E peak); blank under PC-F/PC-X -- tail-appended per the append-only convention.
     "flow_regime_time_min",
+    # Days from shut-in to the effective tail cutoff (end of record when nothing cuts it) --
+    # tail-appended per the append-only convention.
+    "falloff_duration_days",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -623,4 +626,6 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "pce_peak_min": _minutes(res.pce_peak_t),
         "contact_method": res.contact_method,
         "flow_regime_time_min": _minutes(res.flow_regime_time_s),
+        "falloff_duration_days": (res.falloff_duration_s / 86400.0
+                                  if res.falloff_duration_s is not None else None),
     }

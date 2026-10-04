@@ -211,6 +211,9 @@ def _inputs(state: PickState, res: DerivedResults) -> Section:
         ["manual masks", (f"{len(state.mask_intervals)} mask, {len(state.keep_intervals)} keep"
                           if res.bhp_all is not None else DASH)],
         ["tail cut (min after shut-in)", _fmt(_min(cut), "{:.2f}")],
+        ["falloff duration (days)",
+         _fmt(res.falloff_duration_s / 86400.0 if res.falloff_duration_s is not None else None,
+              "{:.2f}")],
     ]
     return Section("Inputs and data", ["Item", "Value"], rows)
 

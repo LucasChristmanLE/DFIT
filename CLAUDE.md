@@ -368,8 +368,12 @@ scenario is never touched; an auto PC-A clears on a miss; any postclosure-combob
 
 Time to flow regime (`DerivedResults.flow_regime_time_s`): the first diagnostics sample inside
 `loglog_window`, or the snapped PC-E peak (`res.pce_peak_t`); None under PC-F/PC-X (table shows
-`n/a`). Shown in the Expanded results Postclosure table; logged as `flow_regime_time_min`, the
-last `LOG_COLUMNS` entry.
+`n/a`). Shown in the Expanded results Postclosure table; logged as `flow_regime_time_min`.
+
+Falloff duration (`DerivedResults.falloff_duration_s`): shut-in to the effective tail cutoff
+(`resolve_tail_cut_dt`), clamped to the last sample, or the end of the record when nothing cuts
+it. Shown in days in the Expanded results "Inputs and data" table; logged as
+`falloff_duration_days`, the last `LOG_COLUMNS` entry.
 
 PC-E and PC-F (`model.NO_TREND_POSTCLOSURE`, gate `model.loglog_window_suppressed`) show no
 log-log window: no shading, no slope (`loglog_slope` is None), no span controller. The pick stays

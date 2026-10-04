@@ -250,7 +250,7 @@ def test_fallback_uses_hump_right_of_min_not_global_hump():
 
 # store -------------------------------------------------------------------------------------
 def test_contact_method_is_last_log_column_and_written(tmp_path):
-    assert store.LOG_COLUMNS[-2] == "contact_method"
+    assert store.LOG_COLUMNS[-3] == "contact_method"
     td = make_testdata()
     state = _ca_state(td)
     state.contact_rule = "inflection"

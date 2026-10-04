@@ -267,7 +267,7 @@ def test_update_panel_visibility_resyncs_tangent_var_on_tangent_entry():
 # dfit_log.csv
 # --------------------------------------------------------------------------------------------------
 def test_log_row_records_both_findings(tmp_path):
-    assert store.LOG_COLUMNS[-10] == "tangent_uninterpretable"
+    assert store.LOG_COLUMNS[-11] == "tangent_uninterpretable"
 
     td, st, res = _with_stiffness_pick()
     st.closure_scenario = "C-X uninterpretable"

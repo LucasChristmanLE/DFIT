@@ -74,6 +74,7 @@ FROZEN = [
     'pce_peak_min',
     'contact_method',
     'flow_regime_time_min',
+    'falloff_duration_days',
 ]
 
 

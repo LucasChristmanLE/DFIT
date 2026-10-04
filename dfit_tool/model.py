@@ -548,6 +548,9 @@ class DerivedResults:
     # Shut-in time to the postclosure flow regime: first sample in the log-log window, or the
     # PC-E peak. None under PC-F/PC-X.
     flow_regime_time_s: Optional[float] = None
+    # Shut-in to the effective tail cutoff (interpret.resolve_tail_cut_dt), clamped to the last
+    # sample; the end of the record when nothing cuts it.
+    falloff_duration_s: Optional[float] = None
 
     # arrays for plotting (not serialized)
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
@@ -965,6 +968,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         # in the same function.
         cutoff = interpret.resolve_tail_cut_dt(state.tail_trim_dt, rs_full.guard_dt,
                                                 state.tail_guard_override)
+        t_end = float(np.nanmax(dt_all[post])) if post.any() else None
+        if t_end is not None:
+            res.falloff_duration_s = t_end if cutoff is None else min(cutoff, t_end)
         # override_extends_past_guard: the resolved cutoff sits past the guard at all -- which
         # resolve_tail_cut_dt only ever does when state.tail_guard_override is set (see its
         # docstring). admitted_new_data: whether res.resampled actually gains any point it
