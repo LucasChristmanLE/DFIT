@@ -1079,11 +1079,24 @@ def h_function(dt_s: np.ndarray, p_eff: np.ndarray, pore_pressure_psi: float,
     n = len(dt_s)
     term0 = (p_eff[0] - pore_pressure_psi) * np.sqrt(dt_s + te_s / 2.0)
     dp = np.diff(p_eff)
-    # outer[i, j] = dt[i] - dt[j], for j in [0, n-2] (dp's own indices); masked to the strictly
-    # lower triangle (j < i) so only the j<i terms of the sum contribute. Masking (as 0/1) BEFORE
-    # the sqrt, rather than after, keeps every sqrt argument >= 0 -- the masked-out (j >= i)
-    # entries would otherwise be negative (dt increasing) and raise/NaN for no reason, since
-    # they're zeroed out immediately after anyway.
+    # outer[i, j] = dt[i] - dt[j], for j in [0, n-2] (dp's own indices). dt is non-decreasing,
+    # so the j < i terms are >= 0 and every j >= i entry is <= 0; clamping at 0 before the sqrt
+    # zeroes exactly the entries the old strictly-lower-triangle mask zeroed (and keeps every
+    # sqrt argument >= 0), with no n x n mask. Done in place: one n x n array, not four.
+    outer = dt_s[:, None] - dt_s[None, :-1]
+    np.maximum(outer, 0.0, out=outer)
+    np.sqrt(outer, out=outer)
+    return term0 + outer @ dp
+
+
+def _h_function_reference(dt_s: np.ndarray, p_eff: np.ndarray, pore_pressure_psi: float,
+                          te_s: float) -> np.ndarray:
+    """Original ``h_function`` with the explicit float lower-triangle mask (fuzz-test reference)."""
+    dt_s = np.asarray(dt_s, dtype=float)
+    p_eff = np.asarray(p_eff, dtype=float)
+    n = len(dt_s)
+    term0 = (p_eff[0] - pore_pressure_psi) * np.sqrt(dt_s + te_s / 2.0)
+    dp = np.diff(p_eff)
     outer = dt_s[:, None] - dt_s[None, :-1]
     mask = np.tril(np.ones((n, max(n - 1, 0))), k=-1)
     sqrt_term = np.sqrt(outer * mask)
