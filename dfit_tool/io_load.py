@@ -970,9 +970,6 @@ class ChannelConfig:
     mw_ppg: Optional[float] = None
     tvd_ft: Optional[float] = None
 
-    def needs_bhp_inputs(self) -> bool:
-        return not self.pressure_is_bhp
-
     def bhp_inputs_ready(self) -> bool:
         return self.pressure_is_bhp or (self.mw_ppg is not None and self.tvd_ft is not None)
 

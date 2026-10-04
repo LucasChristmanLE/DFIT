@@ -335,7 +335,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     ax.set_title("Overview", fontsize=10)
     ax.legend(loc="upper right", fontsize=8)
 
-    # Pinned y-min 0 (CLAUDE.md TODO): the pressure trace never reads below 0 psi, and a
+    # Pinned y-min 0: the pressure trace never reads below 0 psi, and a
     # gauge/BHP-conversion floor should always be visible relative to true zero, even though
     # that squashes a converted-BHP trace (~4800-6200 psi) into the top of the axes -- the
     # y-slider and Reset view are the escape. p_hi/pad use the whole record (kept + grayed),
@@ -1068,7 +1068,7 @@ def _summary_breakdown(ax, cv) -> bool:
         ax.barh(y, net, left=shmin, height=0.5, color=C.NET_PRESSURE,
                 label="net pressure" if y == ys[0] else None)
         ax.text(shmin + net / 2, y, f"{net:.0f}", ha="center", va="center", fontsize=8,
-                color="white")
+                color=C.BAR_LABEL)
         edges = [shmin, shmin + net]
         if cx is not None:
             ax.barh(y, cx, left=shmin + net, height=0.5, color=C.COMPLEXITY,

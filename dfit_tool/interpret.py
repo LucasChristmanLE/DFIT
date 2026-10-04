@@ -65,20 +65,6 @@ CLEAR_RISE_MIN_POINTS = 3  # is_clear_closure: consecutive samples the rise must
 # --------------------------------------------------------------------------------------------------
 # injection window + te
 # --------------------------------------------------------------------------------------------------
-def detect_injection_window(rate: np.ndarray, threshold: float = 0.1) -> tuple[int, int]:
-    """Return (start_idx, shutin_idx) from the rate channel.
-
-    start_idx = first sample above ``threshold``; shutin_idx = one past the last sample above
-    ``threshold`` (the instant pumping stops). Raises if the rate never exceeds the threshold.
-    """
-    active = np.where(np.asarray(rate, dtype=float) > threshold)[0]
-    if active.size == 0:
-        raise ValueError("Rate never exceeds threshold; cannot auto-detect injection window")
-    start_idx = int(active[0])
-    shutin_idx = int(active[-1]) + 1
-    return start_idx, min(shutin_idx, len(rate) - 1)
-
-
 def suggest_injection_window(
     rate: np.ndarray, volume: Optional[np.ndarray] = None, threshold: float = 0.1,
     surface_p: Optional[np.ndarray] = None,

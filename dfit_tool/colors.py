@@ -39,6 +39,7 @@ GUARD_EXCLUDED_ALPHA = 0.2          # the raw tail past the guard boundary, fain
 DROPOUT = "magenta"                 # alarm marker, must not match any series
 NET_PRESSURE = RATE_BLUE
 COMPLEXITY = GOLD
+BAR_LABEL = "white"                 # value text drawn on a net-pressure bar
 
 # UI roles.
 UI_ERROR = LBRT_RED                 # blockers, gate label, warning label
