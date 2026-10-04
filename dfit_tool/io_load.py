@@ -309,6 +309,27 @@ def _dayfirst_hint(s: pd.Series) -> bool:
     return False
 
 
+def _fill_na_exact(dt: pd.Series, s: pd.Series, fmt: str) -> pd.Series:
+    """Fill the NaT rows of ``dt`` from an exact-format parse of ``s`` with ``fmt``, parsing only
+    those rows. An explicit-format ``pd.to_datetime`` is elementwise, so this equals
+    ``dt.combine_first(parse(s, fmt))`` on the whole column (``_fill_na_exact_reference``)."""
+    na_mask = dt.isna().to_numpy()
+    if not na_mask.any():
+        return dt
+    sub = pd.to_datetime(s[na_mask], format=fmt, errors="coerce").astype("datetime64[us]")
+    vals = dt.to_numpy(copy=True)
+    vals[na_mask] = sub.to_numpy()
+    return pd.Series(vals, index=dt.index, name=dt.name)
+
+
+def _fill_na_exact_reference(dt: pd.Series, s: pd.Series, fmt: str) -> pd.Series:
+    """Original whole-column form of ``_fill_na_exact`` (fuzz-test reference)."""
+    if not dt.isna().any():
+        return dt
+    full = pd.to_datetime(s, format=fmt, errors="coerce").astype("datetime64[us]")
+    return dt.combine_first(full)
+
+
 def parse_datetime(series: pd.Series, reject_bare_clock: bool = True) -> pd.Series:
     """Parse a datetime column that may mix formatted strings and Excel serial numbers.
 
@@ -330,29 +351,22 @@ def parse_datetime(series: pd.Series, reject_bare_clock: bool = True) -> pd.Seri
     # fallbacks below can be merged without lossy-cast errors (pandas 3.0 is unit-strict).
     dt = pd.to_datetime(s, format=fmt, errors="coerce").astype("datetime64[us]")
 
-    # Fast path 2: the 12-hour AM/PM layout (see _PRIMARY_DT_FORMAT_AMPM above) -- still an exact,
-    # vectorized strptime match, so a whole-file AM/PM column never has to fall through to the
-    # much slower per-element dateutil inference in Fallback 2 below.
-    still_na = dt.isna()
-    if still_na.any():
-        ampm_fmt = _PRIMARY_DT_FORMAT_AMPM_DAYFIRST if dayfirst else _PRIMARY_DT_FORMAT_AMPM
-        ampm = pd.to_datetime(s, format=ampm_fmt, errors="coerce").astype("datetime64[us]")
-        dt = dt.combine_first(ampm)
+    # Fast paths 2-4 are exact-format strptime parses, i.e. purely elementwise, so each only
+    # needs to run over the rows every earlier path left NaT (see _fill_na_exact); a column
+    # path 1 mostly resolved never pays for three more whole-column parses.
+    # Fast path 2: the 12-hour AM/PM layout (see _PRIMARY_DT_FORMAT_AMPM above), so a whole-file
+    # AM/PM column never has to fall through to the much slower per-element dateutil inference
+    # in Fallback 2 below.
+    dt = _fill_na_exact(
+        dt, s, _PRIMARY_DT_FORMAT_AMPM_DAYFIRST if dayfirst else _PRIMARY_DT_FORMAT_AMPM)
 
     # Fast path 3: the primary layout with fractional seconds (see _PRIMARY_DT_FORMAT_US above,
-    # e.g. a millisecond-stamped gauge export) -- another exact, vectorized strptime match.
-    still_na = dt.isna()
-    if still_na.any():
-        us_fmt = _PRIMARY_DT_FORMAT_US_DAYFIRST if dayfirst else _PRIMARY_DT_FORMAT_US
-        us_dt = pd.to_datetime(s, format=us_fmt, errors="coerce").astype("datetime64[us]")
-        dt = dt.combine_first(us_dt)
+    # e.g. a millisecond-stamped gauge export).
+    dt = _fill_na_exact(
+        dt, s, _PRIMARY_DT_FORMAT_US_DAYFIRST if dayfirst else _PRIMARY_DT_FORMAT_US)
 
     # Fast path 4: Caprito's "03-26-2018_16:44:05"-shaped stamps (see _CAPRITO_DT_FORMAT above).
-    still_na = dt.isna()
-    if still_na.any():
-        caprito_fmt = _CAPRITO_DT_FORMAT_DAYFIRST if dayfirst else _CAPRITO_DT_FORMAT
-        caprito_dt = pd.to_datetime(s, format=caprito_fmt, errors="coerce").astype("datetime64[us]")
-        dt = dt.combine_first(caprito_dt)
+    dt = _fill_na_exact(dt, s, _CAPRITO_DT_FORMAT_DAYFIRST if dayfirst else _CAPRITO_DT_FORMAT)
 
     # Reject anything either exact fast path matched outside the plausible 1990-2100 window too
     # -- see _PLAUSIBLE_DT_MIN/MAX above, which used to guard only the two dateutil-based
