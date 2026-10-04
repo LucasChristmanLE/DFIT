@@ -90,7 +90,7 @@ class PickState:
     # filter -- no migration needed.
     tail_trim_dt: Optional[float] = None
     # Attribution for tail_trim_dt: "low_pressure" when picks.seed_tail_trim auto-applied it
-    # (a sub-100-psi surface-pressure crash), "" when unset, set manually, or cleared --
+    # (a sub-floor surface-pressure crash), "" when unset, set manually, or cleared --
     # commit_tail_trim always resets this to "" on a manual drag/clear. Never "rise_guard": that
     # reason sets no pick at all, since the resampler already excluded that data (see the
     # resample block in compute_all below). Old saves lack this key and take the default via
@@ -1057,7 +1057,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # side="left") -- so this must point at the crash beginning just past the cut,
                 # not claim the cut is where pressure first read low.
                 msg = (f"Tail auto-trimmed at {state.tail_trim_dt/60:.0f} min "
-                       "(surface pressure drops below 100 psi)")
+                       "(surface pressure drops below "
+                       f"{interpret.MIN_SURFACE_PRESSURE_PSI:.0f} psi)")
                 # A guard existing at all in this record means it fired LATER than this
                 # low-pressure cut (suggest_tail_trim_dt's earliest-wins rule -- low_pressure is
                 # never chosen over an earlier rise_guard), so dragging to the right edge to undo
@@ -1113,7 +1114,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         m &= ~res.dropout_mask  # a masked gauge glitch is not a real low-pressure reading
         # The guard-based restriction is skipped when an active override has actually extended
         # the effective cutoff past the guard (reusing the same override_extends_past_guard
-        # computed above -- not re-deriving it here) -- a sub-100-psi crash the override admits
+        # computed above -- not re-deriving it here) -- a sub-floor crash the override admits
         # into the diagnostics (a genuine further decline resumed there) must not be hidden from
         # this scan just because it happens to sit past guard_dt. The tail_trim_dt bound right
         # below still narrows the window by the explicit trim either way.
@@ -1125,8 +1126,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         surf_kept = surf[m]
         finite = np.isfinite(surf_kept)
         if finite.any() and float(np.min(surf_kept[finite])) < interpret.MIN_SURFACE_PRESSURE_PSI:
-            res.warnings.append("Surface pressure fell below 100 psi after shut-in; BHP "
-                                "unreliable there")
+            res.warnings.append("Surface pressure fell below "
+                                f"{interpret.MIN_SURFACE_PRESSURE_PSI:.0f} psi after shut-in; "
+                                "BHP unreliable there")
 
     # Stale-pick warning: gated on diagnostics existing, not on an explicit trim -- the tail guard
     # can also move the effective cutoff earlier than the picks. np.interp silently clamps an

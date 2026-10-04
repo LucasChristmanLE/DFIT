@@ -22,7 +22,7 @@ COMPLIANCE_OFFSET_PSI = 75.0
 LIBERTY_OFFSET_PSI = 200.0  # Liberty-internal method: anchor BHP - 200 psi (see shmin_liberty)
 RAPID_CLOSURE_RANGE_PSI = (100.0, 250.0)  # C-D: Shmin ~= apparent ISIP - (100-250 psi)
 RAPID_CLOSURE_OFFSET_PSI = 175.0          # midpoint of RAPID_CLOSURE_RANGE_PSI
-MIN_SURFACE_PRESSURE_PSI = 100.0  # below this, the hydrostatic BHP conversion is unreliable
+MIN_SURFACE_PRESSURE_PSI = 50.0  # below this, the hydrostatic BHP conversion is unreliable
                                   # (the WHP signal is too small to trust); see model.compute_all
 TAIL_ONSET_LOOKBACK_S = 300.0  # suggest_tail_trim_dt: how far before a sub-floor sample to look
                                # for the start of the collapse (bounds how much real decline is cut)
@@ -581,7 +581,7 @@ def suggest_tail_trim_dt(
         the dt of the first sample after the LAST one with ``p >= p_ref - onset_tol_psi``, so the
         whole multi-sample collapse (not just its sub-floor end) lies past the cut. With no
         window samples, or none within tolerance, the cut stays ``dt[k]``. Skipped entirely when ``p_surface_post`` is None: a caller
-        passes None when the mapped channel is already BHP, where a sub-100-psi test is
+        passes None when the mapped channel is already BHP, where a sub-floor test is
         meaningless (the same gate model.compute_all's own low-pressure warning uses).
 
     A tie goes to "rise_guard" (checked first below). ``(None, "")`` when neither candidate

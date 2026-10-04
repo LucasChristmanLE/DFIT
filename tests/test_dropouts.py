@@ -450,7 +450,7 @@ def test_compute_all_masks_dropout_no_guard_no_low_pressure_warning():
     # that the un-masked bug shape would have produced.
     assert res.resampled_full.guard_dt is None
     assert any("Pressure dropout masked" in w for w in res.warnings)
-    assert not any("Surface pressure fell below 100 psi" in w for w in res.warnings)
+    assert not any("Surface pressure fell below 50 psi" in w for w in res.warnings)
     # Resampling continues well past the dropout -- not truncated to just the pre-dropout decline.
     assert res.resampled_full.dt[-1] > (_DECLINE1_LEN + _DECLINE2_LEN) * 0.5
 

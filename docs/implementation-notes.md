@@ -970,8 +970,8 @@ The trim line is always on: there is no more "Show trim tool" toggle. `picks.see
 *after* the injection window is seeded) parks-and-applies a default cut on the Overview step's
 first visit, via `interpret.suggest_tail_trim_dt(dt_post, p_surface_post, guard_dt)`: the
 earliest of the rise-guard boundary (`res.resampled_full.guard_dt`) or the first post-shut-in
-sample where surface pressure drops below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`; skipped
-when the mapped channel is already BHP, where a sub-100-psi test is meaningless), tie going to
+sample where surface pressure drops below 50 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`; skipped
+when the mapped channel is already BHP, where a sub-50-psi test is meaningless), tie going to
 the rise guard. The low-pressure candidate is the collapse **onset**, not that first sub-floor
 sample k: over the raw samples in `[dt[k] - lookback, dt[k])`, lookback = min(300 s
 (`interpret.TAIL_ONSET_LOOKBACK_S`), 2% of dt[k] (`TAIL_ONSET_LOOKBACK_FRAC`)),
@@ -988,7 +988,7 @@ sub-100 sample (774443.04 s) left the whole 805 -> 268 collapse in, and the 30-p
 contact hump. The onset cut is 774431.04 s (Gmax 126.37 -> 120.07). A rise-guard boundary sets **no pick at all** (`PickState.tail_trim_dt` stays
 `None`) -- the guard boundary is already the effective cutoff by default
 (`interpret.resolve_tail_cut_dt`, below, with no trim in state), so only the rendered line
-position and gray-out need to reflect it, not a stored trim; a sub-100-psi crash
+position and gray-out need to reflect it, not a stored trim; a sub-50-psi crash
 snaps to the last **raw** post-shut-in sample **strictly before** the cut and sets
 `PickState.tail_trim_reason = "low_pressure"` (logged to `tail_trim_reason`, appended after
 `tail_trim_s` in `LOG_COLUMNS`). Raw, not the last full-resample (30-psi kept) sample: on a slow
@@ -1040,7 +1040,7 @@ computing diagnostics (see below) -- so the trim propagates to every downstream 
 ISIP, Shmin, log-log, pore pressure) with no other plumbing. Whenever `tail_trim_dt` is set, `compute_all` also emits an
 explanatory warning (`insert(0)`, same front-of-stack treatment as the guard warning) so an
 auto-applied trim is never silent: for `"low_pressure"`, `"Tail auto-trimmed ... surface pressure
-crashes below 100 psi shortly after this point. Drag the Overview trim line to the right edge to
+crashes below 50 psi shortly after this point. Drag the Overview trim line to the right edge to
 undo."` -- worded to point at the crash beginning just past the cut, not at the cut itself, since
 by construction of the `side="left"` snap the trim dt is a sample where pressure is still ABOVE
 the floor -- with an appended clause, `" Doing so also overrides the tail guard, which fires
@@ -1050,7 +1050,7 @@ fires later than this low-pressure cut, per `suggest_tail_trim_dt`'s earliest-wi
 "drag to the right edge" doesn't read as a plain undo when it also overrides a fired guard; else
 `"Tail trimmed ... (N raw samples excluded)"` for a manual trim (see the override-related
 exception to that message in "Overriding the guard" below). This matters
-because the seeded trim usually *clears* the separate "Surface pressure fell below 100 psi"
+because the seeded trim usually *clears* the separate "Surface pressure fell below 50 psi"
 warning below (its mask is narrowed by `tail_trim_dt`) -- without this line an auto-applied trim
 would otherwise report nothing having changed.
 
@@ -1187,7 +1187,7 @@ which can swing the Axes' own autoscale to extreme psi) -- otherwise `_make_rang
 `valinit` clamping would silently pull the view back up into the autoscaled extent on the first
 slider touch, losing the 0 baseline.
 
-Warnings: WHP below 100 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler
+Warnings: WHP below 50 psi (`interpret.MIN_SURFACE_PRESSURE_PSI`) anywhere the resampler
 actually consumed post-shut-in data -- up to the rise guard's own cutoff
 (`resample.Resampled.guard_dt`), unless an override is actively extending past it (see
 "Overriding the guard" below, which this scan's window also respects), further narrowed by a
@@ -1197,7 +1197,7 @@ minimum and so miss a crash just past it) -- flags BHP as unreliable there (only
 channel is surface pressure). The `guard_dt` bound is itself skipped when an active
 `tail_guard_override` has actually extended the effective cutoff past it (reusing the same
 `cutoff > guard_dt` check `compute_all` already made for the guard-warning logic above, not
-re-derived) -- otherwise a sub-100-psi crash the override genuinely admits into the diagnostics
+re-derived) -- otherwise a sub-50-psi crash the override genuinely admits into the diagnostics
 would never get its own warning just because it sits past `guard_dt`; the `tail_trim_dt` bound
 still narrows the scan by the explicit trim either way. A stale-pick warning (gated on a trim actually being set) covers two
 distinct failure modes: the G-function picks (contact, min-dP/dG, closure) left beyond the trim
@@ -1255,7 +1255,7 @@ thousands of randomized series. Consumers: the resample block
 masks `res.bhp_all` to NaN before calling `resample_pressure_increment` (already handles NaN --
 skipped, resets any rise run -- no resampler change needed) and reuses that same masked array for
 the guard-excluded preview; the low-surface-pressure scan excludes masked samples from its window
-(`m &= ~res.dropout_mask`) so a masked glitch never fires "Surface pressure fell below 100 psi";
+(`m &= ~res.dropout_mask`) so a masked glitch never fires "Surface pressure fell below 50 psi";
 and `picks.seed_tail_trim` masks `p_surface_post` to NaN before calling
 `interpret.suggest_tail_trim_dt` (which already ignores non-finite samples) so a dropout never
 triggers the `"low_pressure"` auto-trim. A firing detector is never silent: `compute_all`

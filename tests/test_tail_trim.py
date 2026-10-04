@@ -203,10 +203,28 @@ def test_apply_closure_scenario_leaves_tail_trim_untouched():
 # --------------------------------------------------------------------------------------------------
 def test_suggest_tail_trim_dt_crash_only():
     dt = np.array([0.0, 10.0, 20.0, 30.0, 40.0])
-    p = np.array([5000.0, 4000.0, 200.0, 50.0, 10.0])
+    p = np.array([5000.0, 4000.0, 200.0, 20.0, 10.0])
     # A crash 30 s after shut-in is a bad test: the elapsed-scaled lookback (2% of 30 s) is too
     # short to back up, so the cut stays at the first sub-floor sample.
     assert suggest_tail_trim_dt(dt, p, None) == (pytest.approx(30.0), "low_pressure")
+
+
+def test_suggest_tail_trim_dt_floor_is_50_psi():
+    """The trim floor is 50 psi (shared with the low-surface-pressure warning): a bleed that
+    bottoms out between 50 and 100 psi is kept; the first sample under 50 psi starts the crash."""
+    assert MIN_SURFACE_PRESSURE_PSI == 50.0
+    dt = np.array([0.0, 10.0, 20.0, 30.0])
+    assert suggest_tail_trim_dt(dt, np.array([5000.0, 4000.0, 80.0, 60.0]), None) == (None, "")
+    p = np.array([5000.0, 4000.0, 80.0, 40.0])
+    assert suggest_tail_trim_dt(dt, p, None) == (pytest.approx(30.0), "low_pressure")
+
+
+def test_low_pressure_trim_message_names_the_50_psi_floor():
+    td, st, res = _seeded_with_crash()
+    st.tail_trim_dt = pre_crash_trim_dt(res)
+    st.tail_trim_reason = "low_pressure"
+    res2 = compute_all(st, td)
+    assert any(w.startswith("Tail auto-trimmed") and "below 50 psi" in w for w in res2.warnings)
 
 
 def test_suggest_tail_trim_dt_guard_only():
@@ -217,19 +235,19 @@ def test_suggest_tail_trim_dt_guard_only():
 
 def test_suggest_tail_trim_dt_both_earliest_wins_low_pressure():
     dt = np.array([0.0, 10.0, 20.0, 30.0])
-    p = np.array([5000.0, 4000.0, 50.0, 40.0])  # crashes at dt=20 (too early to back up)
+    p = np.array([5000.0, 4000.0, 20.0, 10.0])  # crashes at dt=20 (too early to back up)
     assert suggest_tail_trim_dt(dt, p, guard_dt=25.0) == (pytest.approx(20.0), "low_pressure")
 
 
 def test_suggest_tail_trim_dt_both_earliest_wins_rise_guard():
     dt = np.array([0.0, 10.0, 20.0, 30.0])
-    p = np.array([5000.0, 4990.0, 4980.0, 50.0])  # crashes at dt=30, guard fires first
+    p = np.array([5000.0, 4990.0, 4980.0, 20.0])  # crashes at dt=30, guard fires first
     assert suggest_tail_trim_dt(dt, p, guard_dt=15.0) == (pytest.approx(15.0), "rise_guard")
 
 
 def test_suggest_tail_trim_dt_tie_favors_rise_guard():
     dt = np.array([0.0, 10.0, 20.0])
-    p = np.array([5000.0, 4990.0, 50.0])  # crash onset lands at the same dt as the guard
+    p = np.array([5000.0, 4990.0, 20.0])  # crash onset lands at the same dt as the guard
     assert suggest_tail_trim_dt(dt, p, guard_dt=20.0) == (pytest.approx(20.0), "rise_guard")
 
 
@@ -241,7 +259,7 @@ def test_suggest_tail_trim_dt_neither():
 
 def test_suggest_tail_trim_dt_bhp_channel_ignores_crash():
     """A caller passes p_surface_post=None when the mapped channel is already BHP -- a
-    sub-100-psi test is meaningless on a bottomhole gauge, so the crash candidate is skipped
+    sub-50-psi test is meaningless on a bottomhole gauge, so the crash candidate is skipped
     entirely rather than evaluated against a BHP array."""
     dt = np.array([0.0, 10.0, 20.0])
     assert suggest_tail_trim_dt(dt, None, None) == (None, "")
@@ -254,7 +272,7 @@ def test_suggest_tail_trim_dt_nan_pressure_not_treated_as_below_floor():
     rewrite (e.g. via np.nan_to_num or a sign flip) could easily make a NaN register as a
     crash. The real sub-floor sample two steps later must be the one that's found."""
     dt = np.array([0.0, 10.0, 20.0, 30.0])
-    p = np.array([5000.0, np.nan, 4990.0, 50.0])
+    p = np.array([5000.0, np.nan, 4990.0, 20.0])
     assert suggest_tail_trim_dt(dt, p, None) == (pytest.approx(30.0), "low_pressure")
 
 
@@ -274,7 +292,7 @@ def test_seed_tail_trim_non_destructive_over_existing_trim():
 
 
 def test_seed_tail_trim_sets_reason_and_excludes_the_crash():
-    """The strict property: every raw sample the trim keeps is at or above the 100-psi floor. An
+    """The strict property: every raw sample the trim keeps is at or above the 50-psi floor. An
     "at or before the cut" snap would leave the crash's own sample in (it is usually the LAST
     point the resampler kept, since the flat tail after it never drops another 30 psi) -- see
     picks.seed_tail_trim's side="left" comment."""
@@ -302,7 +320,7 @@ def test_seed_tail_trim_bails_for_short_resampled_full(n):
     idx >= len(dt_full) - 1 always holds for these lengths -- there's no room for a trim that
     both keeps >=3 points and excludes anything), regardless of where the crash lands, so all
     four must leave the pick unset rather than raise or clamp into an out-of-range index."""
-    td, st, res = _seeded_with_crash()  # a real sub-100-psi crash exists in the raw record
+    td, st, res = _seeded_with_crash()  # a real sub-50-psi crash exists in the raw record
     dt_full = np.arange(n, dtype=float) * 5.0
     p_full = 5000.0 - 100.0 * np.arange(n, dtype=float)
     res.resampled_full = resample.Resampled(dt=dt_full, p=p_full, n_raw=res.resampled_full.n_raw)
@@ -337,14 +355,14 @@ def test_seed_tail_trim_trims_when_the_crash_is_the_last_kept_point():
 
 def _seeded_with_flat_stretch_then_crash(flat_from: int = 300, crash_at: int = 700):
     """A slow late falloff that never moves 30 psi (held flat from dt=flat_from), then a crash
-    below 100 psi at dt=crash_at. The resampler keeps nothing on the flat stretch, so the only
+    below 50 psi at dt=crash_at. The resampler keeps nothing on the flat stretch, so the only
     kept points near the crash are the one before the stretch and the crash sample itself. The
     AEF 05-61-34-5649B DFIT.DBS shape: 678 -> 661 psi over the last 39 h before the crash."""
     td = make_testdata(n=1200, zero_crash_at=None)
     shutin = 300  # helpers.SHUTIN_IDX; raw samples are 1 s apart, so dt == index - shutin
     p = td.df["PRESSURE"].to_numpy(copy=True)
     p[shutin + flat_from:shutin + crash_at] = p[shutin + flat_from]
-    p[shutin + crash_at:] = 50.0
+    p[shutin + crash_at:] = 20.0
     td.df["PRESSURE"] = p
     st = injection_state(td)
     picks.seed_injection(st, td)
@@ -369,12 +387,12 @@ def test_seed_tail_trim_lands_at_the_raw_sample_before_the_crash_not_a_sparse_ke
 
 
 def test_seed_tail_trim_sets_no_pick_for_guard_only_record():
-    """A guard fire alone (no sub-100-psi crash) must set no pick at all -- the resampler already
+    """A guard fire alone (no sub-50-psi crash) must set no pick at all -- the resampler already
     excluded that data, so only the rendered line position/gray-out need to reflect it
     (plots.render_overview), not a stored trim."""
     td, st, res = _seeded_with_crash(zero_crash_at=None)  # helpers.make_testdata's own default:
                                                            # declines toward ~3500 psi, never below
-                                                           # the 100-psi floor
+                                                           # the 50-psi floor
     rf = res.resampled_full
     res.resampled_full = resample.Resampled(dt=rf.dt, p=rf.p, n_raw=rf.n_raw, guard_dt=55.0)
 
@@ -397,7 +415,7 @@ def test_seed_tail_trim_extension_past_guard_can_flip_a_bail_into_a_trim():
     not a regression."""
     td, st, res = _seeded_with_crash(zero_crash_at=None)  # base record, no real crash
     shutin_idx = st.shutin_idx
-    td.df.loc[shutin_idx + 16, "PRESSURE"] = 50.0  # a below-floor sample at dt=16 s
+    td.df.loc[shutin_idx + 16, "PRESSURE"] = 20.0  # a below-floor sample at dt=16 s
     # Hold the decline within the 30-psi onset tolerance so the cut stays at the crash sample.
     td.df.loc[shutin_idx:shutin_idx + 15, "PRESSURE"] = 5000.0 - np.arange(16.0)
     n_raw = res.resampled_full.n_raw
@@ -430,14 +448,14 @@ def test_seed_tail_trim_bails_when_too_few_points_precede_the_crash():
 
     Clamping (the old behavior) can pick idx=2 even though dt_full[2] sits AT OR PAST the crash
     -- here the crash is at dt=1s and dt_full[2]=10s, so a clamped trim of 10.0 would keep the
-    50-psi crashed sample at dt=1s inside the "trimmed" record, and the "Tail auto-trimmed"
+    20-psi crashed sample at dt=1s inside the "trimmed" record, and the "Tail auto-trimmed"
     message would then name a point where pressure never actually fell below the floor. Setting
     no trim is strictly better than setting a wrong one: the separate low-surface-pressure
     warning (which scans raw samples, not kept ones) still covers this record, so nothing goes
     silent -- it just isn't mislabeled as fixed."""
     td, st, res = _seeded_with_crash(zero_crash_at=None)  # base record, no real crash
     shutin_idx = st.shutin_idx
-    td.df.loc[shutin_idx + 1, "PRESSURE"] = 50.0  # first post-shut-in sample below the floor,
+    td.df.loc[shutin_idx + 1, "PRESSURE"] = 20.0  # first post-shut-in sample below the floor,
                                                    # 1 s after shut-in -- well before dt_full[2]
     res.resampled_full = resample.Resampled(dt=np.array([0.0, 5.0, 10.0, 15.0, 20.0]),
                                             p=np.array([5000.0, 4900.0, 4800.0, 4700.0, 4600.0]),
@@ -704,14 +722,14 @@ def test_suggest_tail_trim_dt_backs_up_to_collapse_onset():
 def test_suggest_tail_trim_dt_slow_decline_then_crash_unchanged():
     dt = np.arange(4000, dtype=float)
     p = 800.0 - 0.5 * dt / 3600.0
-    p[3000:] = 50.0
+    p[3000:] = 20.0
     assert suggest_tail_trim_dt(dt, p, None) == (pytest.approx(3000.0), "low_pressure")
 
 
 def test_suggest_tail_trim_dt_steep_decline_cuts_back_at_most_300_s():
     dt = np.arange(30000, dtype=float)
     p = 25000.0 - dt         # 1 psi/s: > 30 psi across the whole 300-s window
-    p[20000:] = 50.0
+    p[20000:] = 20.0
     cut, reason = suggest_tail_trim_dt(dt, p, None)
     assert reason == "low_pressure"
     assert cut == pytest.approx(19731.0)  # 300 s binds (2% of 20000 s is 400 s)
@@ -722,7 +740,7 @@ def test_suggest_tail_trim_dt_early_crash_lookback_scales_with_elapsed_time():
     early decline before it is not cut."""
     dt = np.arange(2000, dtype=float)
     p = 2500.0 - dt
-    p[1500:] = 50.0
+    p[1500:] = 20.0
     cut, reason = suggest_tail_trim_dt(dt, p, None)
     assert reason == "low_pressure"
     assert cut >= 1500.0 - 0.02 * 1500.0
@@ -732,7 +750,7 @@ def test_suggest_tail_trim_dt_onset_tol_is_a_parameter():
     dt = 100000.0 + np.arange(40, dtype=float)  # long enough that the 300-s lookback binds
     p = np.full(40, 500.0)
     p[20:30] = 500.0 - 5.0 * np.arange(1, 11)   # 495 ... 450
-    p[30:] = 50.0
+    p[30:] = 20.0
     assert suggest_tail_trim_dt(dt, p, None, onset_tol_psi=12.0)[0] == pytest.approx(100022.0)
     assert suggest_tail_trim_dt(dt, p, None, onset_tol_psi=30.0)[0] == pytest.approx(100026.0)
 
@@ -744,7 +762,7 @@ def test_seed_tail_trim_lands_before_the_collapse_onset():
     p[shutin + 300:shutin + 700] = p[shutin + 300]
     p0 = float(p[shutin + 300])
     p[shutin + 700:shutin + 712] = p0 - 20.0 * np.arange(12)
-    p[shutin + 712:] = 50.0
+    p[shutin + 712:] = 20.0
     td.df["PRESSURE"] = p
     st = injection_state(td)
     picks.seed_injection(st, td)

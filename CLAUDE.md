@@ -261,8 +261,8 @@ is drawn (and draggable) on the stiffness step only.
   when pressure stays > 30 psi (`RISE_GUARD_PSI`) above its running minimum for >= 60 s and >= 5
   samples; `guard_dt` is pinned to the first qualifying run.
 - **Tail trim** (`PickState.tail_trim_dt`, shut-in-relative seconds): seeded on Overview's first
-  visit by `picks.seed_tail_trim` (sub-100-psi surface crash → trim strictly before the collapse
-  onset, not the first sub-100 sample: `suggest_tail_trim_dt` backs up over the prior
+  visit by `picks.seed_tail_trim` (sub-50-psi surface crash → trim strictly before the collapse
+  onset, not the first sub-50 sample: `suggest_tail_trim_dt` backs up over the prior
   min(300 s, 2% of elapsed) to the last sample within `state.resample_step` psi of the window max;
   reason `"low_pressure"`; a guard boundary sets no pick). `interpret.resolve_tail_cut_dt(trim,
   guard_dt, override)` is the single place the effective cutoff is resolved, for both masking and

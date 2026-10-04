@@ -231,7 +231,7 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     this step draws no controllers of its own.
 
     The tail-trim line is always on: ``picks.seed_tail_trim`` parks it at the earliest of the
-    rise-guard boundary or a sub-100-psi surface-pressure crash on the step's first visit (or at
+    rise-guard boundary or a sub-50-psi surface-pressure crash on the step's first visit (or at
     the end of the data when neither exists), and it stays draggable from there -- there is no
     more "Show trim tool" toggle. ``interactive`` (default True) means "this is the live canvas,
     not an export": it gates only the draggable vline itself (gid "tail_trim"), so
