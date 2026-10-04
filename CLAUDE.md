@@ -236,7 +236,7 @@ Per-test deliverables (all computed in `compute_all`):
 | Value | Construction |
 |---|---|
 | Apparent ISIP | early BHP-decline tangent extrapolated to shut-in (manual pick on isip step), or, with `state.isip_at_shutin` ("Use shut-in pressure", for tests with no water hammer), `bhp_all[shutin_idx]`; blank with a warning when that sample is NaN or dropout-masked. The tangent pick is kept in state. Method logged as `apparent_isip_method` (`tangent`/`shutin`) |
-| Effective ISIP | P-vs-G straight line extrapolated to G = 0. Compliance: anchored at the min-dP/dG pick (contact if unset), gated on `contact_G` (URTeC §3.1.1); the stiffness `p_eff` uses the same line |
+| Effective ISIP | P-vs-G straight line extrapolated to G = 0. Compliance anchor (`model.compliance_isip_anchor_G`): the min-dP/dG pick under C-A (URTeC §3.1.1; same line as the stiffness `p_eff`), else the contact (C-B inflection, or blank scenario where the triangle is hidden); none without `contact_G` |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
 | Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point: last sample within 5% of the line. Rotating the line moves the closure pick to the last sample (G >= 1) within 5% of the rotated line (`interpret.closure_departure_index`); the marker stays draggable and never moves the line. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
 | Shmin variable | BHP at the G-time midpoint of contact and closure picks. Blank when either is unavailable (C-C/C-D/C-X, or the tangent checkbox) |
@@ -397,6 +397,9 @@ Accepted, not bugs to fix opportunistically. Full list with measured files in
   ~3,850 h).
 - Bare `Time` headers are assumed minutes; a seconds file reads 60x too long (warning only).
 - Very large workbooks (85–97 MB) load slowly on the Tk main thread.
+- `store` caches `sniff_xlsx_data` per session by (path, size, mtime). A transient failure (a
+  OneDrive placeholder that fails to hydrate, a locked file) is cached as "not data" until the
+  file changes or the app restarts.
 - The ISIP tangent fit and anchor snapping ignore `dropout_mask`; dropouts during injection are
   not masked.
 - Only the first tail-guard excursion is reported; a second one is resampled without a warning.

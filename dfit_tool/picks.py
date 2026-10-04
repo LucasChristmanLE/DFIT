@@ -1208,13 +1208,14 @@ def commit_closure_line(state: PickState, res: DerivedResults,
 
 def commit_min_dpdg_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the min-dP/dG pick (G-function step, dP/dG twin axis).
-    The effective-ISIP tangent is anchored here, derived in model.compute_all, not stored."""
+    Under C-A it anchors the effective-ISIP tangent (model.compliance_isip_anchor_G)."""
     state.min_dpdg_G = float(x)
 
 
 def commit_contact_point(state: PickState, x: float) -> None:
     """DraggablePointController commit for the compliance-method contact pick (G-function step).
-    It gates the effective-ISIP tangent (see model.compute_all) but does not position it."""
+    It gates the effective-ISIP tangent and anchors it except under C-A
+    (model.compliance_isip_anchor_G)."""
     state.contact_G = float(x)
 
 
@@ -1402,8 +1403,8 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
     return None
 
 
-_GFUNCTION_HINT_DEFAULT = ("Drag the min-dP/dG marker (the effective-ISIP tangent follows it) or "
-                           "the contact marker.")
+_GFUNCTION_HINT_DEFAULT = ("Drag the contact marker (the effective-ISIP tangent follows it) or "
+                           "the min-dP/dG marker.")
 
 
 _MIN_DPDG_WINDOW_HINT = " Shift+drag a window on the plot to re-find it there."
@@ -1593,6 +1594,18 @@ def seed_injection(state: PickState, td: TestData) -> None:
         pass
 
 
+def reseed_out_of_range_injection(state: PickState, td: TestData) -> bool:
+    """Re-seed injection picks that fall outside [0, td.n) -- a save from a different or longer
+    file. Called when a loaded state meets its data (ui._apply_loaded_state), since
+    seed_injection otherwise runs only on the step's first visit. True if it re-seeded. Unset
+    picks stay unset (first-visit seeding handles them)."""
+    if not any(i is not None and not (0 <= i < td.n) for i in (state.start_idx, state.shutin_idx)):
+        return False
+    state.start_idx = state.shutin_idx = None
+    seed_injection(state, td)
+    return True
+
+
 def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
     """Apparent-ISIP tangent: anchor ~1 min after shut-in, slope from a local fit of the early
     decline."""
@@ -1607,9 +1620,8 @@ def seed_isip(state: PickState, td: TestData, res: DerivedResults) -> None:
 
 
 def seed_gfunction(state: PickState, res: DerivedResults) -> Optional[str]:
-    """The min-dP/dG point (anchors the derived effective-ISIP tangent, see
-    model.compute_all/DerivedResults.eff_isip_line_compliance), plus the compliance contact pick
-    at the dP/dG hump.
+    """The min-dP/dG point plus the compliance contact pick at the dP/dG hump -- together they
+    position the derived effective-ISIP tangent, see model.compliance_isip_anchor_G.
 
     When the min is freshly seeded, the scenario is blank, and interpret.is_clear_closure holds,
     also sets "C-A clear" and applies its +10% contact rule (apply_closure_scenario), returning

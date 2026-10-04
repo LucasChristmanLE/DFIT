@@ -267,3 +267,74 @@ def test_skip_test_save_failure_does_not_advance(tmp_path, monkeypatch):
     monkeypatch.setattr(ui.store, "save_picks_for", boom)
     stub._skip_test()
     assert errors and stub._load_test_calls == []
+
+
+# ---- review follow-ups -------------------------------------------------------------------------
+def test_reseed_out_of_range_injection_only_acts_when_out_of_range():
+    td = make_testdata()
+    st = injection_state(td)
+    before = (st.start_idx, st.shutin_idx)
+    assert picks.reseed_out_of_range_injection(st, td) is False
+    assert (st.start_idx, st.shutin_idx) == before
+    st.start_idx = -5
+    assert picks.reseed_out_of_range_injection(st, td) is True
+    assert all(i is not None and 0 <= i < td.n for i in (st.start_idx, st.shutin_idx))
+
+
+def test_reseed_leaves_unset_injection_unset():
+    """Not a general seeder: an unvisited injection step keeps seeding on first visit."""
+    td = make_testdata()
+    st = injection_state(td)
+    st.start_idx = st.shutin_idx = None
+    assert picks.reseed_out_of_range_injection(st, td) is False
+    assert st.start_idx is None and st.shutin_idx is None
+
+
+def test_load_picks_os_error_raises_and_keeps_file(tmp_path, monkeypatch):
+    """A transient lock (OneDrive/AV) is not corruption: never quarantine, never return None
+    (which would let the next save overwrite the picks)."""
+    e = _entry(tmp_path)
+    store.save_picks_for(e, PickState(start_idx=3))
+
+    def locked(path):
+        raise PermissionError("locked")
+    monkeypatch.setattr(PickState, "from_json", staticmethod(locked))
+    with pytest.raises(store.PicksReadError):
+        store.load_picks_for(e)
+    assert os.path.exists(e.picks_path)
+    assert not os.path.exists(e.picks_path + ".corrupt")
+
+
+def _load_test_stub(loaded):
+    return types.SimpleNamespace(
+        state=PickState(), root=types.SimpleNamespace(title=lambda t: None),
+        _load_common=lambda path, well_hint=None: loaded.append(path) or True,
+        _apply_loaded_state=lambda s: None,
+        _refresh_queue_row=lambda e: None, _update_folder_controls=lambda: None)
+
+
+def test_load_test_picks_read_error_shows_error_and_does_not_load(tmp_path, monkeypatch):
+    e = _entry(tmp_path)
+    errors, loaded = [], []
+    monkeypatch.setattr(ui.messagebox, "showerror", lambda *a, **k: errors.append(a))
+
+    def boom(entry):
+        raise store.PicksReadError(entry.picks_path, PermissionError("locked"))
+    monkeypatch.setattr(store, "load_picks_for", boom)
+    DfitApp._load_test(_load_test_stub(loaded), e)
+    assert errors and loaded == []
+
+
+def test_load_test_backup_failure_does_not_start_fresh(tmp_path, monkeypatch):
+    """If the .bak copy fails, starting fresh would let the next save overwrite the only copy."""
+    e = _entry(tmp_path)
+    store.save_picks_for(e, PickState(active_source="xlsx", start_idx=3))
+    errors, loaded = [], []
+    monkeypatch.setattr(ui.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    monkeypatch.setattr(ui.messagebox, "showwarning", lambda *a, **k: pytest.fail("warned"))
+
+    def nocopy(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(ui.shutil, "copy2", nocopy)
+    DfitApp._load_test(_load_test_stub(loaded), e)
+    assert errors and loaded == []

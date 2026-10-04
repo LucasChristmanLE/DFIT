@@ -363,16 +363,29 @@ def _quarantine_picks(path: str) -> None:
         pass
 
 
+class PicksReadError(Exception):
+    """A picks file exists but could not be read (an OS-level error such as a OneDrive or
+    antivirus lock) -- not corruption, so it is neither quarantined nor treated as absent."""
+
+    def __init__(self, path: str, cause: BaseException):
+        super().__init__(f"Could not read {path}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
 def load_picks_for(entry: TestEntry) -> Optional[PickState]:
     """The saved PickState for `entry`, or None if there is no picks file, or it exists but is
     unreadable/corrupt -- a broken JSON must never kill a folder scan. An existing file that
     fails to decode is renamed aside (`<name>.corrupt`) rather than left to be overwritten by
-    the next navigation save."""
+    the next navigation save. An OS-level read error raises PicksReadError instead: returning
+    None would let the next save overwrite picks that are only locked."""
     path = entry.picks_path
     if not os.path.exists(path):
         return None
     try:
         return PickState.from_json(path)
+    except OSError as e:
+        raise PicksReadError(path, e) from e
     except Exception:
         _quarantine_picks(path)
         return None

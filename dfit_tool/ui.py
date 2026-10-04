@@ -840,16 +840,33 @@ class DfitApp:
         probed_picks = None
         missing_source = None
         if source_was_none:
-            probed_picks = store.load_picks_for(entry)
+            try:
+                probed_picks = store.load_picks_for(entry)
+            except store.PicksReadError as e:
+                messagebox.showerror("Picks unreadable", f"{e}\n\nThe test was not opened.")
+                return
             source, missing_source = _plan_source_load(entry, probed_picks)
             if missing_source is not None:
                 # Index-based picks from a source that is gone must not be applied to another
-                # file. Keep a copy of the picks file and start fresh (no resume).
+                # file. Keep a copy of the picks file and start fresh (no resume). Without the
+                # copy, the next save would overwrite the only record, so don't open the test.
                 try:
                     shutil.copy2(entry.picks_path, f"{entry.picks_path}.{missing_source}.bak")
-                except OSError:
-                    pass
+                except OSError as e:
+                    messagebox.showerror(
+                        "Saved picks",
+                        f"Picks were made on {missing_source.upper()}, which is missing, and "
+                        f"the picks file could not be backed up ({e}). The test was not opened.")
+                    return
                 probed_picks = None
+        elif not force_reset:
+            # Explicit source: still read the picks before _load_common replaces the workspace,
+            # so a read error leaves the current test (and current_entry) untouched.
+            try:
+                probed_picks = store.load_picks_for(entry)
+            except store.PicksReadError as e:
+                messagebox.showerror("Picks unreadable", f"{e}\n\nThe test was not opened.")
+                return
         path = entry.data_path(source)
         if not self._load_common(path, well_hint=entry.test_id):
             return
@@ -860,9 +877,7 @@ class DfitApp:
                 "starting fresh (backup kept).")
         saved = None
         if not force_reset:
-            # Reuse the source-resolution probe above rather than reading the same picks JSON
-            # off disk twice -- only re-read when `source` was passed explicitly (no probe ran).
-            saved = probed_picks if source_was_none else store.load_picks_for(entry)
+            saved = probed_picks  # read above, before _load_common
             if saved is not None:
                 self._apply_loaded_state(saved)
         self.state.active_source = source.lower()
@@ -2553,6 +2568,10 @@ class DfitApp:
         single-file _load_picks (state fresh off a file dialog) and folder-mode _load_test
         (state fresh off store.load_picks_for)."""
         self.state = state
+        if getattr(self, "td", None) is not None:
+            # Injection picks from a different/longer file: re-seed now, since seed_injection
+            # otherwise runs only on the step's first visit and a stale index crashes the plots.
+            picks.reseed_out_of_range_injection(self.state, self.td)
         self._views = {k: None for k, _ in STEPS}
         if not self.state.step_status:
             # An old save has real picks but no breadcrumb history -- infer it so the

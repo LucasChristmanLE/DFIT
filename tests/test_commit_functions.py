@@ -104,7 +104,7 @@ def test_commit_contact_point_sets_contact_g():
     assert state.contact_G == pytest.approx(12.5)
 
 
-def test_eff_isip_line_anchors_at_min_dpdg_when_both_picks_set():
+def test_eff_isip_line_anchors_at_min_dpdg_under_c_a():
     """URTeC-2019-123 §2.2 step 5 / §3.1.1 and the ResFrac guide: the P-vs-G line starts at the
     min-dP/dG point, not the contact. contact_G gates the line (no contact, no compliance ISIP)
     but does not position it."""
@@ -115,6 +115,7 @@ def test_eff_isip_line_anchors_at_min_dpdg_when_both_picks_set():
 
     picks.commit_min_dpdg_point(st, min_G)
     picks.commit_contact_point(st, contact_G)
+    st.closure_scenario = "C-A clear"  # the triangle anchors only under C-A
     res2 = compute_all(st, td)
 
     idx = int(np.nanargmin(np.abs(dg.G - min_G)))

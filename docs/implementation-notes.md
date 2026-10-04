@@ -705,7 +705,10 @@ Per-test deliverables:
   anchored at the min-dP/dG pick (URTeC-2019-123 §2.2 step 5, §3.1.1; ResFrac "starting from the
   point of minimum dP/dG"), falling back to the contact when no min pick exists; `contact_G`
   still gates it. 7cd2b98 (2026-07-22) had moved the anchor to the contact, which read ~30 psi
-  high under C-A on a synthetic case; reverted 2026-10-03 to match the references.
+  high under C-A on a synthetic case; reverted 2026-10-03 to match the references. The min anchor
+  applies only under C-A (`model.compliance_isip_anchor_G`): under C-B the contact is the
+  inflection (ResFrac C-B) and stays independently draggable, and with a blank scenario the
+  triangle is not drawn, so a hidden pick must not position a reported number.
 - **Shmin, compliance** — contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`).
 - **Shmin, tangent** — BHP at the G·dP/dG through-origin departure (closure) point. The
   through-origin line's seed (`interpret.suggest_closure_tangent`, `picks.seed_tangent`)

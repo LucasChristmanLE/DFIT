@@ -159,3 +159,40 @@ def test_valid_injection_window_no_inverted_warning():
     td = make_testdata()
     res = compute_all(injection_state(td), td)
     assert not any("at or after shut-in" in w for w in res.warnings)
+
+
+# ---- review follow-ups: effective-ISIP anchor per scenario, stale-pick gate ---------------------
+def _two_pick_state(scenario):
+    td = make_testdata()
+    st = injection_state(td)
+    dg = compute_all(st, td).diagnostics
+    st.min_dpdg_G = float(dg.G[dg.G.size // 3])
+    st.contact_G = float(dg.G[2 * dg.G.size // 3])
+    st.closure_scenario = scenario
+    return td, st, dg
+
+
+@pytest.mark.parametrize("scenario, anchor", [("C-A clear", "min"), ("C-B adequate", "contact"),
+                                              ("", "contact")])
+def test_compliance_isip_anchor_by_scenario(scenario, anchor):
+    """C-A: min dP/dG (URTeC 3.1.1; the triangle is drawn and draggable). C-B: the contact, which
+    is the inflection (ResFrac C-B) and stays independently draggable. Blank: the triangle is
+    hidden, so the visible contact anchors the line."""
+    td, st, dg = _two_pick_state(scenario)
+    res = compute_all(st, td)
+    g = st.min_dpdg_G if anchor == "min" else st.contact_G
+    idx = int(np.nanargmin(np.abs(dg.G - g)))
+    assert res.eff_isip_line_compliance.anchor_x == pytest.approx(float(dg.G[idx]))
+
+
+def test_pp_window_past_edge_without_any_cut_is_not_stale():
+    """A drag that ends past the last sample on an untrimmed, unguarded record is not stale."""
+    td = make_testdata()
+    st = injection_state(td)
+    res = compute_all(st, td)
+    assert res.resampled_full.guard_dt is None
+    t = res.diagnostics.t
+    st.pp_window = (float(t[len(t) // 2]), float(t[-1]) * 1.05)
+    st.postclosure_scenario = "PC-A linear"
+    res = compute_all(st, td)
+    assert not any("beyond the tail trim" in w for w in res.warnings)
