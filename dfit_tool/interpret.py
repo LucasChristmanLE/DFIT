@@ -995,9 +995,10 @@ def loglog_window_slope(t: np.ndarray, y: np.ndarray, lo: float, hi: float) -> f
     return m
 
 
-def suggest_loglog_window(t: np.ndarray,
-                          y: np.ndarray) -> Optional[tuple[int, int, bool]]:
-    """Suggested log-log window (i0, i1, half_slope) on t*dP/dt ``y``; i0/i1 are inclusive
+def _suggest_loglog_window_reference(t: np.ndarray,
+                                     y: np.ndarray) -> Optional[tuple[int, int, bool]]:
+    """Original all-pairs (m x m arrays, O(m^2) memory) form of ``suggest_loglog_window``,
+    kept as the fuzz-test reference. Suggested window (i0, i1, half_slope); i0/i1 are inclusive
     indices into ``t``.
 
     The window always starts after the postclosure peak (``_loglog_peak``: the latest
@@ -1055,6 +1056,97 @@ def suggest_loglog_window(t: np.ndarray,
         ia, ib = np.unravel_index(int(np.argmin(score)), score.shape)
     off = peak + 1
     return int(valid[off + ia]), int(valid[off + ib]), bool(good.any())
+
+
+def suggest_loglog_window(t: np.ndarray,
+                          y: np.ndarray) -> Optional[tuple[int, int, bool]]:
+    """Suggested log-log window (i0, i1, half_slope) on t*dP/dt ``y``; i0/i1 are inclusive
+    indices into ``t``.
+
+    The window always starts after the postclosure peak (``_loglog_peak``: the latest
+    prominent local maximum, so an early-time spike or a pre-closure hump is skipped). Among
+    post-peak windows of >= LOGLOG_MIN_POINTS samples, the widest (in decades) that is straight
+    (LOGLOG_MAX_RMS_DECADES), spans >= LOGLOG_MIN_SPAN_DECADES, and has a slope within
+    LOGLOG_HALF_SLOPE_TOL of -1/2 wins, with half_slope True. Without one, the straightest
+    section at any slope, with half_slope False: the widest straight window over the span
+    floor, else the lowest-RMS window. None when no such peak exists (derivative still
+    rising)."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.flatnonzero(np.isfinite(t) & np.isfinite(y) & (t > 0) & (y > 0))
+    if valid.size < LOGLOG_MIN_POINTS + 1:
+        return None
+    x = np.log10(t[valid])
+    v = np.log10(y[valid])
+    peak = _loglog_peak(v)
+    if peak is None:
+        return None
+    xs, vs = x[peak + 1:], v[peak + 1:]
+    m = xs.size
+
+    # Closed-form LS over every (a, b) window via prefix sums. Loops over the start index and
+    # vectorizes over the end index, so memory is O(m) instead of m x m. The per-window
+    # arithmetic is identical elementwise to the all-pairs form (_suggest_loglog_window_reference),
+    # and ties keep the first window in (a, b) row-major order via strict-improvement updates.
+    def _cum(z):
+        return np.concatenate([[0.0], np.cumsum(z)])
+    cx, cv, cxx, cxv, cvv = _cum(xs), _cum(vs), _cum(xs * xs), _cum(xs * vs), _cum(vs * vs)
+    # Per tier: (best score, a, b). good/straight maximize span; the two fallbacks minimize rms.
+    best_good = best_straight = (-np.inf, -1, -1)
+    best_pool = best_ok = (np.inf, -1, -1)
+    any_good = any_straight = any_pool = any_ok = False
+    for a in range(m):
+        b = np.arange(a + LOGLOG_MIN_POINTS - 1, m)
+        if b.size == 0:
+            break
+        n = (b - a + 1).astype(float)
+        sx = cx[b + 1] - cx[a]
+        sv = cv[b + 1] - cv[a]
+        sxx_c = cxx[b + 1] - cxx[a] - sx * sx / n
+        sxv_c = cxv[b + 1] - cxv[a] - sx * sv / n
+        svv_c = cvv[b + 1] - cvv[a] - sv * sv / n
+        ok = sxx_c > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            slope = np.where(ok, sxv_c / np.where(sxx_c > 0, sxx_c, 1.0), np.nan)
+            rms = np.sqrt(np.maximum(svv_c - slope * sxv_c, 0.0) / n)
+        span = xs[b] - xs[a]
+        miss = np.abs(slope + 0.5)
+        straight = ok & (rms <= LOGLOG_MAX_RMS_DECADES) & (span >= LOGLOG_MIN_SPAN_DECADES)
+        good = straight & (miss <= LOGLOG_HALF_SLOPE_TOL)
+        pool = ok & (span >= LOGLOG_MIN_SPAN_DECADES)
+        any_ok |= bool(ok.any())
+        any_pool |= bool(pool.any())
+        for flag_mask, kind in ((good, "good"), (straight, "straight")):
+            if flag_mask.any():
+                j = int(np.argmax(np.where(flag_mask, span, -np.inf)))
+                if kind == "good":
+                    any_good = True
+                    if span[j] > best_good[0]:
+                        best_good = (span[j], a, int(b[j]))
+                else:
+                    any_straight = True
+                    if span[j] > best_straight[0]:
+                        best_straight = (span[j], a, int(b[j]))
+        for mask, kind in ((pool, "pool"), (ok, "ok")):
+            if mask.any():
+                j = int(np.argmin(np.where(mask, rms, np.inf)))
+                if kind == "pool":
+                    if rms[j] < best_pool[0]:
+                        best_pool = (rms[j], a, int(b[j]))
+                elif rms[j] < best_ok[0]:
+                    best_ok = (rms[j], a, int(b[j]))
+    if any_good:
+        _, ia, ib = best_good
+    elif any_straight:
+        _, ia, ib = best_straight
+    else:
+        # Nothing is straight enough: the lowest-RMS window, over the span floor when any
+        # window reaches it.
+        _, ia, ib = best_pool if any_pool else best_ok
+        if ia < 0:
+            return None
+    off = peak + 1
+    return int(valid[off + ia]), int(valid[off + ib]), any_good
 
 
 # --------------------------------------------------------------------------------------------------
