@@ -145,7 +145,7 @@ def _closure(state: PickState, res: DerivedResults) -> Section:
 def _postclosure(state: PickState, res: DerivedResults) -> Section:
     rows = [_gate(state, "loglog", ["scenario", state.postclosure_scenario or DASH])]
     if "porepressure" in skipped_steps(state):
-        rows.append(["pore pressure fit", "skipped (PC-F)"])
+        rows.append(["pore pressure fit", f"skipped ({state.postclosure_scenario[:4]})"])
         return Section("Postclosure", ["Item", "Value"], rows)
     axis = {"tm12": "t^(-1/2)", "tm1": "t^(-1)"}.get(state.pp_axis, state.pp_axis)
     if state.pp_window is not None:

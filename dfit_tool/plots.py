@@ -26,7 +26,7 @@ from matplotlib.ticker import MaxNLocator
 from . import colors as C
 from . import interpret, summary
 from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
-                    skipped_steps)
+                    loglog_window_suppressed, skipped_steps)
 from .io_load import TestData
 
 _MAX_POINTS = 6000  # display decimation cap for the raw (dense) traces
@@ -715,7 +715,10 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
     ax.set_ylabel("dp, t*dP/dt (psi)")
     ax.grid(True, which="both", alpha=0.3)
 
-    if state.loglog_window is not None:
+    if loglog_window_suppressed(state):
+        # PC-E/PC-F: no straight trend, so no window or slope (the pick stays in state).
+        ax.set_title(f"Log-Log   ({state.postclosure_scenario})", fontsize=10)
+    elif state.loglog_window is not None:
         lo, hi = state.loglog_window
         ax.axvspan(lo, hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
         s = "?" if res.loglog_slope is None else f"{res.loglog_slope:.2f}"

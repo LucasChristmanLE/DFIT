@@ -94,7 +94,7 @@ _CLOSURE_QUALITY_BY_PREFIX = {
 }
 _POSTCLOSURE_TREND_BY_PREFIX = {
     "PC-A": "linear", "PC-B": "false-radial", "PC-C": "mixed", "PC-D": "mixed",
-    "PC-E": "none", "PC-F": "none",
+    "PC-E": "none", "PC-F": "none", "PC-X": "uninterpretable",
 }
 
 
@@ -496,7 +496,7 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "postclosure_trend": _POSTCLOSURE_TREND_BY_PREFIX.get(postclosure_scenario[:4], ""),
         "pore_pressure": res.pore_pressure,
         "pp_axis": state.pp_axis,
-        "pp_confidence": "low" if postclosure_scenario.startswith(("PC-E", "PC-F")) else "",
+        "pp_confidence": "low" if postclosure_scenario.startswith(("PC-E", "PC-F", "PC-X")) else "",
         "net_pressure_compliance": res.net_pressure_compliance,
         "net_pressure_tangent": res.net_pressure_tangent,
         "delta_closure": res.delta_closure,
@@ -524,7 +524,7 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "pore_pressure_gradient": res.pore_pressure_gradient,
         "Shmin_stiffness": res.shmin_stiffness,
         "Shmin_stiffness_gradient": res.shmin_stiffness_gradient,
-        # Blank, not the stored flag, once PC-F skips the stiffness step: an analyst can check
+        # Blank, not the stored flag, once PC-F (or PC-X) skips the stiffness step: an analyst can check
         # "No slope change apparent" on the stiffness step, go Back, and switch to PC-F, which
         # makes the step unreachable (so the checkbox can never be unchecked again). The flag
         # itself is left alone in the picks JSON on purpose -- switching back off PC-F revives

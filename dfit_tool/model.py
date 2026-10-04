@@ -34,6 +34,17 @@ def closure_uninterpretable(state: "PickState") -> bool:
     return state.closure_scenario.startswith("C-X")
 
 
+# Postclosure scenarios with no straight late-time trend: the log-log window is neither drawn
+# nor fitted (the pick stays in state). PC-X ("uninterpretable") keeps its window and slope: a
+# test can show a clear slope that is far from both -1/2 and -1.
+NO_TREND_POSTCLOSURE = ("PC-E", "PC-F")
+
+
+def loglog_window_suppressed(state: "PickState") -> bool:
+    """PC-E/PC-F: no log-log window is shown or fitted."""
+    return state.postclosure_scenario.startswith(NO_TREND_POSTCLOSURE)
+
+
 # --------------------------------------------------------------------------------------------------
 # pick state (serializable)
 # --------------------------------------------------------------------------------------------------
@@ -369,9 +380,10 @@ def first_not_visited_step(step_status: dict[str, str]) -> str:
 def skipped_steps(state: PickState) -> frozenset[str]:
     """Steps this test's interpretation leaves out end to end. PC-F (no peak): the derivative
     never peaks, so there is no postclosure line (porepressure) and no pore-pressure estimate
-    for the h-function's Pres term (stiffness). The one place the PC-F skip rule lives: a
-    skipped step is not computed, not navigable, not exported, and counts as accounted for."""
-    if state.postclosure_scenario.startswith("PC-F"):
+    for the h-function's Pres term (stiffness). PC-X (uninterpretable) drops the same two
+    steps. The one place the skip rule lives: a skipped step is not computed, not navigable,
+    not exported, and counts as accounted for."""
+    if state.postclosure_scenario.startswith(("PC-F", "PC-X")):
         return frozenset({"porepressure", "stiffness"})
     return frozenset()
 
@@ -384,7 +396,7 @@ def last_step(state: PickState) -> str:
 
 def resolve_step(state: PickState, step: str) -> str:
     """``step`` itself when it is part of this test's workflow, else the nearest earlier step
-    that is (PC-F sends porepressure and stiffness to loglog)."""
+    that is (PC-F/PC-X send porepressure and stiffness to loglog)."""
     skipped = skipped_steps(state)
     i = step_index(step)
     while STEP_KEYS[i] in skipped and i > 0:
@@ -1179,13 +1191,15 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if res.shmin_compliance is not None and res.shmin_tangent is not None:
         res.delta_closure = res.shmin_compliance - res.shmin_tangent
 
-    if state.loglog_window is not None and res.diagnostics is not None:
+    if (state.loglog_window is not None and res.diagnostics is not None
+            and not loglog_window_suppressed(state)):
         s = interpret.loglog_window_slope(res.diagnostics.t, res.diagnostics.tdpdt,
                                           *state.loglog_window)
         res.loglog_slope = s if np.isfinite(s) else None
 
     # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
-    # postclosure line exists -- suppress the fit even if a stale pp_window pick is present.
+    # postclosure line exists (PC-X: none can be read) -- suppress the fit even if a stale
+    # pp_window pick is present.
     if (state.pp_window and res.diagnostics is not None
             and "porepressure" not in skipped_steps(state)):
         dg = res.diagnostics

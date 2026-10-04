@@ -1472,6 +1472,7 @@ Postclosure scenarios drive the pore-pressure axis:
 | PC-D genuine linear to genuine radial | −1/2 then −1 | either |
 | PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
 | PC-F no peak | derivative still rising | pore-pressure step skipped |
+| PC-X uninterpretable | can't be read (bad data) | pore-pressure step skipped |
 
 This linkage is implemented: `picks.suggest_pp_axis` maps a postclosure scenario string to
 `pp_axis` ("tm12"/"tm1") by its `scenario[:4]` prefix, so the mapping is label-independent, and
@@ -1514,8 +1515,22 @@ only. While the flag holds, the
 log-log hint says the scenario was auto-set (the plot title does not); the flag is logged in the
 `postclosure_auto` tail column.
 
-**PC-F skip.** `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}` whenever
-`postclosure_scenario` starts with `"PC-F"`, else an empty set. It is the only place the rule
+**No window under PC-E/PC-F.** Both scenarios say there is no straight postclosure trend, so a
+shaded window and a fitted slope would misread as one. `model.loglog_window_suppressed(state)`
+(prefixes in `model.NO_TREND_POSTCLOSURE`) is the gate: `compute_all` leaves `loglog_slope`
+`None`, `plots.render_loglog` draws no `axvspan` and titles the plot with the scenario only, and
+`ui._attach_controllers` wires no `SpanController` (a drag would set a pick nobody sees). The
+`loglog_window` pick stays in state, so switching back to PC-A..PC-D restores it. PC-X keeps the
+window and slope on purpose: a test can show a clear slope far from both −1/2 and −1, and the
+analyst should see it.
+
+**PC-X uninterpretable.** The postclosure mirror of C-X: the analyst's explicit "this log-log
+can't be read". It skips porepressure and stiffness exactly like PC-F (below), logs
+`postclosure_trend = "uninterpretable"` and `pp_confidence = "low"`, and leaves the axis to the
+analyst (absent from `picks.suggest_pp_axis`). No guide figure (C-X has none either).
+
+**PC-F/PC-X skip.** `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}` whenever
+`postclosure_scenario` starts with `"PC-F"` or `"PC-X"`, else an empty set. It is the only place the rule
 lives. Porepressure is skipped because the derivative never peaks, so no postclosure line
 exists; `compute_all` leaves `pore_pressure` `None` even if a stale `pp_window` pick exists.
 Stiffness is skipped because its h-function needs a pore-pressure estimate as its `Pres` term.

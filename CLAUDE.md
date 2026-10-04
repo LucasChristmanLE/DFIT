@@ -344,6 +344,7 @@ Postclosure scenarios (`picks.suggest_pp_axis` maps by `scenario[:4]`):
 | PC-D genuine linear to genuine radial | −1/2 then −1 | either (analyst picks) |
 | PC-E no trend | peak, no clear slope | t^(−1/2), low confidence |
 | PC-F no peak | derivative still rising | porepressure and stiffness skipped |
+| PC-X uninterpretable | can't be read (bad data) | porepressure and stiffness skipped |
 
 Log-log window seed (`interpret.suggest_loglog_window`): always starts after the latest
 prominent t·dP/dt peak (`_loglog_peak`, >= 0.15 decades), preferring the widest straight window
@@ -353,11 +354,17 @@ drag, and at seed only when the suggester found a qualifying window (not its fal
 scenario is never touched; an auto PC-A clears on a miss; any postclosure-combobox selection
 (`ui._on_pcscen_selected`, even re-picking PC-A) clears the flag. Logged as `postclosure_auto`.
 
-PC-F: `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}`. It is the only place
+PC-E and PC-F (`model.NO_TREND_POSTCLOSURE`, gate `model.loglog_window_suppressed`) show no
+log-log window: no shading, no slope (`loglog_slope` is None), no span controller. The pick stays
+in state and returns on a switch back. PC-X keeps the window and slope (a clear slope far from
+−1/2 and −1 is worth seeing).
+
+PC-F and PC-X: `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}`. It is the only place
 the rule lives; callers ask it rather than checking the scenario. `model.last_step` returns
 `"loglog"`, `model.resolve_step` (used by `ui._goto`) redirects both steps to loglog, their
 breadcrumbs disable, their PNGs are omitted, `compute_all` leaves pore pressure blank, and
 `store.status_for` counts them as accounted for. The stiffness flag is logged blank under PC-F.
+PC-X logs `postclosure_trend = "uninterpretable"`, mirroring C-X's `closure_quality`.
 
 The in-app "Interpretation guide" (`ui._open_guide`) shows the ResFrac C-A…C-D and PC-A…PC-F
 figures; content is in `dfit_tool/guide_content.py`, images in `dfit_tool/assets/guide/`.

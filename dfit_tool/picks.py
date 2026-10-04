@@ -1427,7 +1427,8 @@ def gfunction_hint_text(scenario: str) -> str:
 
 
 _PP_AXIS_BY_SCENARIO = {"PC-A": "tm12", "PC-B": "tm1", "PC-C": "tm12", "PC-E": "tm12"}
-# PC-D "either" and PC-F "none" are intentionally absent -> axis left to the analyst.
+# PC-D "either", PC-F "none", and PC-X "uninterpretable" are intentionally absent -> axis
+# left to the analyst.
 
 
 def suggest_pp_axis(scenario: str) -> Optional[str]:

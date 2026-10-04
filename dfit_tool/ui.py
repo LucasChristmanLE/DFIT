@@ -26,8 +26,8 @@ from . import (colors as C, guide_content, interpret, io_load, picks, plots, sli
                summary)
 from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
                     closure_uninterpretable, compute_all, first_not_visited_step,
-                    infer_step_status, last_step, next_step, prev_step, resolve_step,
-                    skipped_steps, step_gate_error)
+                    infer_step_status, last_step, loglog_window_suppressed, next_step,
+                    prev_step, resolve_step, skipped_steps, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults, ViewState
 from .questionnaire import find_questionnaire, parse_questionnaire
 
@@ -73,16 +73,18 @@ CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rap
 POSTCLOSURE_SCENARIOS = ["", "PC-A linear", "PC-B false-radial",
                          "PC-C false radial to genuine linear",
                          "PC-D genuine linear to genuine radial",
-                         "PC-E no trend", "PC-F no peak"]
+                         "PC-E no trend", "PC-F no peak", "PC-X uninterpretable"]
 
 # Advisory hints for the postclosure scenarios that don't fully dictate the pore-pressure axis
 # (picks.suggest_pp_axis). Full explanatory text + figures live in the interpretation guide
 # window (guide_content.py / _open_guide below); this dict is still consulted by _on_scenario.
 _PC_HINTS = {
     "PC-D": "either axis valid -- choose t^(-1/2) or t^(-1) manually",
-    "PC-E": "no clear slope -- t^(-1/2) set; treat pore pressure as low-confidence",
-    "PC-F": "derivative still rising -- no reliable postclosure line; pore pressure step is "
-            "skipped, Finish is available on this (log-log) step",
+    "PC-E": "no clear slope -- no log-log window; t^(-1/2) set; pore pressure is low-confidence",
+    "PC-F": "derivative still rising -- no log-log window; pore pressure step is skipped, "
+            "Finish is available on this (log-log) step",
+    "PC-X": "postclosure uninterpretable -- pore pressure and stiffness steps are skipped, "
+            "Finish is available on this (log-log) step",
 }
 
 # Tabs for the single "Interpretation guide..." window (_open_guide), in display order.
@@ -1113,7 +1115,7 @@ class DfitApp:
             hint = _PC_HINTS.get(pcscen[:4]) or hint
         self._update_ppaxis_enabled()
         if pcscen_changed and self.step in skipped_steps(self.state):
-            # PC-F just got selected while sitting on the now-skipped pore-pressure step -- the
+            # PC-F/PC-X just got selected while sitting on the now-skipped pore-pressure step -- the
             # scenario combobox is visible on both loglog and porepressure, so this can happen
             # without ever leaving porepressure. _goto redirects (resolve_step) and calls
             # refresh() itself; calling refresh() again here would just redo the same work.
@@ -2175,6 +2177,11 @@ class DfitApp:
             self.hint_lbl.config(
                 text="Rotate the through-origin line (the closure marker follows); "
                          "drag the closure marker or its vertical line.")
+        elif step == "loglog" and loglog_window_suppressed(self.state):
+            # PC-E/PC-F draw no window, so a drag would set a pick the analyst never sees.
+            self.hint_lbl.config(
+                text=f"No log-log window under {self.state.postclosure_scenario}; "
+                     "pick another scenario to select one.")
         elif step == "loglog":
             def on_span(lo, hi):
                 picks.handle_loglog_span(self.state, lo, hi)
