@@ -66,6 +66,7 @@ def test_main_no_argv_passes_none_path(monkeypatch):
 # --------------------------------------------------------------------------------------------------
 def _init_stub():
     stub = types.SimpleNamespace()
+    stub._on_root_close = lambda: None
     stub._build_top = lambda: None
     stub._build_body = lambda: None
     stub._build_stepbar = lambda: None
@@ -74,7 +75,8 @@ def _init_stub():
     stub._load_calls = []
     stub._load = lambda p: stub._load_calls.append(p)
     stub.root = types.SimpleNamespace(title=lambda t: None, geometry=lambda g: None,
-                                      state=lambda s: None)
+                                      state=lambda s: None,
+                                      protocol=lambda *a: None)
     return stub
 
 

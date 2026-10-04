@@ -330,12 +330,32 @@ def scan_root(root: str, progress=None) -> list[TestEntry]:
 # --------------------------------------------------------------------------------------------------
 # picks persistence
 # --------------------------------------------------------------------------------------------------
+def _quarantine_picks(path: str) -> None:
+    """Rename an unreadable picks file to `<name>.corrupt` (numeric suffix if one exists) so the
+    next save can never overwrite it. Best-effort: a rename failure is swallowed."""
+    target = path + ".corrupt"
+    n = 0
+    while os.path.exists(target):
+        n += 1
+        target = f"{path}.corrupt.{n}"
+    try:
+        os.replace(path, target)
+    except OSError:
+        pass
+
+
 def load_picks_for(entry: TestEntry) -> Optional[PickState]:
     """The saved PickState for `entry`, or None if there is no picks file, or it exists but is
-    unreadable/corrupt -- a broken JSON must never kill a folder scan."""
+    unreadable/corrupt -- a broken JSON must never kill a folder scan. An existing file that
+    fails to decode is renamed aside (`<name>.corrupt`) rather than left to be overwritten by
+    the next navigation save."""
+    path = entry.picks_path
+    if not os.path.exists(path):
+        return None
     try:
-        return PickState.from_json(entry.picks_path)
+        return PickState.from_json(path)
     except Exception:
+        _quarantine_picks(path)
         return None
 
 
@@ -384,24 +404,32 @@ def status_for(state: Optional[PickState]) -> str:
 # --------------------------------------------------------------------------------------------------
 # master log
 # --------------------------------------------------------------------------------------------------
+class LogReadError(Exception):
+    """dfit_log.csv exists and is non-empty but could not be read. Carries `path` and `cause`;
+    callers must not write the log, since an upsert onto an empty frame would wipe it."""
+
+    def __init__(self, path: str, cause: Exception):
+        super().__init__(f"{path} could not be read: {cause}")
+        self.path = path
+        self.cause = cause
+
+
 def load_log(root: str) -> pd.DataFrame:
     """The master log at `<root>/dfit_log.csv`, or an empty DataFrame shaped like LOG_COLUMNS if
-    it doesn't exist yet -- or exists but is empty/corrupt/unparseable. Never raises, same
-    contract as `load_picks_for`: a bad dfit_log.csv must never make a folder unopenable. An
-    older log missing newer columns gets them appended (empty), with existing row data
-    preserved; the returned column order is always LOG_COLUMNS. `test_id` is forced to a string
-    dtype -- otherwise a purely numeric test_id (e.g. a folder named "7170") round-trips as
-    int64, and `upsert_log_row`'s string-keyed comparison never matches, silently appending a
-    duplicate row on every save instead of updating."""
+    it is missing or 0 bytes. A non-empty file that cannot be read (encoding, parse, OS error)
+    raises `LogReadError`: returning an empty frame there would let the next upsert + save_log
+    overwrite the real log. An older log missing newer columns gets them appended (empty), with
+    existing row data preserved; the returned column order is always LOG_COLUMNS. `test_id` is
+    forced to a string dtype -- otherwise a purely numeric test_id (e.g. a folder named "7170")
+    round-trips as int64, and `upsert_log_row`'s string-keyed comparison never matches, silently
+    appending a duplicate row on every save instead of updating."""
     path = os.path.join(root, LOG_FILENAME)
-    if not os.path.exists(path):
-        return pd.DataFrame(columns=LOG_COLUMNS)
     try:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return pd.DataFrame(columns=LOG_COLUMNS)
         df = pd.read_csv(path, dtype={"test_id": str})
-    except Exception:
-        # Bare except like load_picks_for: encoding corruption (UnicodeDecodeError) and OS-level
-        # read errors must not make the folder unopenable any more than a parse error does.
-        return pd.DataFrame(columns=LOG_COLUMNS)
+    except Exception as e:
+        raise LogReadError(path, e) from e
     for col in LOG_COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA
@@ -446,8 +474,17 @@ def list_tests(root: str, progress=None) -> tuple[list[TestEntry], pd.DataFrame]
     None leaves behavior unchanged."""
     entries = scan_root(root, progress=progress)
     for entry in entries:
-        entry.status = status_for(load_picks_for(entry))
-    return entries, load_log(root)
+        try:
+            entry.status = status_for(load_picks_for(entry))
+        except Exception:
+            entry.status = "new"  # one bad picks file must not abort the scan; file is untouched
+    try:
+        log = load_log(root)
+    except LogReadError as e:
+        # The folder still opens; the unreadable log is flagged for the UI and never rewritten.
+        log = pd.DataFrame(columns=LOG_COLUMNS)
+        log.attrs["read_error"] = str(e)
+    return entries, log
 
 
 # --------------------------------------------------------------------------------------------------

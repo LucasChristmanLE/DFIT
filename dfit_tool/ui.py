@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import os
 import pathlib
+import shutil
 from typing import Optional
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -150,6 +151,16 @@ def _resolve_load_source(entry: store.TestEntry, saved: Optional[PickState]) -> 
     return entry.available_sources[0]
 
 
+def _plan_source_load(entry: store.TestEntry, saved: Optional[PickState]) -> tuple[str, Optional[str]]:
+    """`(source, missing)` for `_load_test`: `source` is what to open (as `_resolve_load_source`),
+    `missing` is the saved picks' `active_source` when it names a source this entry no longer has
+    (the picks are index-based and must not be applied to another file), else None."""
+    source = _resolve_load_source(entry, saved)
+    if saved is not None and source.lower() != saved.active_source:
+        return source, saved.active_source
+    return source, None
+
+
 def _next_new_index(statuses: list[str], current_index: int) -> Optional[int]:
     """The index of the next ``"new"``-status entry in ``statuses``, scanning circularly
     starting just after ``current_index`` -- the pure selection logic behind Finish's and
@@ -251,6 +262,9 @@ class DfitApp:
         self.folder_root: str | None = None
         self.queue_entries: list[store.TestEntry] = []
         self.log_df = None
+
+        # Closing the window must not lose the current folder-mode test's unsaved picks.
+        self.root.protocol("WM_DELETE_WINDOW", self._on_root_close)
 
         self._build_top()
         self._build_body()
@@ -673,6 +687,18 @@ class DfitApp:
         self._goto("overview")
         return True
 
+    def _on_root_close(self):
+        """WM_DELETE_WINDOW on the root: in folder mode save the current test's picks first; a
+        failed save asks whether to close anyway. Single-file mode just closes (picks there save
+        through a file dialog)."""
+        if self.current_entry is not None:
+            try:
+                self._save_current_queue_picks()
+            except Exception as e:
+                if not messagebox.askyesno("Close", f"Save failed: {e}. Close anyway?"):
+                    return
+        self.root.destroy()
+
     def _load(self, path: str):
         """Single-file open: exit folder mode (saving any outgoing queue test's picks first),
         then load `path` via _load_common. The manual Save picks…/Load picks… buttons and every
@@ -765,6 +791,8 @@ class DfitApp:
         entry_ids = {e.test_id for e in entries}
         orphan_ids = [tid for tid in log_df["test_id"].tolist() if tid not in entry_ids]
         parts = []
+        if log_df.attrs.get("read_error"):
+            parts.append(f"{store.LOG_FILENAME} is unreadable and will not be written")
         if warn_count:
             parts.append(f"{warn_count} scan warning(s) -- see individual test folders")
         if orphan_ids:
@@ -810,12 +838,26 @@ class DfitApp:
         _load_common already made."""
         source_was_none = source is None
         probed_picks = None
+        missing_source = None
         if source_was_none:
             probed_picks = store.load_picks_for(entry)
-            source = _resolve_load_source(entry, probed_picks)
+            source, missing_source = _plan_source_load(entry, probed_picks)
+            if missing_source is not None:
+                # Index-based picks from a source that is gone must not be applied to another
+                # file. Keep a copy of the picks file and start fresh (no resume).
+                try:
+                    shutil.copy2(entry.picks_path, f"{entry.picks_path}.{missing_source}.bak")
+                except OSError:
+                    pass
+                probed_picks = None
         path = entry.data_path(source)
         if not self._load_common(path, well_hint=entry.test_id):
             return
+        if source_was_none and missing_source is not None:
+            messagebox.showwarning(
+                "Saved picks",
+                f"Picks were made on {missing_source.upper()}, which is missing; "
+                "starting fresh (backup kept).")
         saved = None
         if not force_reset:
             # Reuse the source-resolution probe above rather than reading the same picks JSON
@@ -940,7 +982,16 @@ class DfitApp:
         this runs."""
         row = store.build_log_row(entry, entry.data_path(self.state.active_source.upper()),
                                   self.folder_root, self.state, self.td, self.res)
-        self.log_df = store.upsert_log_row(self.log_df, row)
+        try:
+            # Re-read from disk so an unreadable log is never replaced by an empty frame.
+            log_df = store.load_log(self.folder_root)
+        except store.LogReadError as e:
+            messagebox.showerror(
+                "Log not written",
+                f"{e.path} could not be read ({e.cause}). "
+                "The log was NOT written; the picks were saved.")
+            return
+        self.log_df = store.upsert_log_row(log_df, row)
         store.save_log(self.folder_root, self.log_df)
 
     def _advance_queue(self):
@@ -988,7 +1039,11 @@ class DfitApp:
         self.refresh()
         flagging = self.state.explicit_status != "skipped"
         self.state.explicit_status = "skipped" if flagging else None
-        store.save_picks_for(entry, self.state)
+        try:
+            store.save_picks_for(entry, self.state)
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Picks were not saved: {e}")
+            return
         entry.status = store.status_for(self.state)
         try:
             self._write_log_row(entry)
@@ -1009,7 +1064,14 @@ class DfitApp:
         entry = next((e for e in self.queue_entries if e.test_id == test_id), None)
         if entry is None:
             return
-        self._save_current_queue_picks()
+        try:
+            self._save_current_queue_picks()
+        except Exception as e:
+            messagebox.showerror("Save failed", f"Picks were not saved: {e}")
+            # Stay on the current test; put the sidebar selection back.
+            if self.current_entry is not None:
+                self.queue_tree.selection_set(self.current_entry.test_id)
+            return
         self._load_test(entry)
 
     def _load_questionnaire(self, csv_path: str, well_hint: Optional[str] = None):
@@ -2140,8 +2202,8 @@ class DfitApp:
 
                 # min-dP/dG-first ordering preserved (tests unpack step_ctrls by position) --
                 # the triangle only applies to C-A (rel-min anchor) / C-B (inflection seed); the
-                # contact marker applies to every scenario except C-C/C-D, which have no contact
-                # rule at all (decision 4 / the CLAUDE.md closure-scenario table).
+                # contact marker applies to every scenario outside NO_CONTACT_SCENARIOS (C-C, C-D,
+                # C-X), which have no contact rule at all (see the CLAUDE.md closure-scenario table).
                 if scenario.startswith(("C-A", "C-B")):
                     # Registered before the point controllers below so a Shift-press claims the
                     # shared gate first -- an ordinary (unmodified) press never captures here, so
@@ -2525,7 +2587,12 @@ class DfitApp:
         path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if not path:
             return
-        self._apply_loaded_state(PickState.from_json(path))
+        try:
+            state = PickState.from_json(path)
+        except Exception as e:
+            messagebox.showerror("Load picks failed", f"Could not read {path}: {e}")
+            return
+        self._apply_loaded_state(state)
 
 
 def _to_float(s: str):

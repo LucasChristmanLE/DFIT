@@ -226,16 +226,42 @@ def _clean_intervals(raw) -> list[tuple[float, float]]:
     return out
 
 
+def _decode_dataclass(cls, raw):
+    """`cls` built from the known-field subset of dict `raw`, or None when `raw` is not a dict or
+    the subset cannot construct it. Never raises."""
+    if not isinstance(raw, dict):
+        return None
+    known = {f.name for f in fields(cls)}
+    try:
+        return cls(**{k: v for k, v in raw.items() if k in known})
+    except TypeError:
+        return None
+
+
+def _clean_window(raw):
+    """A (lo, hi) float tuple from a saved window, or None unless it is a 2-sequence of reals."""
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    if any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in raw):
+        return None
+    return (raw[0], raw[1])
+
+
 def _decode(d: dict) -> PickState:
     # Migrate an old save's eff_isip_line (a stored, draggable pick on P-vs-G) to min_dpdg_G: its
     # anchor sat on the P-vs-G curve at the same G the min-dP/dG point now lives at.
     if d.get("min_dpdg_G") is None and isinstance(d.get("eff_isip_line"), dict):
         d["min_dpdg_G"] = d["eff_isip_line"].get("anchor_x")
-    if d.get("isip_tangent") is not None:
-        d["isip_tangent"] = TangentPick(**d["isip_tangent"])
+    # Nested dataclass dicts are filtered to known fields (a newer build may add keys); one that
+    # is not a dict or lacks a required field decodes to None rather than raising.
+    d["isip_tangent"] = _decode_dataclass(TangentPick, d.get("isip_tangent"))
     for key in ("loglog_window", "pp_window"):
-        if d.get(key) is not None:
-            d[key] = tuple(d[key])
+        d[key] = _clean_window(d.get(key))
+    if not isinstance(d.get("step_status"), dict):
+        d["step_status"] = {}
+    else:
+        d["step_status"] = {k: v for k, v in d["step_status"].items()
+                            if isinstance(k, str) and isinstance(v, str)}
     for key in ("mask_intervals", "keep_intervals"):
         if key in d:
             d[key] = _clean_intervals(d[key])
@@ -326,6 +352,7 @@ def step_gate_error(state: PickState, step: str) -> Optional[str]:
 
 NO_PRESSURE_CHANNEL = "No pressure channel selected"
 SURFACE_NEEDS_BHP_INPUTS = "Surface pressure selected but density/TVD not set"
+OUT_OF_RANGE_INJECTION = "Saved injection picks are outside this file's data; re-pick injection"
 
 
 def blocking_issues(state: PickState) -> list[str]:
@@ -717,8 +744,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # (no rate channel, or a degenerate one), te falls back to the wall-clock pump duration
     # (TODO pair: rate-less datasets), with a warning so the analyst knows te is not the
     # Vinj/qmax effective time.
-    if state.start_idx is not None and state.shutin_idx is not None:
-        start, shutin = state.start_idx, state.shutin_idx
+    start_idx, shutin_idx = state.start_idx, state.shutin_idx
+    if any(i is not None and not (0 <= i < td.n) for i in (start_idx, shutin_idx)):
+        # Saved indices from a different/shorter file: out of range raises, negative wraps. Treat
+        # both picks as unset for this compute and say why.
+        res.blockers.append(OUT_OF_RANGE_INJECTION)
+        start_idx = shutin_idx = None
+    if start_idx is not None and shutin_idx is not None:
+        start, shutin = start_idx, shutin_idx
         res.t_shutin_s = float(td.t_s[shutin])
         if res.rate_all is not None:
             res.qmax_bpm = state.qmax_bpm or interpret.max_sustained_rate(res.rate_all, start, shutin)
@@ -845,10 +878,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     f"{len(res.rise_excursions)} pressure rises masked, first at "
                     f"{_min_label(first.dt_start)} min")
 
-    if state.isip_at_shutin and res.t_shutin_s is not None and state.shutin_idx is not None:
-        p_shutin = (float(res.bhp_all[state.shutin_idx])
+    if state.isip_at_shutin and res.t_shutin_s is not None and shutin_idx is not None:
+        p_shutin = (float(res.bhp_all[shutin_idx])
                     if res.bhp_all is not None else float("nan"))
-        if res.dropout_mask[state.shutin_idx] or not np.isfinite(p_shutin):
+        if res.dropout_mask[shutin_idx] or not np.isfinite(p_shutin):
             res.apparent_isip = None
             res.warnings.append(
                 "Apparent ISIP at shut-in: BHP missing at the shut-in sample")
