@@ -717,13 +717,13 @@ Per-test deliverables:
   water-hammer spike (masked below `g_min`) and a small noise-driven local max further out on
   the curve (low prominence). Falls back to a through-origin least-squares fit over the first
   third of the `G >= g_min` samples when no candidate survives (unmasked when that segment has
-  fewer than 2 finite, positive-`G` samples). Closure = the last sample within 5%
+  fewer than 2 finite, positive-`G` samples). Closure = the last sample within 2%
   (`CLOSURE_TANGENT_TOL_FRAC`) of the line before the first departure, walking forward from the
   tangent point -- a later re-crossing (e.g. a rising tail) is never picked up. The pick is a
   plain `DraggablePointController`: its seeded starting position comes from this rule, so
   it stays fully draggable and a reload's saved pick is never overwritten.
   Rotating the line by hand (`picks.commit_closure_line`) re-derives `closure_G`
-  (`interpret.closure_departure_index`): the LAST sample over G >= `g_min` within 5% of the
+  (`interpret.closure_departure_index`): the LAST sample over G >= `g_min` within 2% of the
   line, not the end of the first run, because a rotated line can meet the curve, leave it, and
   meet it again (a first version used the first run and stopped at the early touch). With no
   sample in tolerance it takes the closest approach. A rising tail that re-crosses the line

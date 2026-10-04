@@ -439,7 +439,7 @@ def test_suggest_closure_tangent_fallback_walk_start_out_of_tolerance_returns_st
     # G=3. dP/dG increases monotonically throughout (5,10,50,60,...,120) so no interior local
     # max ever forms and the fallback fit is used. The through-origin LS over G=[2,3] pulls the
     # line to slope (2*20+3*150)/(2**2+3**2) = 37.69..., which G=3's own y=150 departs from by
-    # far more than the 5% tolerance -- immediately, at the walk's very first checked sample.
+    # far more than the 2% tolerance -- immediately, at the walk's very first checked sample.
     G = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=float)
     dPdG = np.array([5, 10, 50, 60, 70, 80, 90, 100, 110, 120], dtype=float)
     GdPdG = G * dPdG
@@ -539,15 +539,17 @@ def test_closure_departure_index_matches_seed_at_seed_slope():
 
 
 def test_closure_departure_index_follows_line_rotation():
+    assert interpret.CLOSURE_TANGENT_TOL_FRAC == 0.02
+    keep = 1.0 - interpret.CLOSURE_TANGENT_TOL_FRAC
     G, GdPdG = _flat_then_bend()
     i50 = interpret.closure_departure_index(G, GdPdG, 50.0)
-    i47 = interpret.closure_departure_index(G, GdPdG, 47.0)  # shallower: touches later on the bend
-    i52 = interpret.closure_departure_index(G, GdPdG, 52.0)  # steeper: departs sooner
-    # dP/dG falls below 95% of the line at G = 20 + (level - 0.95 * slope) / 4.
-    assert G[i50] == pytest.approx(20.625, abs=0.15)
-    assert G[i47] == pytest.approx(20.0 + (50.0 - 0.95 * 47.0) / 4.0, abs=0.15)
-    assert G[i52] == pytest.approx(20.0 + (50.0 - 0.95 * 52.0) / 4.0, abs=0.15)
-    assert G[i52] < G[i50] < G[i47]
+    i49 = interpret.closure_departure_index(G, GdPdG, 49.0)  # shallower: touches later on the bend
+    i505 = interpret.closure_departure_index(G, GdPdG, 50.5)  # steeper: departs sooner
+    # dP/dG falls below 98% of the line at G = 20 + (level - 0.98 * slope) / 4.
+    assert G[i50] == pytest.approx(20.25, abs=0.15)
+    assert G[i49] == pytest.approx(20.0 + (50.0 - keep * 49.0) / 4.0, abs=0.15)
+    assert G[i505] == pytest.approx(20.0 + (50.0 - keep * 50.5) / 4.0, abs=0.15)
+    assert G[i505] < G[i50] < G[i49]
 
 
 @pytest.mark.parametrize("slope", [float("nan"), float("inf"), 0.0, -3.0])
@@ -566,7 +568,7 @@ def test_closure_departure_index_nan_inside_run_is_skipped():
 
 def test_closure_departure_index_takes_last_in_tolerance_sample():
     """A manual line the curve meets, leaves, and meets again: the closure is the last sample
-    within 5%, not the end of the first in-tolerance run."""
+    within 2%, not the end of the first in-tolerance run."""
     G = np.linspace(0.01, 40.0, 400)
     dPdG = np.full_like(G, 30.0)
     dPdG[(G >= 1.0) & (G <= 10.0)] = 50.0

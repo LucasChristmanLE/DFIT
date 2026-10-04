@@ -75,7 +75,10 @@ def test_commit_min_dpdg_point_alone_does_not_derive_eff_isip_line():
 def test_commit_closure_line_rederives_closure():
     td, st, res = _res()
     dg = res.diagnostics
-    seed_slope, seed_idx = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
+    seed_slope, _ = interpret.suggest_closure_tangent(dg.G, dg.GdPdG)
+    # Compare with closure_departure_index, not the seed index: this fixture has no hump, and
+    # the seed's fallback walk start sits just outside 2%, so the seed reports it anyway.
+    seed_idx = interpret.closure_departure_index(dg.G, dg.GdPdG, seed_slope)
 
     state = PickState(closure_G=42.0)
     picks.commit_closure_line(state, res, "end", anchor_x=0.0, anchor_y=0.0, slope=seed_slope)

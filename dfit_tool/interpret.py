@@ -40,7 +40,7 @@ LEADING_SPIKE_FACTOR = 5.0  # leading_spike_end: early dP/dG beyond this x the m
 ISIP_ANCHOR_HALF = 5  # +/- sample half-window for the apparent-ISIP tangent's local line fit:
                       # small enough to stay a true local tangent on the curving early decline,
                       # large enough to reject single-sample gauge noise.
-CLOSURE_TANGENT_TOL_FRAC = 0.05  # suggest_closure_tangent: departure tolerance as a fraction of
+CLOSURE_TANGENT_TOL_FRAC = 0.02  # suggest_closure_tangent: departure tolerance as a fraction of
                                  # the tangent line's value at each sample.
 CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hump must stand at
                                        # least this fraction of its own height above the higher
