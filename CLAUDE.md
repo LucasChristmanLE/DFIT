@@ -185,6 +185,8 @@ Preserve these when changing the code.
   Rate axes (overview, injection, isip) default to 0..3x the max rate plotted on that step
   (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
   `full_y2` on every non-gfunction step.
+  Apply drops the stored Overview view so its default (which spans converted BHP) applies;
+  Next/Skip on Overview and Finish do the same when the synced config or pressure unit changed.
   Default y-limits round outward to tick values (`plots.nice_limits`, 1/2/2.5/5 x 10^k steps;
   `nice_log_limits` rounds the stiffness log axis to decades).
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`** (a `twinx` owns `inaxes`

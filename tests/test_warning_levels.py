@@ -98,6 +98,8 @@ def _nav_stub(step, state):
     stub._sync_state_from_widgets = lambda: None
     stub.refresh = lambda: setattr(stub, "res",
                                    DerivedResults(blockers=blocking_issues(stub.state)))
+    stub._views = {}
+    stub._overview_scale_key = types.MethodType(DfitApp._overview_scale_key, stub)
     stub._overview_gate = types.MethodType(DfitApp._overview_gate, stub)
     stub._advance = types.MethodType(DfitApp._advance, stub)
     stub._next = types.MethodType(DfitApp._next, stub)

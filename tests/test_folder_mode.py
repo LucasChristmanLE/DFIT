@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import types
 
+import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -911,6 +912,7 @@ def _finish_stub(tmp_path, folder_mode, monkeypatch, second_status="new"):
 
     stub._write_log_row = types.MethodType(DfitApp._write_log_row, stub)
     stub._advance_queue = types.MethodType(DfitApp._advance_queue, stub)
+    stub._overview_scale_key = types.MethodType(DfitApp._overview_scale_key, stub)
     stub._finish = types.MethodType(DfitApp._finish, stub)
     stub._skip_test = types.MethodType(DfitApp._skip_test, stub)
     return stub, entry, data_dir, entry2
@@ -1180,3 +1182,84 @@ def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
     assert row["fluid_density"] == 9.3
     assert row["pressure_source"] == "BHP"
     assert row["notes"] == "skip test notes"
+
+
+# --------------------------------------------------------------------------------------------------
+# Applying a config change drops the stored Overview view, so render_overview's default (which
+# spans the converted BHP) applies instead of the pre-conversion surface-pressure range. Apply
+# always drops it; Next/Skip on Overview (_overview_gate) and Finish only when the config changed.
+# --------------------------------------------------------------------------------------------------
+def _overview_apply_stub(tmp_path):
+    stub, _, _ = _skip_test_real_refresh_stub(tmp_path)
+    stub.step = "overview"
+    stub.state.pressure_is_bhp = False
+    stub.state.density_ppg = None
+    stub.state.tvd_ft = None
+    stub.var_isbhp.set(False)
+    stub.var_density.set(None)
+    stub.var_tvd.set(None)
+    stub._apply_config = types.MethodType(DfitApp._apply_config, stub)
+    stub._overview_gate = types.MethodType(DfitApp._overview_gate, stub)
+    stub._overview_scale_key = types.MethodType(DfitApp._overview_scale_key, stub)
+    stub.refresh()  # stores the surface-pressure view in _views["overview"]
+    return stub
+
+
+def test_apply_rescales_overview_y_to_converted_bhp(tmp_path):
+    stub = _overview_apply_stub(tmp_path)
+    old_top = stub._views["overview"].ylim[1]
+    stub.var_density.set("8.4")
+    stub.var_tvd.set("10000")
+
+    stub._apply_config()
+
+    bhp_max = float(np.nanmax(stub.res.bhp_all))
+    assert bhp_max > old_top
+    assert stub._views["overview"].ylim[1] >= bhp_max
+
+
+def test_overview_gate_rescales_only_on_config_change(tmp_path):
+    stub = _overview_apply_stub(tmp_path)
+    zoom = ui.plots.ViewState(xlim=(0.0, 1.0), ylim=(0.0, 100.0),
+                              y2lim=stub._views["overview"].y2lim)
+    stub._views["overview"] = zoom
+    stub._overview_gate()  # nothing changed: the analyst's zoom survives
+    assert stub._views["overview"] is zoom
+
+    stub.var_density.set("8.4")
+    stub.var_tvd.set("10000")
+    stub._overview_gate()
+    assert stub._views["overview"].ylim[1] >= float(np.nanmax(stub.res.bhp_all))
+
+
+def _capture_png_views(monkeypatch):
+    captured = {}
+
+    def _fake_save_pngs(out_dir, td, state, res, views, *a, **kw):
+        captured["state"] = state
+        captured["views"] = views
+        return []
+    monkeypatch.setattr(ui.plots, "save_all_step_pngs", _fake_save_pngs)
+    return captured
+
+
+def test_finish_exports_with_unapplied_edits_and_fresh_overview_view(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    captured = _capture_png_views(monkeypatch)
+    stub._views = {"overview": ui.plots.ViewState(xlim=(0.0, 1.0), ylim=(0.0, 100.0))}
+    stub.var_tvd.set("9876")
+
+    stub._finish()
+
+    assert captured["state"].tvd_ft == 9876.0
+    assert captured["views"]["overview"] is None
+
+
+def test_finish_keeps_overview_view_when_config_unchanged(tmp_path, monkeypatch):
+    stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
+    captured = _capture_png_views(monkeypatch)
+    stub._views = {"overview": ui.plots.ViewState(xlim=(0.0, 1.0), ylim=(0.0, 100.0))}
+
+    stub._finish()
+
+    assert captured["views"]["overview"] == ((0.0, 1.0), (0.0, 100.0), None)

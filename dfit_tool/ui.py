@@ -1169,7 +1169,14 @@ class DfitApp:
         if self.td is None:
             return
         self._sync_state_from_widgets()
+        # A density/TVD/channel change can move the pressure trace thousands of psi (surface ->
+        # BHP); drop the stored Overview view so the renderer's default, which spans it, applies.
+        self._views["overview"] = None
         self.refresh()
+
+    def _overview_scale_key(self):
+        """What, if changed by a widget sync, invalidates the stored Overview view."""
+        return self.state.channel_config(), self.state.pressure_unit
 
     def _on_pcscen_selected(self):
         """Any pick in the postclosure combobox is the analyst's, including re-picking an
@@ -1574,7 +1581,10 @@ class DfitApp:
         filled-in boxes count. Gates on ``res.blockers`` rather than ``blocking_issues`` alone,
         so a BHP conversion that raises also stops navigation before the next step is seeded."""
         before = self.state.channel_config()
+        before_scale = self._overview_scale_key()
         self._sync_state_from_widgets()
+        if self._overview_scale_key() != before_scale:
+            self._views["overview"] = None  # same as Apply
         if self.state.channel_config() != before:
             self.refresh()
         if not self.res.blockers:
@@ -2559,7 +2569,10 @@ class DfitApp:
         self.state.explicit_status = None
         # Capture any unapplied entry-widget edits before refreshing, so self.res (feeding the
         # PNG export and, in folder mode, the log row below) reflects the synced state.
+        before_scale = self._overview_scale_key()
         self._sync_state_from_widgets()
+        if self._overview_scale_key() != before_scale:
+            self._views["overview"] = None  # same as Apply, so 1_overview.png spans the new trace
         self.refresh()  # ensure current-step view stored in _views and self.res fresh
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         entry = self.current_entry
