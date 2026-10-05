@@ -500,7 +500,9 @@ def upsert_log_row(df: pd.DataFrame, row: dict) -> pd.DataFrame:
     """Replace the row keyed on `row["test_id"]` if one exists, else append `row`. Returns a new
     DataFrame; does not mutate `df` in place."""
     test_id = row["test_id"]
-    df = df.copy()
+    # Object dtype: a column blank in every row reloads as all-NaN float64, and pandas 3 raises
+    # on writing "" or a string into it. astype returns a copy.
+    df = df.astype(object)
     mask = df["test_id"] == test_id
     if mask.any():
         idx = df.index[mask][0]

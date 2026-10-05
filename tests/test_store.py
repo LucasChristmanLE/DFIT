@@ -623,6 +623,27 @@ def test_upsert_log_row_update_replaces_existing(tmp_path):
     assert out.iloc[0]["status"] == "done"
 
 
+def test_upsert_log_row_update_into_all_blank_reloaded_columns(tmp_path):
+    # A column blank in every row reloads as all-NaN float64; pandas 3 raises on writing "" or
+    # a string into it through the update path (re-finishing a test that already has a row).
+    row1 = {c: None for c in store.LOG_COLUMNS}
+    row1.update(test_id="well1", status="skipped", tvd=8000.0)
+    store.save_log(str(tmp_path), store.upsert_log_row(pd.DataFrame(columns=store.LOG_COLUMNS), row1))
+    df = store.load_log(str(tmp_path))
+    assert df["orientation"].dtype == "float64"
+
+    row2 = dict(row1)
+    row2.update(status="done", orientation="", units_note="kPa -> psi")
+    out = store.upsert_log_row(df, row2)
+    store.save_log(str(tmp_path), out)
+    reloaded = store.load_log(str(tmp_path))
+
+    assert len(reloaded) == 1
+    assert reloaded.iloc[0]["status"] == "done"
+    assert reloaded.iloc[0]["units_note"] == "kPa -> psi"
+    assert reloaded.iloc[0]["tvd"] == 8000.0
+
+
 def test_list_tests_keeps_orphaned_log_rows(tmp_path):
     (tmp_path / "well1.csv").write_text("a")
     df = pd.DataFrame(columns=store.LOG_COLUMNS)
