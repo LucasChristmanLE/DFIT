@@ -744,3 +744,82 @@ def test_single_sheet_ignores_well_hint(tmp_path):
     result = parse_questionnaire(str(path), well_hint="Zzz-not-a-match")
     assert result.well_name == "Solo Well"
     assert not any("sheet" in w.lower() for w in result.warnings)
+
+
+# --------------------------------------------------------------------------------------------------
+# unitless density, leading-decimal gradient, "FW" token (real DJ Basin cells)
+# --------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("cell, expected", [
+    ("8.4", 8.4),
+    (8.33, 8.33),                 # numeric cell, as openpyxl returns it
+    ("Fresh water, 8.33", 8.33),
+    ("Fresh Water.  8.34", 8.34),
+    ("water 8.4", 8.4),
+    ("Fresh 8.33/lb", 8.33),
+])
+def test_unitless_density_in_fluid_answer_read_as_ppg(tmp_path, cell, expected):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        cell,
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(expected)
+    assert any("no unit" in w for w in result.warnings)
+
+
+@pytest.mark.parametrize("cell", ["6% KCl brine", "10 bbls", "Slickwater 15", "12"])
+def test_unitless_rule_skips_percent_volume_and_integers(tmp_path, cell):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "What type of fluid was pumped:",
+        cell,
+    ])
+    assert parse_questionnaire(str(path)).density_ppg is None
+
+
+def test_unitless_rule_only_reads_fluid_answers(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Porosity",
+        "8.5",
+        "Type and density of fluid in the wellbore?",
+        "Saturated Oil",
+    ])
+    assert parse_questionnaire(str(path)).density_ppg is None
+
+
+def test_unit_density_beats_earlier_unitless_number(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        "8.4",
+        "What type of fluid was pumped:",
+        "Brine 9.2 ppg",
+    ])
+    assert parse_questionnaire(str(path)).density_ppg == pytest.approx(9.2)
+
+
+def test_leading_decimal_gradient_converted_to_ppg(tmp_path):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        ".44 psi/ft",
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(0.44 / 0.052)
+
+
+@pytest.mark.parametrize("cell", ["Clay treated FW", "FW", "treated fresh water"])
+def test_fresh_water_token_fallback(tmp_path, cell):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        cell,
+    ])
+    result = parse_questionnaire(str(path))
+    assert result.density_ppg == pytest.approx(8.34)
+    assert any("assumed" in w.lower() for w in result.warnings)
+
+
+@pytest.mark.parametrize("cell", ["Produced water", "FWKO water", "LibertyFR"])
+def test_fresh_water_token_fallback_needs_fresh_water_token(tmp_path, cell):
+    path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
+        "Type and density of fluid in the wellbore?",
+        cell,
+    ])
+    assert parse_questionnaire(str(path)).density_ppg is None

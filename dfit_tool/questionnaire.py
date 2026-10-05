@@ -14,8 +14,10 @@ priority order of answer blocks, falling through to the next block when a block 
 Density is reported as `density_ppg` (ppg): ppg and specific-gravity cells are read directly (SG
 converted via `_SG_TO_PPG`), pressure-gradient cells (psi/ft) are accepted and converted to ppg
 via `_PSI_PER_PPG_FT` (`ppg = gradient / 0.052`), and kg/m3 cells are converted via
-`units.KGM3_TO_PPG`, since downstream BHP conversion always expects ppg. A cell that names a fluid
-but gives no number at all (e.g. a bare "Fresh Water") falls back to the fresh-water constant
+`units.KGM3_TO_PPG`, since downstream BHP conversion always expects ppg. When no cell carries a
+unit, the first decimal number in the ppg range in the fluid answers is read as ppg ("8.4",
+"Fresh water, 8.33"), with a warning. A cell that names fresh water but gives no number at all
+(a bare "Fresh Water", or a token like "Clay treated FW") falls back to the fresh-water constant
 `_FRESH_WATER_PPG`, flagged with a warning.
 
 TVD is reported as `tvd_ft` (feet) even when the source cell is in meters, detected any of three
@@ -85,11 +87,16 @@ _WELL_NAME = "well name"
 _FORMATION = "formation"
 
 _DENSITY_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(ppg|lbs?\s*/\s*gal|lbs?\s*per\s*gal|#\s*/\s*gal|specific\s*gravity|sg"
+    r"(\d+(?:\.\d+)?|\.\d+)\s*(ppg|lbs?\s*/\s*gal|lbs?\s*per\s*gal|#\s*/\s*gal|specific\s*gravity|sg"
     r"|psi\s*/\s*ft|psi\s*/\s*foot|psi\s*per\s*ft|psi\s*per\s*foot"
     r"|kg\s*(?:/|per)\s*m\^?[3³]|kg\s*·\s*m-[3³])\b",
     re.IGNORECASE,
 )
+# A decimal number with no unit (e.g. "8.33", "Fresh water, 8.33"), read as ppg only inside the
+# fluid answers and only after no unit-bearing density matched. A decimal point is required and a
+# following "%" excludes it, so an integer volume ("10 bbls") or a concentration ("6% KCl") is
+# never taken for a density.
+_UNITLESS_DENSITY_RE = re.compile(r"(?<![\d.])(\d+\.\d+)(?![\d.]|\s*%)")
 _NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # A cell that is *just* a footage or meterage number, optionally with a unit suffix -- e.g.
 # "15887'", "3368 mTVD", "6399.88mKB" -- as opposed to a labeled one like "MD: 21833'" (which
@@ -124,6 +131,9 @@ _FRESH_WATER_PPG = 8.34
 # density constant above when no numeric density is found anywhere -- deliberately minimal, the
 # only corpus-evidenced case (a Strathcona-style cell that just says "Fresh Water", no number).
 _FRESH_WATER_NAMES = {"fresh water", "freshwater", "water"}
+# A fresh-water token anywhere in a cell with no number ("Clay treated FW", "treated fresh water").
+# Bare "water" is whole-cell only (above): "Produced water" is not fresh water.
+_FRESH_WATER_TOKEN_RE = re.compile(r"\b(?:fresh\s*water|freshwater|fw)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -391,6 +401,15 @@ def _extract_density(blocks: dict[str, list[str]]) -> tuple[float | None, str | 
             warns.extend(sub_warns)
             if value_ppg is not None:
                 return value_ppg, text, warns
+    # No unit-bearing density anywhere -- take the first decimal number in the ppg range from the
+    # same answers (e.g. "8.4", "Fresh water, 8.33"), flagged with a warning.
+    for key in (_WELLBORE_FLUID, _PUMPED_FLUID):
+        for text in blocks.get(key, []):
+            for m in _UNITLESS_DENSITY_RE.finditer(text):
+                value = float(m.group(1))
+                if _PPG_MIN <= value <= _PPG_MAX:
+                    warns.append(f"density {value} given with no unit; assumed ppg")
+                    return value, text, warns
     # No numeric density anywhere -- fall back to an exact, trimmed, whole-cell fluid-name match
     # (e.g. a cell that just says "Fresh Water", no number at all). A cell that names the fluid
     # AND carries a real number (e.g. "Fresh Water - 8.4 lbs/gal") never reaches this fallback:
@@ -398,7 +417,10 @@ def _extract_density(blocks: dict[str, list[str]]) -> tuple[float | None, str | 
     # the exact-whole-cell check below wouldn't match a cell with extra text anyway.
     for key in (_WELLBORE_FLUID, _PUMPED_FLUID):
         for text in blocks.get(key, []):
-            if text.strip().lower() in _FRESH_WATER_NAMES:
+            stripped = text.strip()
+            if stripped.lower() in _FRESH_WATER_NAMES or (
+                _FRESH_WATER_TOKEN_RE.search(stripped) and not re.search(r"\d", stripped)
+            ):
                 warns.append(
                     f"fluid named {text.strip()!r} with no density given; assumed "
                     f"{_FRESH_WATER_PPG} ppg (fresh water)"
