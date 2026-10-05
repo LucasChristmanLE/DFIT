@@ -408,8 +408,8 @@ STEPS = [
     ("isip", "Apparent ISIP"),
     ("gfunction", "Compliance"),
     ("tangent", "Tangent"),
-    ("loglog", "Log-log"),
-    ("porepressure", "Pore pressure"),
+    ("loglog", "Log-Log"),
+    ("porepressure", "Pore Pressure"),
     ("stiffness", "Stiffness"),
 ]
 STEP_KEYS = tuple(k for k, _ in STEPS)
