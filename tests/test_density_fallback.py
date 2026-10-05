@@ -1,4 +1,4 @@
-"""Fallback density checkbox: sets density to 8.34 ppg and records the fallback in the log."""
+"""Fallback density checkbox: sets density to 8.33 ppg and records the fallback in the log."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def _log_row(tmp_path, st, td):
 
 
 def test_fallback_constant_is_fresh_water():
-    assert FALLBACK_DENSITY_PPG == 8.34
+    assert FALLBACK_DENSITY_PPG == 8.33
 
 
 def test_log_row_records_fallback(tmp_path):
@@ -49,7 +49,7 @@ def test_log_row_records_fallback(tmp_path):
     st.density_fallback = True
     row = _log_row(tmp_path, st, td)
     assert row["density_fallback"] is True
-    assert row["fluid_density"] == 8.34
+    assert row["fluid_density"] == 8.33
 
 
 def test_log_row_fallback_false_by_default(tmp_path):
@@ -64,7 +64,7 @@ def test_log_column_appended_at_tail():
 
 def test_picks_json_round_trip(tmp_path):
     path = str(tmp_path / "p.json")
-    PickState(density_ppg=8.34, density_fallback=True).to_json(path)
+    PickState(density_ppg=8.33, density_fallback=True).to_json(path)
     assert PickState.from_json(path).density_fallback is True
 
 
@@ -94,7 +94,7 @@ def test_check_sets_fallback_and_disables_entry():
     stub = _toggle_stub("8.6")
     stub.var_density_fallback.set(True)
     stub._on_density_fallback()
-    assert stub.var_density.get() == "8.34"
+    assert stub.var_density.get() == "8.33"
     assert stub.ent_density.state == "disabled"
     assert stub._apply_calls == [1]
 

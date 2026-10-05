@@ -99,7 +99,7 @@ LOG_COLUMNS = [
     # Days from shut-in to the effective tail cutoff (end of record when nothing cuts it) --
     # tail-appended per the append-only convention.
     "falloff_duration_days",
-    # True when fluid_density is the 8.34 ppg fallback (PickState.density_fallback), not a
+    # True when fluid_density is the 8.33 ppg fallback (PickState.density_fallback), not a
     # measured value -- tail-appended per the append-only convention.
     "density_fallback",
 ]
