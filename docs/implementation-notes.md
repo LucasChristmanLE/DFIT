@@ -1210,11 +1210,20 @@ re-derived) -- otherwise a sub-50-psi crash the override genuinely admits into t
 would never get its own warning just because it sits past `guard_dt`; the `tail_trim_dt` bound
 still narrows the scan by the explicit trim either way. A stale-pick warning (gated on a trim actually being set) covers two
 distinct failure modes: the G-function picks (contact, min-dP/dG, closure) left beyond the trim
-would otherwise silently interp-clamp to the trimmed edge, while a pore-pressure window affected
-by the trim gets the same warning by outcome -- a finite upper bound beyond the trimmed edge just
+would otherwise silently interp-clamp to the trimmed edge, while the log-log window (which the
+pore-pressure fit shares) affected by the trim gets the same warning by outcome -- a finite upper bound beyond the trimmed edge just
 shrinks its fit (still returns a value), and a window with fewer than 2 surviving samples empties
 it and blanks `pore_pressure` outright (an open-ended upper bound shrinks benignly with the trim
 and is exempt from the shrunk check) -- so neither failure mode goes silent.
+
+**One late-time window.** The pore-pressure fit used to have its own `pp_window`, copied once
+from `loglog_window` on the first Pore pressure visit and never re-synced. Moving the trim or
+re-dragging Log-log afterwards left it behind, and the stale warning then named a window the
+analyst could not see while the visible log-log window sat inside the data. `pp_window` is gone:
+the fit reads `loglog_window`, a Pore pressure drag writes it, and old saves' `pp_window` is
+dropped on load (their Pp follows the log-log window on reopen). A Log-log drag past the last
+sample stores `hi = inf` (`handle_loglog_span(t_end=...)`): the span selector does not clamp to
+the data, and a finite hi past a trimmed edge would read as stale on a fresh pick.
 
 **Pressure dropouts.** A brief gauge dropout -- pressure reads near zero for a few seconds, then
 returns -- otherwise poisons everything downstream of it: it pins `resample_pressure_increment`'s
@@ -1550,7 +1559,7 @@ The window slope is `DerivedResults.loglog_slope` (`interpret.loglog_window_slop
 inclusive). The renderer used to compute it over `[i0, i1)` and drop the right edge.
 `picks.auto_assign_postclosure(state, slope)` sets `"PC-A linear"` with
 `PickState.postclosure_auto = True` when the slope is within 0.10 of −1/2. It runs after every
-window drag (`ui` loglog `on_span`), and after the seed only when `suggest_loglog_window`
+window drag (`ui` `on_span` on Log-log or Pore pressure), and after the seed only when `suggest_loglog_window`
 reports a qualifying −1/2 window (its third return value); a fallback window is not
 evidence of PC-A. It never touches a scenario the analyst chose; it re-sets an auto PC-A on a hit and
 clears it to blank on a miss. Any postclosure-combobox selection (`ui._on_pcscen_selected`)
@@ -1600,11 +1609,11 @@ None and no marker can be drawn to drag. If no seed is found, the old pick is ke
 
 `compute_all` snaps the pick to the nearest diagnostic sample. It never snaps a pick that lies
 past the last sample (a tail trim or shut-in move cut the peak off). That case blanks Pp with a
-front-of-list warning. The tail-trim stale check skips `pp_window` under PC-E.
+front-of-list warning. The tail-trim stale check skips the log-log window under PC-E/PC-F.
 
 The −1/2 extension on log-log is kept out of `dataLim` (the same pattern as
-`_plot_dropout_markers`), so it does not widen the default view. `seed_pp` is a no-op under PC-E, and `pp_window` is ignored but
-kept. The summary shows the method and the peak time in place of the window rows.
+`_plot_dropout_markers`), so it does not widen the default view. `seed_pp` is a no-op under PC-E, and `loglog_window` is ignored for
+Pp but kept. The summary shows the method and the peak time in place of the window rows.
 
 **PC-X uninterpretable.** The postclosure mirror of C-X: the analyst's explicit "this log-log
 can't be read". It skips porepressure and stiffness exactly like PC-F (below), logs
@@ -1614,7 +1623,7 @@ analyst (absent from `picks.suggest_pp_axis`). No guide figure (C-X has none eit
 **PC-F/PC-X skip.** `model.skipped_steps(state)` returns `{"porepressure", "stiffness"}` whenever
 `postclosure_scenario` starts with `"PC-F"` or `"PC-X"`, else an empty set. It is the only place the rule
 lives. Porepressure is skipped because the derivative never peaks, so no postclosure line
-exists; `compute_all` leaves `pore_pressure` `None` even if a stale `pp_window` pick exists.
+exists; `compute_all` leaves `pore_pressure` `None` even if a log-log window pick exists.
 Stiffness is skipped because its h-function needs a pore-pressure estimate as its `Pres` term.
 Consumers ask `skipped_steps` (or the helpers built on it) rather than checking the scenario:
 `model.last_step` reports `"loglog"`, so `_advance`'s Next button becomes "Finish" there;

@@ -765,6 +765,10 @@ def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> Vi
         ax.set_title(f"Log-Log   ({state.postclosure_scenario})", fontsize=10)
     elif state.loglog_window is not None:
         lo, hi = state.loglog_window
+        # A drag to x = 0 on Pore pressure stores hi = inf ("to the end"); a log axis can't
+        # draw that, so shade to the last sample.
+        if not np.isfinite(hi):
+            hi = float(dg.t[-1])
         ax.axvspan(lo, hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
         s = "?" if res.loglog_slope is None else f"{res.loglog_slope:.2f}"
         ax.set_title(f"Log-Log   Window Slope={s}   ({state.postclosure_scenario or '?'})",
@@ -808,14 +812,15 @@ def render_porepressure(ax, td: TestData, state: PickState, res: DerivedResults)
             ax.set_title("Pore Pressure -- Pick the Peak on Log-Log", fontsize=10)
         return _porepressure_view(state, dg, res, press_color)
 
-    if state.pp_window is not None:
-        lo, hi = state.pp_window
+    # The fit window is the log-log window (model.compute_all).
+    if state.loglog_window is not None:
+        lo, hi = state.loglog_window
         x_lo = 0.0 if not np.isfinite(hi) else hi ** expo
         x_hi = lo ** expo if lo > 0 else xmax
         ax.axvspan(x_lo, x_hi, color=C.WINDOW, alpha=C.WINDOW_ALPHA)
 
-    if state.pp_window is not None and res.pore_pressure is not None:
-        lo, hi = state.pp_window
+    if state.loglog_window is not None and res.pore_pressure is not None:
+        lo, hi = state.loglog_window
         m = (dg.t >= lo) & (dg.t <= hi)
         if m.sum() >= 2:
             from .interpret import fit_line

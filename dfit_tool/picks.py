@@ -1092,18 +1092,24 @@ def _nearest(arr: np.ndarray, value: float) -> int:
 # --------------------------------------------------------------------------------------------------
 # step pick handlers  (mutate PickState in place)
 # --------------------------------------------------------------------------------------------------
-def handle_loglog_span(state: PickState, lo: float, hi: float) -> None:
+def handle_loglog_span(state: PickState, lo: float, hi: float,
+                       t_end: Optional[float] = None) -> None:
+    # The span selector doesn't clamp to the data: a drag past the last sample (t_end) means "to
+    # the end" (inf, as on Pore pressure), so a later trim shrinks it instead of making it stale.
+    if t_end is not None and hi >= t_end:
+        hi = float("inf")
     state.loglog_window = (float(lo), float(hi))
 
 
 def handle_pp_span(state: PickState, lo: float, hi: float) -> None:
-    # Span arrives in the plotted transform domain (x = t**expo); pp_window is shut-in seconds.
+    # Span arrives in the plotted transform domain (x = t**expo); the window is shut-in seconds.
+    # Pore pressure shares the log-log window, so a drag here moves it on both steps.
     if hi <= 0:
         return
     expo = -0.5 if state.pp_axis == "tm12" else -1.0
     t_lo = float(hi) ** (1.0 / expo)
     t_hi = float(lo) ** (1.0 / expo) if lo > 0 else float("inf")
-    state.pp_window = (t_lo, t_hi)
+    state.loglog_window = (t_lo, t_hi)
 
 
 def commit_mask_interval(state: PickState, kind: str, lo_s: float, hi_s: float) -> None:
@@ -1811,20 +1817,11 @@ def commit_pce_peak(state: PickState, t: float) -> None:
 
 
 def seed_pp(state: PickState, res: DerivedResults) -> None:
-    """Late-time window for the pore-pressure diagnostic plot. None under PC-E, which uses the
-    peak extrapolation instead of a window."""
-    if state.pp_window is not None or pp_from_peak(state):
+    """Pore pressure fits the log-log window; seed it here only if Log-log never did (e.g. a
+    save that skipped it). Nothing under PC-E, which uses the peak extrapolation instead."""
+    if state.loglog_window is not None or pp_from_peak(state):
         return
-    dg = res.diagnostics
-    if dg is None or len(dg.t) <= 6:
-        return
-    if state.loglog_window is not None:
-        state.pp_window = state.loglog_window
-    else:
-        # The last decade alone can hold <2 samples on sparsely-resampled falloffs; widen lo to
-        # at least the second-to-last sample so the seeded window always has >=2 points to fit.
-        lo = min(float(dg.t[-1]) / 10.0, float(dg.t[-2]))
-        state.pp_window = (lo, float(dg.t[-1]))
+    seed_loglog(state, res)
 
 
 def seed_stiffness(state: PickState, res: DerivedResults) -> None:

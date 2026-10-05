@@ -34,7 +34,7 @@ from tests.helpers import make_testdata, injection_state
 def _state_with_pore_pressure(closure_scenario: str = "C-A clear"):
     """A state with the injection window, apparent-ISIP, min-dP/dG + contact + closure picks, and
     a pore-pressure estimate all in place -- everything model.compute_all's stiffness block
-    gates on. Mirrors test_gradients.py's _full_state / test_pcf_skip.py's _state_with_pp_window."""
+    gates on. Mirrors test_gradients.py's _full_state / test_pcf_skip.py's _state_with_window."""
     td = make_testdata()
     st = injection_state(td)
     picks.seed_injection(st, td)
@@ -308,7 +308,7 @@ def test_stiffness_arrays_none_without_pore_pressure():
     min_G, contact_G = float(dg.G[dg.G.size // 4]), float(dg.G[3 * dg.G.size // 4])
     picks.commit_min_dpdg_point(st, min_G)
     picks.commit_contact_point(st, contact_G)
-    res = compute_all(st, td)  # no pp_window set -> no pore pressure
+    res = compute_all(st, td)  # no loglog_window set -> no pore pressure
 
     assert res.pore_pressure is None
     assert res.stiffness_p_eff is None
@@ -342,7 +342,7 @@ def test_stiffness_arrays_none_with_fewer_than_four_resampled_points():
     dg = res.diagnostics
     picks.commit_min_dpdg_point(st, float(dg.G[0]))
     picks.commit_contact_point(st, float(dg.G[-1]))
-    st.pp_window = (float(dg.t[0]), float(dg.t[-1]))
+    st.loglog_window = (float(dg.t[0]), float(dg.t[-1]))
     st.postclosure_scenario = "PC-A linear"
     res = compute_all(st, td)
 
@@ -906,15 +906,15 @@ def test_full_walk_with_no_upturn_flag_derives_done_not_skipped():
     button is the only thing that marks a step (and thence, via explicit_status, a whole test)
     "skipped"; this flag is a different, legitimate way to finish the step."""
     td, st, res = _state_with_pore_pressure()
-    # _state_with_pore_pressure sets pp_window (via seed_pp) but never the log-log span itself --
-    # set it directly so infer_step_status also accounts for "loglog".
     st.loglog_window = (float(res.diagnostics.t[0]), float(res.diagnostics.t[-1]))
     st.stiffness_no_upturn = True
     assert st.stiffness_pick_P is None
     st.step_status = infer_step_status(st)
-    # infer_step_status deliberately never backfills "overview" (see its docstring) -- add it
-    # here the same way a real session would (Overview is always visited first).
+    # infer_step_status never backfills "overview" (see its docstring) or "porepressure" (it
+    # owns no pick of its own; it fits the log-log window) -- add them the way a real session
+    # would.
     st.step_status["overview"] = "done"
+    st.step_status["porepressure"] = "done"
 
     assert st.step_status["stiffness"] == "done"
     assert store.status_for(st) == "done"

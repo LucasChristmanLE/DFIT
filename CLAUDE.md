@@ -371,6 +371,12 @@ drag, and at seed only when the suggester found a qualifying window (not its fal
 scenario is never touched; an auto PC-A clears on a miss; any postclosure-combobox selection
 (`ui._on_pcscen_selected`, even re-picking PC-A) clears the flag. Logged as `postclosure_auto`.
 
+The pore-pressure fit uses `loglog_window`; there is no separate pore-pressure window. A drag
+on the Pore pressure step (`picks.handle_pp_span`) sets `loglog_window`; a drag to x = 0 stores
+`hi = inf` ("to the end"), which log-log shades to the last sample. A Log-log drag past the
+last sample also stores `inf`, so it never reads as stale after a trim. `seed_pp` only seeds the
+log-log window if it is missing. Old saves' `pp_window` is dropped on load.
+
 Time to flow regime (`DerivedResults.flow_regime_time_s`): the first diagnostics sample inside
 `loglog_window`, or the snapped PC-E peak (`res.pce_peak_t`); None under PC-F/PC-X (table shows
 `n/a`). Shown in the Expanded results Postclosure table; logged as `flow_regime_time_min`.
@@ -388,7 +394,7 @@ in state and returns on a switch back. PC-X keeps the window and slope (a clear 
 PC-E pore pressure (`model.pp_from_peak`): linear flow is assumed to start at the postclosure
 t·dP/dt peak, so P = Pp + m·t^(−1/2) through the peak, m = 2·D_pk·√t_pk, Pp = P_pk − 2·D_pk
 (`interpret.pore_pressure_from_peak`). This deliberately departs from the ResFrac guide's "line
-from the final point in the data". `pp_window` is ignored. The peak is a pick
+from the final point in the data". `loglog_window` is ignored. The peak is a pick
 (`PickState.pce_peak_t`), seeded by `interpret.suggest_pce_peak_index` (`_loglog_peak` with
 `min_after=1`, else the largest t·dP/dt over the last decade) and draggable on log-log. Log-log
 draws the −1/2 line from the peak; porepressure draws the extrapolation to x = 0 with no window

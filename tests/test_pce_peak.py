@@ -1,6 +1,6 @@
 """PC-E ("no trend"): pore pressure from a -1/2 log-log line extrapolated from the
 postclosure t*dP/dt peak, P = Pp + m*t^(-1/2) anchored at the peak, so
-m = 2*D_pk*sqrt(t_pk) and Pp = P_pk - 2*D_pk. Replaces the pp_window fit under PC-E.
+m = 2*D_pk*sqrt(t_pk) and Pp = P_pk - 2*D_pk. Replaces the loglog_window fit under PC-E.
 """
 
 from __future__ import annotations
@@ -91,10 +91,10 @@ def test_compute_all_pce_uses_peak_extrapolation():
     assert res.pce_peak_t == pytest.approx(dg.t[i])
 
 
-def test_compute_all_pce_ignores_pp_window():
+def test_compute_all_pce_ignores_loglog_window():
     td, st, _ = _pce_state()
     a = compute_all(st, td).pore_pressure
-    st.pp_window = (1.0, 2.0)
+    st.loglog_window = (1.0, 2.0)
     assert compute_all(st, td).pore_pressure == pytest.approx(a)
 
 
@@ -115,7 +115,7 @@ def test_compute_all_pca_still_uses_window_fit():
 def test_compute_all_pce_peak_past_last_sample_blank_and_warns():
     td, st, _ = _pce_state()
     st.pce_peak_t = float(compute_all(st, td).diagnostics.t[-1]) * 2.0
-    st.pp_window = None
+    st.loglog_window = None
     res = compute_all(st, td)
     assert res.pore_pressure is None
     assert res.pce_peak_t is None
@@ -124,12 +124,12 @@ def test_compute_all_pce_peak_past_last_sample_blank_and_warns():
 
 def test_compute_all_pce_tail_trim_before_peak_warns_not_snaps():
     td, st, _ = _pce_state()
-    st.pp_window = None
+    st.loglog_window = None
     st.tail_trim_dt = 0.5 * st.pce_peak_t
     res = compute_all(st, td)
     assert res.pore_pressure is None
     assert any("PC-E peak" in w for w in res.warnings)
-    assert not any("pore-pressure window" in w for w in res.warnings)
+    assert not any("log-log window" in w for w in res.warnings)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -151,7 +151,7 @@ def test_seed_pp_no_op_under_pce():
     st = injection_state(td)
     st.postclosure_scenario = PCE
     picks.seed_pp(st, compute_all(st, td))
-    assert st.pp_window is None
+    assert st.loglog_window is None
 
 
 def test_decode_old_save_has_no_peak():

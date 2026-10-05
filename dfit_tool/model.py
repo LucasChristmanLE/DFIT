@@ -152,13 +152,15 @@ class PickState:
     tangent_uninterpretable: bool = False
 
     # --- step 7-8: log-log window + postclosure + pore pressure ---
-    loglog_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
+    # (t_lo, t_hi) shut-in seconds. The one late-time window: the log-log slope and the
+    # pore-pressure fit both use it, and a drag on either step sets it. Old saves' separate
+    # pp_window is dropped by _decode's known-field filter.
+    loglog_window: Optional[tuple[float, float]] = None
     postclosure_scenario: str = ""  # PC-A..PC-F, PC-X
     # True while postclosure_scenario is PC-A set by picks.auto_assign_postclosure (a near -1/2
     # window slope) rather than by the analyst; a manual scenario change clears it.
     postclosure_auto: bool = False
     pp_axis: str = "tm12"  # "tm12" (t^-1/2) or "tm1" (t^-1)
-    pp_window: Optional[tuple[float, float]] = None  # (t_lo, t_hi) shut-in seconds
     # PC-E only: shut-in seconds of the postclosure t*dP/dt peak that the -1/2 extrapolation
     # starts from (pp_from_peak). Old saves take the default via _decode's known-field filter.
     pce_peak_t: Optional[float] = None
@@ -272,8 +274,7 @@ def _decode(d: dict) -> PickState:
     if "isip_use_tangent" not in d:
         d["isip_use_tangent"] = (d["isip_tangent"] is not None
                                  and not d.get("isip_at_shutin", False))
-    for key in ("loglog_window", "pp_window"):
-        d[key] = _clean_window(d.get(key))
+    d["loglog_window"] = _clean_window(d.get("loglog_window"))
     if not isinstance(d.get("step_status"), dict):
         d["step_status"] = {}
     else:
@@ -328,7 +329,8 @@ def infer_step_status(state: PickState) -> dict[str, str]:
     status: dict[str, str] = {}
     # "overview" is deliberately absent from this backfill: it owns no picks of its own (it just
     # mirrors the injection window), and this function only exists to reconstruct step_status for
-    # pre-step_status saves, which predate the "overview" step entirely.
+    # pre-step_status saves, which predate the "overview" step entirely. "porepressure" is absent
+    # too: it fits the log-log window and owns no pick (old saves' pp_window is dropped on load).
     if state.start_idx is not None or state.shutin_idx is not None:
         status["injection"] = "done"
     if state.isip_tangent is not None:
@@ -339,8 +341,6 @@ def infer_step_status(state: PickState) -> dict[str, str]:
         status["tangent"] = "done"
     if state.loglog_window is not None:
         status["loglog"] = "done"
-    if state.pp_window is not None:
-        status["porepressure"] = "done"
     if state.stiffness_pick_P is not None or state.stiffness_no_upturn:
         status["stiffness"] = "done"
     return status
@@ -1187,19 +1187,19 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 and len(res.resampled.p)
                 and state.stiffness_pick_P < np.nanmin(res.resampled.p)):
             stale.append("stiffness")
-        # The pore-pressure fit masks its window against the diagnostics' post-shut-in time
-        # array (dg.t), not G -- see the pp block below -- so a pp_window affected by the trim
-        # can silently shrink (still fits, just off fewer samples) or empty outright (blanking
-        # pore_pressure) with no other warning. Checked by outcome, not bound-vs-edge: a lower
-        # bound sitting inside the data but in the last inter-sample gap is still "<= edge" yet
-        # leaves the same <2-sample mask the pp block itself requires to fit at all, so the
-        # emptied case is the pp block's own `m.sum() >= 2` guard, mirrored here. An open-ended
-        # *upper* bound (t_hi = inf, "to the end of the data") naturally shrinks with the trim
-        # instead of emptying, so it's exempt from the shrunk-but-still-fitting check.
-        # PC-E ignores pp_window; its peak pick gets its own check in the pp block below.
-        if (state.pp_window is not None and len(res.diagnostics.t)
-                and not pp_from_peak(state)):
-            pp_lo, pp_hi = state.pp_window
+        # The log-log slope and the pore-pressure fit mask the window against the diagnostics'
+        # post-shut-in time array (dg.t), not G -- see the pp block below -- so a window
+        # affected by the trim can silently shrink (still fits, just off fewer samples) or empty
+        # outright (blanking pore_pressure) with no other warning. Checked by outcome, not
+        # bound-vs-edge: a lower bound sitting inside the data but in the last inter-sample gap
+        # is still "<= edge" yet leaves the same <2-sample mask the pp block itself requires to
+        # fit at all, so the emptied case is the pp block's own `m.sum() >= 2` guard, mirrored
+        # here. An open-ended *upper* bound (t_hi = inf, "to the end of the data") naturally
+        # shrinks with the trim instead of emptying, so it's exempt from the shrunk check.
+        # PC-E/PC-F show no window (PC-E's peak pick gets its own check in the pp block below).
+        if (state.loglog_window is not None and len(res.diagnostics.t)
+                and not loglog_window_suppressed(state)):
+            pp_lo, pp_hi = state.loglog_window
             t = res.diagnostics.t
             edge_t = t[-1]
             emptied = int(((t >= pp_lo) & (t <= pp_hi)).sum()) < 2
@@ -1209,7 +1209,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             cut = full is not None and len(full.dt) and edge_t < float(full.dt[-1])
             shrunk = bool(cut) and np.isfinite(pp_hi) and pp_hi > edge_t
             if emptied or shrunk:
-                stale.append("pore-pressure window")
+                stale.append("log-log window")
         if stale:
             res.warnings.append(f"{', '.join(stale)} pick(s) beyond the tail trim; may be stale")
 
@@ -1320,10 +1320,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.loglog_slope = s if np.isfinite(s) else None
 
     # Pore pressure (postclosure). PC-F ("no peak") means the derivative never peaks, so no
-    # postclosure line exists (PC-X: none can be read) -- suppress the fit even if a stale
-    # pp_window pick is present.
+    # postclosure line exists (PC-X: none can be read) -- suppress the fit even if a window
+    # pick is present. Otherwise the fit uses loglog_window, the same window as the slope.
     # PC-E: no window fit; a -1/2 line from the t*dP/dt peak (pce_peak_t) gives Pp = P - 2*D
-    # there. pp_window is ignored but kept in state.
+    # there. loglog_window is ignored but kept in state.
     if pp_from_peak(state) and res.diagnostics is not None:
         dg = res.diagnostics
         if state.pce_peak_t is None or not dg.t.size:
@@ -1345,10 +1345,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 if res.pore_pressure >= np.nanmin(dg.p[i:]):
                     res.warnings.append(
                         "PC-E pore pressure >= observed post-peak BHP; check the peak pick")
-    elif (state.pp_window and res.diagnostics is not None
+    elif (state.loglog_window and res.diagnostics is not None
             and "porepressure" not in skipped_steps(state)):
         dg = res.diagnostics
-        lo, hi = state.pp_window
+        lo, hi = state.loglog_window
         m = (dg.t >= lo) & (dg.t <= hi) & (dg.t > 0)
         if m.sum() >= 2:
             expo = -0.5 if state.pp_axis == "tm12" else -1.0

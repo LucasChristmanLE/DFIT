@@ -185,14 +185,14 @@ def test_compliance_isip_anchor_by_scenario(scenario, anchor):
     assert res.eff_isip_line_compliance.anchor_x == pytest.approx(float(dg.G[idx]))
 
 
-def test_pp_window_past_edge_without_any_cut_is_not_stale():
+def test_loglog_window_past_edge_without_any_cut_is_not_stale():
     """A drag that ends past the last sample on an untrimmed, unguarded record is not stale."""
     td = make_testdata()
     st = injection_state(td)
     res = compute_all(st, td)
     assert res.resampled_full.guard_dt is None
     t = res.diagnostics.t
-    st.pp_window = (float(t[len(t) // 2]), float(t[-1]) * 1.05)
+    st.loglog_window = (float(t[len(t) // 2]), float(t[-1]) * 1.05)
     st.postclosure_scenario = "PC-A linear"
     res = compute_all(st, td)
     assert not any("beyond the tail trim" in w for w in res.warnings)

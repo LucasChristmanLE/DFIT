@@ -124,35 +124,35 @@ def test_stale_pick_warning_fires_without_explicit_trim():
     assert any("contact" in w and "beyond the tail trim" in w for w in res2.warnings)
 
 
-def test_pp_window_beyond_trim_warns():
+def test_loglog_window_beyond_trim_warns():
     """The pore-pressure fit masks its window against the diagnostics' post-shut-in time array
-    (dg.t), not G -- a finite pp_window upper bound beyond the trimmed tail must still surface
+    (dg.t), not G -- a finite loglog_window upper bound beyond the trimmed tail must still surface
     as a stale pick, even though it's a different axis than contact/min-dP/dG/closure."""
     td, st, res = _seeded_with_crash()
     st.tail_trim_dt = pre_crash_trim_dt(res)
     res2 = compute_all(st, td)
     edge_t = res2.diagnostics.t[-1]
 
-    st.pp_window = (10.0, edge_t + 100.0)
+    st.loglog_window = (10.0, edge_t + 100.0)
     res3 = compute_all(st, td)
 
-    assert any("pore-pressure window" in w for w in res3.warnings)
+    assert any("log-log window" in w for w in res3.warnings)
     assert any("beyond the tail trim" in w for w in res3.warnings)
 
 
-def test_pp_window_open_ended_is_never_stale():
-    """A pp_window with an infinite upper bound ("to the end of the data") naturally shrinks
+def test_loglog_window_open_ended_is_never_stale():
+    """A loglog_window with an infinite upper bound ("to the end of the data") naturally shrinks
     with the trim instead of going stale -- never flagged, as long as the *lower* bound is
     still inside the trimmed data."""
     td, st, res = _seeded_with_crash()
     st.tail_trim_dt = pre_crash_trim_dt(res)
-    st.pp_window = (10.0, float("inf"))
+    st.loglog_window = (10.0, float("inf"))
     res2 = compute_all(st, td)
 
-    assert not any("pore-pressure window" in w for w in res2.warnings)
+    assert not any("log-log window" in w for w in res2.warnings)
 
 
-def test_pp_window_open_ended_but_lower_bound_beyond_trim_warns():
+def test_loglog_window_open_ended_but_lower_bound_beyond_trim_warns():
     """handle_pp_span sets t_hi = inf for the natural "from here to the end" gesture -- an
     open-ended upper bound is exempt on its own, but if the *lower* bound also lies beyond the
     trimmed tail, the fit still empties (masks nothing) with no other warning."""
@@ -161,14 +161,14 @@ def test_pp_window_open_ended_but_lower_bound_beyond_trim_warns():
     res2 = compute_all(st, td)
     edge_t = res2.diagnostics.t[-1]
 
-    st.pp_window = (edge_t + 50.0, float("inf"))
+    st.loglog_window = (edge_t + 50.0, float("inf"))
     res3 = compute_all(st, td)
 
-    assert any("pore-pressure window" in w for w in res3.warnings)
+    assert any("log-log window" in w for w in res3.warnings)
     assert any("beyond the tail trim" in w for w in res3.warnings)
 
 
-def test_pp_window_lower_bound_in_last_inter_sample_gap_warns():
+def test_loglog_window_lower_bound_in_last_inter_sample_gap_warns():
     """The stale check is outcome-based (mask count), not bound-vs-edge: a lower bound that
     lands strictly between the last two surviving samples is still "<= edge" but leaves the
     same <2-sample mask the pp block itself requires to fit at all -- must still warn."""
@@ -179,10 +179,10 @@ def test_pp_window_lower_bound_in_last_inter_sample_gap_warns():
     lo_in_last_gap = (t[-2] + t[-1]) / 2.0
     assert lo_in_last_gap < t[-1]  # sanity: strictly inside the data, not beyond the edge
 
-    st.pp_window = (lo_in_last_gap, float("inf"))
+    st.loglog_window = (lo_in_last_gap, float("inf"))
     res3 = compute_all(st, td)
 
-    assert any("pore-pressure window" in w for w in res3.warnings)
+    assert any("log-log window" in w for w in res3.warnings)
     assert any("beyond the tail trim" in w for w in res3.warnings)
 
 

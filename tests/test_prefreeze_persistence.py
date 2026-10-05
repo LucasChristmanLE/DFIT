@@ -135,11 +135,11 @@ def test_load_picks_missing_file_is_none_and_untouched(tmp_path):
 
 def test_decode_coerces_wrong_container_types():
     st = model._decode({"step_status": None, "mask_intervals": "x", "keep_intervals": 5,
-                        "loglog_window": [1], "pp_window": "ab"})
+                        "loglog_window": [1]})
     assert st.step_status == {} and st.mask_intervals == [] and st.keep_intervals == []
-    assert st.loglog_window is None and st.pp_window is None
-    st = model._decode({"step_status": [1], "loglog_window": [1, 2], "pp_window": 7})
-    assert st.step_status == {} and st.loglog_window == (1, 2) and st.pp_window is None
+    assert st.loglog_window is None
+    st = model._decode({"step_status": [1], "loglog_window": [1, 2]})
+    assert st.step_status == {} and st.loglog_window == (1, 2)
 
 
 def test_null_step_status_does_not_abort_scan(tmp_path):

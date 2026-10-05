@@ -70,7 +70,7 @@ def test_liberty_anchor_time_matches_its_anchor_pick():
 def test_pore_pressure_fit_fields_set_and_consistent():
     td, st, res = _full_state("C-A clear")
     dg = res.diagnostics
-    lo, hi = st.pp_window
+    lo, hi = st.loglog_window
     m = (dg.t >= lo) & (dg.t <= hi) & (dg.t > 0)
     assert res.pore_pressure_n_points == int(m.sum())
     assert res.pore_pressure_n_points >= 2

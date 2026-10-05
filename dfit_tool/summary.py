@@ -168,8 +168,8 @@ def _postclosure(state: PickState, res: DerivedResults) -> Section:
         ]
         return Section("Postclosure", ["Item", "Value"], rows)
     axis = {"tm12": "t^(-1/2)", "tm1": "t^(-1)"}.get(state.pp_axis, state.pp_axis)
-    if state.pp_window is not None:
-        lo, hi = state.pp_window
+    if state.loglog_window is not None:
+        lo, hi = state.loglog_window
         window = f"{lo / 60.0:.2f} to " + (f"{hi / 60.0:.2f}" if math.isfinite(hi) else "end")
     else:
         window = DASH

@@ -20,20 +20,20 @@ from tests.helpers import make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
-# compute_all: PC-F suppresses pore_pressure even with a valid pp_window; a non-PC-F scenario
+# compute_all: PC-F suppresses pore_pressure even with a valid loglog_window; a non-PC-F scenario
 # with the same window still produces a value.
 # --------------------------------------------------------------------------------------------------
-def _state_with_pp_window(td) -> PickState:
+def _state_with_window(td) -> PickState:
     st = injection_state(td)
     res = compute_all(st, td)
     picks.seed_pp(st, res)
-    assert st.pp_window is not None
+    assert st.loglog_window is not None
     return st
 
 
 def test_compute_all_suppresses_pore_pressure_under_pcf():
     td = make_testdata()
-    st = _state_with_pp_window(td)
+    st = _state_with_window(td)
     st.postclosure_scenario = "PC-F no peak"
 
     res = compute_all(st, td)
@@ -44,7 +44,7 @@ def test_compute_all_suppresses_pore_pressure_under_pcf():
 
 def test_compute_all_still_computes_pore_pressure_for_non_pcf_scenario():
     td = make_testdata()
-    st = _state_with_pp_window(td)
+    st = _state_with_window(td)
     st.postclosure_scenario = "PC-A linear"
     st.pp_axis = picks.suggest_pp_axis(st.postclosure_scenario) or st.pp_axis
 

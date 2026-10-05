@@ -137,9 +137,8 @@ def test_seed_tangent_sets_closure_slope_and_closure_g_only():
     picks.seed_tangent(st, res)
     assert st.closure_slope is not None
     assert st.closure_G is not None
-    # loglog/pp windows untouched
+    # log-log window untouched
     assert st.loglog_window is None
-    assert st.pp_window is None
 
 
 def test_seed_loglog_sets_loglog_window_only():
@@ -154,10 +153,9 @@ def test_seed_loglog_sets_loglog_window_only():
     assert st.loglog_window is None
     picks.seed_loglog(st, res)
     assert st.loglog_window is not None
-    assert st.pp_window is None
 
 
-def test_seed_pp_sets_pp_window_only():
+def test_seed_pp_seeds_the_shared_loglog_window():
     td = make_testdata()
     st = injection_state(td)
     picks.seed_injection(st, td)
@@ -166,11 +164,10 @@ def test_seed_pp_sets_pp_window_only():
     res = compute_all(st, td)
     picks.seed_gfunction(st, res)
     picks.seed_tangent(st, res)
-    assert st.pp_window is None
-    picks.seed_pp(st, res)
-    assert st.pp_window is not None
-    # loglog_window (a sibling, seeded separately) is untouched by seed_pp
     assert st.loglog_window is None
+    picks.seed_pp(st, res)
+    # pore pressure fits the log-log window, so seed_pp seeds it when Log-log never did
+    assert st.loglog_window is not None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -225,7 +222,7 @@ def test_seed_pp_no_op_when_diagnostics_missing():
     res = compute_all(st, td)
     assert res.diagnostics is None
     picks.seed_pp(st, res)
-    assert st.pp_window is None
+    assert st.loglog_window is None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -297,9 +294,9 @@ def test_seed_pp_non_destructive():
     picks.seed_isip(st, td, res)
     res = compute_all(st, td)
     pre = (11.0, 22.0)
-    st.pp_window = pre
+    st.loglog_window = pre
     picks.seed_pp(st, res)
-    assert st.pp_window == pre
+    assert st.loglog_window == pre
 
 
 # --------------------------------------------------------------------------------------------------

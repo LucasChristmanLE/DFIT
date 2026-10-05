@@ -1594,9 +1594,11 @@ class DfitApp:
                 # seed_gfunction may auto-assign C-A, which the combobox doesn't see on its own.
                 self.var_cscen.set(self.state.closure_scenario)
                 return hint
-            if key == "loglog":
-                # seed_loglog may auto-assign PC-A, which the combobox doesn't see on its own.
+            if key in ("loglog", "porepressure"):
+                # seed_loglog (seed_pp calls it when the window is missing) may auto-assign PC-A,
+                # which the combobox and axis radios don't see on their own.
                 self.var_pcscen.set(self.state.postclosure_scenario)
+                self.var_ppaxis.set(self.state.pp_axis)
         return None
 
     def _next(self):
@@ -2429,10 +2431,13 @@ class DfitApp:
                      "pick another scenario to select one.")
         elif step == "loglog":
             def on_span(lo, hi):
-                picks.handle_loglog_span(self.state, lo, hi)
+                dg = self.res.diagnostics
+                t_end = float(dg.t[-1]) if dg is not None and len(dg.t) else None
+                picks.handle_loglog_span(self.state, lo, hi, t_end=t_end)
                 slope = compute_all(self.state, self.td).loglog_slope
                 hint = picks.auto_assign_postclosure(self.state, slope)
                 self.var_pcscen.set(self.state.postclosure_scenario)
+                self.var_ppaxis.set(self.state.pp_axis)
                 self.refresh()
                 if hint:
                     # After refresh(): _attach_controllers resets the step's default hint.
@@ -2448,8 +2453,15 @@ class DfitApp:
                 text="PC-E: pore pressure is the -1/2 line from the Log-log peak; no window.")
         elif step == "porepressure":
             def on_span(lo, hi):
+                # Sets the shared log-log window, so the slope and its auto PC-A follow it.
                 picks.handle_pp_span(self.state, lo, hi)
+                slope = compute_all(self.state, self.td).loglog_slope
+                hint = picks.auto_assign_postclosure(self.state, slope)
+                self.var_pcscen.set(self.state.postclosure_scenario)
+                self.var_ppaxis.set(self.state.pp_axis)
                 self.refresh()
+                if hint:
+                    self.hint_lbl.config(text=hint)
             self._controllers.append(picks.SpanController(self.ax, on_span))
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
         elif step == "stiffness":
