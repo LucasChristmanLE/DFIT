@@ -227,7 +227,7 @@ def test_load_test_missing_source_backs_up_and_starts_fresh(tmp_path, monkeypatc
     monkeypatch.setattr(ui.messagebox, "showwarning", lambda *a, **k: warns.append(a))
     applied = []
     stub = types.SimpleNamespace(
-        state=PickState(), root=types.SimpleNamespace(title=lambda t: None),
+        state=PickState(), current_entry=None, root=types.SimpleNamespace(title=lambda t: None),
         _load_common=lambda path, well_hint=None: True,
         _apply_loaded_state=lambda s: applied.append(s),
         _refresh_queue_row=lambda e: None, _update_folder_controls=lambda: None)
@@ -307,7 +307,7 @@ def test_load_picks_os_error_raises_and_keeps_file(tmp_path, monkeypatch):
 
 def _load_test_stub(loaded):
     return types.SimpleNamespace(
-        state=PickState(), root=types.SimpleNamespace(title=lambda t: None),
+        state=PickState(), current_entry=None, root=types.SimpleNamespace(title=lambda t: None),
         _load_common=lambda path, well_hint=None: loaded.append(path) or True,
         _apply_loaded_state=lambda s: None,
         _refresh_queue_row=lambda e: None, _update_folder_controls=lambda: None)

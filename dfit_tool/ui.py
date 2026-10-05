@@ -413,7 +413,15 @@ class DfitApp:
 
         tree_frame = ttk.Frame(self.queue_frame)
         tree_frame.pack(side="top", fill="both", expand=True)
-        self.queue_tree = ttk.Treeview(tree_frame, columns=("status",), show="tree headings")
+        # The selection is pinned to the open test (_refresh_queue_row, _on_queue_select), so the
+        # selected state is drawn as the open-test highlight instead of the theme's blue. The
+        # selected map overrides tag colors, which is why the "current" tag alone isn't enough.
+        style = ttk.Style()
+        style.map("Queue.Treeview",
+                  background=[("selected", C.UI_CURRENT)],
+                  foreground=[("selected", C.UI_CURRENT_TEXT)])
+        self.queue_tree = ttk.Treeview(tree_frame, columns=("status",), show="tree headings",
+                                       selectmode="browse", style="Queue.Treeview")
         self.queue_tree.heading("#0", text="Test")
         self.queue_tree.heading("status", text="Status")
         self.queue_tree.column("#0", width=140, stretch=True)
@@ -429,6 +437,10 @@ class DfitApp:
         self.queue_tree.tag_configure("skipped", foreground=C.UI_MUTED)
         self.queue_tree.tag_configure("in_progress", foreground=C.UI_WARNING)
         self.queue_tree.tag_configure("new", foreground=C.UI_TEXT)
+        # Configured last so it wins over the status tags.
+        self.queue_tree.tag_configure("current", background=C.UI_CURRENT,
+                                      foreground=C.UI_CURRENT_TEXT,
+                                      font=("TkDefaultFont", 9, "bold"))
 
         # center: canvas
         center = ttk.Frame(body)
@@ -831,8 +843,15 @@ class DfitApp:
         self._update_progress_label()
 
     def _refresh_queue_row(self, entry: store.TestEntry):
+        """Redraw one row. The open test (current_entry) gets the "current" tag and holds the
+        selection, so the highlight always marks the open test, not the last click."""
         if self.queue_tree.exists(entry.test_id):
-            self.queue_tree.item(entry.test_id, values=(entry.status,), tags=(entry.status,))
+            is_current = entry is self.current_entry
+            tags = (entry.status, "current") if is_current else (entry.status,)
+            self.queue_tree.item(entry.test_id, values=(entry.status,), tags=tags)
+            if is_current:
+                self.queue_tree.selection_set(entry.test_id)
+                self.queue_tree.see(entry.test_id)
         self._update_progress_label()
 
     def _update_progress_label(self):
@@ -904,9 +923,12 @@ class DfitApp:
             if saved is not None:
                 self._apply_loaded_state(saved)
         self.state.active_source = source.lower()
+        prev = self.current_entry
         self.current_entry = entry
         self.root.title(f"{APP_NAME} — {entry.display_label}")
         entry.status = store.status_for(self.state if saved else None)
+        if prev is not None and prev is not entry:
+            self._refresh_queue_row(prev)  # drop its open-test marker
         self._refresh_queue_row(entry)
         self._update_folder_controls()
 
@@ -1113,6 +1135,12 @@ class DfitApp:
                 self.queue_tree.selection_set(self.current_entry.test_id)
             return
         self._load_test(entry)
+        if self.current_entry is not entry:
+            # The load failed and the previous test is still open: put the highlight back.
+            if self.current_entry is not None:
+                self.queue_tree.selection_set(self.current_entry.test_id)
+            else:
+                self.queue_tree.selection_remove(*self.queue_tree.selection())
 
     def _load_questionnaire(self, csv_path: str, well_hint: Optional[str] = None):
         """Auto-detect and parse a DFIT Questionnaire xlsx next to `csv_path`; prefill

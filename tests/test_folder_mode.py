@@ -66,6 +66,7 @@ def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monk
     monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
 
     stub = types.SimpleNamespace()
+    stub.current_entry = None
     stub._load_common = lambda path, well_hint=None: True
     stub.state = PickState()
     stub._apply_loaded_state_calls = []
@@ -103,6 +104,7 @@ def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monke
     monkeypatch.setattr(store, "load_picks_for", counting_load_picks_for)
 
     stub = types.SimpleNamespace()
+    stub.current_entry = None
     stub._load_common = lambda path, well_hint=None: True
     stub.state = PickState()
     stub._apply_loaded_state = lambda state: setattr(stub, "state", state)
@@ -355,7 +357,8 @@ def test_on_queue_select_tolerates_current_entry_none():
     stub = types.SimpleNamespace()
     stub.current_entry = None
     stub.queue_entries = [entry]
-    stub.queue_tree = types.SimpleNamespace(selection=lambda: ("w1",))
+    stub.queue_tree = types.SimpleNamespace(selection=lambda: ("w1",),
+                                            selection_remove=lambda *items: None)
     stub._save_calls = []
     stub._save_current_queue_picks = lambda: stub._save_calls.append(True)
     stub._load_calls = []
@@ -366,6 +369,109 @@ def test_on_queue_select_tolerates_current_entry_none():
 
     assert stub._save_calls == [True]
     assert stub._load_calls == [entry]
+
+
+# --------------------------------------------------------------------------------------------------
+# Open-test highlight: the sidebar marks current_entry's row with the "current" tag (Liberty red)
+# and keeps the Treeview selection on it, independent of which row was clicked last.
+# --------------------------------------------------------------------------------------------------
+class _RowTree:
+    def __init__(self, ids):
+        self.ids = set(ids)
+        self.tags = {}
+        self.selected = ()
+        self.seen = []
+
+    def exists(self, iid):
+        return iid in self.ids
+
+    def item(self, iid, **kw):
+        if "tags" in kw:
+            self.tags[iid] = tuple(kw["tags"])
+
+    def selection(self):
+        return self.selected
+
+    def selection_set(self, iid):
+        self.selected = (iid,)
+
+    def selection_remove(self, *items):
+        self.selected = ()
+
+    def see(self, iid):
+        self.seen.append(iid)
+
+
+def _row_stub(entries, current):
+    stub = types.SimpleNamespace()
+    stub.queue_entries = entries
+    stub.current_entry = current
+    stub.queue_tree = _RowTree(e.test_id for e in entries)
+    stub.progress_lbl = types.SimpleNamespace(config=lambda **kw: None)
+    stub._update_progress_label = types.MethodType(DfitApp._update_progress_label, stub)
+    stub._refresh_queue_row = types.MethodType(DfitApp._refresh_queue_row, stub)
+    return stub
+
+
+def test_refresh_queue_row_marks_and_selects_current_entry():
+    a = store.TestEntry(test_id="a", folder="f", status="new")
+    b = store.TestEntry(test_id="b", folder="f", status="done")
+    stub = _row_stub([a, b], current=a)
+
+    stub._refresh_queue_row(a)
+    stub._refresh_queue_row(b)
+
+    assert stub.queue_tree.tags["a"] == ("new", "current")
+    assert stub.queue_tree.tags["b"] == ("done",)
+    assert stub.queue_tree.selected == ("a",)
+    assert stub.queue_tree.seen == ["a"]
+
+
+def test_load_test_moves_current_marker_off_previous_row(tmp_path):
+    a = store.TestEntry(test_id="a", folder=str(tmp_path), csv_path=str(tmp_path / "a.csv"))
+    b = store.TestEntry(test_id="b", folder=str(tmp_path), csv_path=str(tmp_path / "b.csv"))
+    stub = _row_stub([a, b], current=None)
+    stub.state = PickState()
+    stub._load_common = lambda path, well_hint=None: True
+    stub._apply_loaded_state = lambda s: setattr(stub, "state", s)
+    stub.root = types.SimpleNamespace(title=lambda t: None)
+    stub._update_folder_controls = lambda: None
+    stub._load_test = types.MethodType(DfitApp._load_test, stub)
+
+    stub._load_test(a)
+    assert "current" in stub.queue_tree.tags["a"]
+    stub._load_test(b)
+
+    assert "current" not in stub.queue_tree.tags["a"]
+    assert "current" in stub.queue_tree.tags["b"]
+    assert stub.queue_tree.selected == ("b",)
+
+
+def test_on_queue_select_failed_load_restores_selection_to_open_test():
+    a = store.TestEntry(test_id="a", folder="f")
+    b = store.TestEntry(test_id="b", folder="f")
+    stub = _row_stub([a, b], current=a)
+    stub.queue_tree.selected = ("b",)  # the click
+    stub._save_current_queue_picks = lambda: None
+    stub._load_test = lambda e: None  # load fails: current_entry is unchanged
+    stub._on_queue_select = types.MethodType(DfitApp._on_queue_select, stub)
+
+    stub._on_queue_select()
+
+    assert stub.queue_tree.selected == ("a",)
+
+
+def test_on_queue_select_failed_load_with_no_open_test_clears_selection():
+    a = store.TestEntry(test_id="a", folder="f")
+    stub = _row_stub([a], current=None)
+    stub.queue_tree.selected = ("a",)
+    stub._save_current_queue_picks = lambda: None
+    stub._load_test = lambda e: None
+    stub._on_queue_select = types.MethodType(DfitApp._on_queue_select, stub)
+
+    stub._on_queue_select()
+
+    assert stub.queue_tree.selected == ()
 
 
 # --------------------------------------------------------------------------------------------------

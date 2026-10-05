@@ -47,6 +47,8 @@ UI_WARNING = "#b35c00"              # amber; gold is unreadable as text
 UI_MUTED = MID_GREY                 # notes, hints, skipped rows, neutral slider
 UI_TEXT = LBRT_BLACK
 UI_DONE = "#137333"
+UI_CURRENT = LBRT_RED               # folder-mode sidebar row of the open test
+UI_CURRENT_TEXT = "white"
 
 # Manual mask/keep bands on Overview.
 MANUAL_MASK = DROPOUT               # analyst-masked glitch, same hue as auto-masked samples
