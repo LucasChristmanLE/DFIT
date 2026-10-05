@@ -376,7 +376,7 @@ Time to flow regime (`DerivedResults.flow_regime_time_s`): the first diagnostics
 Falloff duration (`DerivedResults.falloff_duration_s`): shut-in to the effective tail cutoff
 (`resolve_tail_cut_dt`), clamped to the last sample, or the end of the record when nothing cuts
 it. Shown in days in the Expanded results "Inputs and data" table; logged as
-`falloff_duration_days`, the last `LOG_COLUMNS` entry.
+`falloff_duration_days`.
 
 PC-E and PC-F (`model.NO_TREND_POSTCLOSURE`, gate `model.loglog_window_suppressed`) show no
 log-log window: no shading, no slope (`loglog_slope` is None), no span controller. The pick stays
