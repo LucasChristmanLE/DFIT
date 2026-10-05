@@ -156,6 +156,9 @@ non-data `.xlsx` files; it never raises.
 - `dfit_log.csv`: `build_log_row` maps `PickState`/`DerivedResults` to `store.LOG_COLUMNS`
   (computes nothing itself); `upsert_log_row` replaces or appends by `test_id`. **`LOG_COLUMNS`
   is append-only**: new columns go at the end.
+- Density fallback: the "Fallback (8.33)" checkbox next to the density entry sets
+  `density_ppg = model.FALLBACK_DENSITY_PPG` and `PickState.density_fallback`, locks the entry,
+  and restores the prior entry text on uncheck. Logged as `density_fallback`.
 - Ending a test: Finish (on the last step) saves picks, writes a PNG of every step to
   `<stem> DFIT plots/`, and in folder mode upserts the log row and advances to the next `"new"`
   test (`ui._advance_queue`). Finish clears `explicit_status` but keeps a per-step `"skipped"`

@@ -99,6 +99,9 @@ LOG_COLUMNS = [
     # Days from shut-in to the effective tail cutoff (end of record when nothing cuts it) --
     # tail-appended per the append-only convention.
     "falloff_duration_days",
+    # True when fluid_density is the 8.33 ppg fallback (PickState.density_fallback), not a
+    # measured value -- tail-appended per the append-only convention.
+    "density_fallback",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -628,4 +631,5 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "flow_regime_time_min": _minutes(res.flow_regime_time_s),
         "falloff_duration_days": (res.falloff_duration_s / 86400.0
                                   if res.falloff_duration_s is not None else None),
+        "density_fallback": state.density_fallback,
     }

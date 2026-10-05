@@ -68,4 +68,4 @@ def test_log_row_writes_days(tmp_path):
     st.tail_trim_dt = 0.5 * t_end
     assert _log_row(tmp_path, st, td)["falloff_duration_days"] == pytest.approx(
         0.5 * t_end / 86400.0)
-    assert store.LOG_COLUMNS[-1] == "falloff_duration_days"
+    assert store.LOG_COLUMNS[-2] == "falloff_duration_days"

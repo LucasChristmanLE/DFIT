@@ -75,6 +75,7 @@ FROZEN = [
     'contact_method',
     'flow_regime_time_min',
     'falloff_duration_days',
+    'density_fallback',
 ]
 
 

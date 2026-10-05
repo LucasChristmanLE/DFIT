@@ -39,6 +39,9 @@ def closure_uninterpretable(state: "PickState") -> bool:
 # test can show a clear slope that is far from both -1/2 and -1.
 NO_TREND_POSTCLOSURE = ("PC-E", "PC-F")
 
+# Fresh-water density used by the "Fallback (8.33)" checkbox when no measured density is known.
+FALLBACK_DENSITY_PPG = 8.33
+
 
 def loglog_window_suppressed(state: "PickState") -> bool:
     """PC-E/PC-F: no log-log window is shown or fitted."""
@@ -75,6 +78,9 @@ class PickState:
     rate_unit: str = "auto"
     volume_unit: str = "auto"
     density_ppg: Optional[float] = None
+    # True when density_ppg is FALLBACK_DENSITY_PPG set by the fallback checkbox rather than a
+    # measured value. Old saves take the default via _decode's known-field filter.
+    density_fallback: bool = False
     tvd_ft: Optional[float] = None
     well_name: str = ""
     formation: str = ""

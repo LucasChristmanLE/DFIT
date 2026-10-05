@@ -25,7 +25,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from . import APP_NAME
 from . import (colors as C, guide_content, interpret, io_load, picks, plots, sliders, store,
                summary)
-from .model import (NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
+from .model import (FALLBACK_DENSITY_PPG, NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
                     closure_uninterpretable, compute_all, first_not_visited_step,
                     infer_step_status, last_step, loglog_window_suppressed, next_step,
                     pp_from_peak, prev_step, resolve_step, skipped_steps, step_gate_error)
@@ -319,6 +319,9 @@ class DfitApp:
         self.var_rate = tk.StringVar()
         self.var_volume = tk.StringVar()
         self.var_density = tk.StringVar()
+        self.var_density_fallback = tk.BooleanVar(value=False)
+        # Density entry text before the fallback box was checked, restored on uncheck.
+        self._density_before_fallback = ""
         self.var_tvd = tk.StringVar()
         self.var_alpha = tk.StringVar(value="1.0")
         self.var_step = tk.StringVar(value="30")
@@ -368,8 +371,13 @@ class DfitApp:
 
         cfg2 = ttk.Frame(self.root, padding=(6, 2))
         cfg2.pack(side="top", fill="x")
-        for label, var, w in [("Density (ppg):", self.var_density, 7),
-                              ("TVD (ft):", self.var_tvd, 8),
+        ttk.Label(cfg2, text="Density (ppg):").pack(side="left", padx=(8, 2))
+        self.ent_density = ttk.Entry(cfg2, textvariable=self.var_density, width=7)
+        self.ent_density.pack(side="left")
+        ttk.Checkbutton(cfg2, text=f"Fallback ({FALLBACK_DENSITY_PPG})",
+                        variable=self.var_density_fallback,
+                        command=self._on_density_fallback).pack(side="left", padx=(4, 0))
+        for label, var, w in [("TVD (ft):", self.var_tvd, 8),
                               ("alpha:", self.var_alpha, 5),
                               ("resample step (psi):", self.var_step, 6)]:
             ttk.Label(cfg2, text=label).pack(side="left", padx=(8, 2))
@@ -692,6 +700,8 @@ class DfitApp:
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
         # prefilling from a questionnaire, so a well with no questionnaire doesn't inherit them.
         self.var_density.set("")
+        self.var_density_fallback.set(False)
+        self._set_density_fallback_widgets(False)
         self.var_tvd.set("")
         self.var_well.set("")
         self.var_formation.set("")
@@ -994,6 +1004,7 @@ class DfitApp:
             rate_unit=old.rate_unit,
             volume_unit=old.volume_unit,
             density_ppg=old.density_ppg,
+            density_fallback=old.density_fallback,
             tvd_ft=old.tvd_ft,
             well_name=old.well_name,
             formation=old.formation,
@@ -1157,6 +1168,9 @@ class DfitApp:
         # previously-good, already-logged value -- only an explicitly
         # emptied box clears it.
         self.state.density_ppg = _num(self.var_density.get(), self.state.density_ppg)
+        self.state.density_fallback = bool(self.var_density_fallback.get())
+        if self.state.density_fallback:
+            self.state.density_ppg = FALLBACK_DENSITY_PPG
         self.state.tvd_ft = _num(self.var_tvd.get(), self.state.tvd_ft)
         self.state.well_name = self.var_well.get().strip()
         self.state.formation = self.var_formation.get().strip()
@@ -1230,6 +1244,22 @@ class DfitApp:
     def _on_showd2(self):
         self.state.show_d2pdg2 = self.var_showd2.get()
         self.refresh()
+
+    def _set_density_fallback_widgets(self, on: bool):
+        """Disable the density entry while the fallback box is checked."""
+        self.ent_density.config(state="disabled" if on else "normal")
+
+    def _on_density_fallback(self):
+        """Fallback checkbox: checked puts FALLBACK_DENSITY_PPG in the (locked) density entry;
+        unchecked restores whatever the entry held before. Recomputes like Apply."""
+        on = bool(self.var_density_fallback.get())
+        if on:
+            self._density_before_fallback = self.var_density.get()
+            self.var_density.set(str(FALLBACK_DENSITY_PPG))
+        else:
+            self.var_density.set(self._density_before_fallback)
+        self._set_density_fallback_widgets(on)
+        self._apply_config()
 
     def _on_stiffness_no_upturn(self):
         """Toggle the stiffness step's negative finding. On UNCHECK, if no pick exists yet
@@ -2644,6 +2674,9 @@ class DfitApp:
         self.var_rate_unit.set(self.state.rate_unit)
         self.var_volume_unit.set(self.state.volume_unit)
         self.var_density.set("" if self.state.density_ppg is None else str(self.state.density_ppg))
+        self.var_density_fallback.set(self.state.density_fallback)
+        self._density_before_fallback = ""
+        self._set_density_fallback_widgets(self.state.density_fallback)
         self.var_tvd.set("" if self.state.tvd_ft is None else str(self.state.tvd_ft))
         self.var_well.set(self.state.well_name)
         self.var_formation.set(self.state.formation)
