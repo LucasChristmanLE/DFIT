@@ -721,12 +721,13 @@ def _resolve_gradients(state: "PickState", res: "DerivedResults") -> "DerivedRes
 STIFFNESS_MAX_POINTS = 2000
 
 
-def _min_label(dt_s: float) -> str:
-    """Whole minutes for a warning. "at 0 min" reads as "no time elapsed at all" -- true for
-    anything in the first ~30 s, not just the exact instant of shut-in -- so "<1" is printed
-    instead; gated on the formatted (rounded) string, since that's what's actually printed."""
-    s = f"{dt_s/60:.0f}"
-    return "<1" if s == "0" else s
+def _hr_label(dt_s: float) -> str:
+    """Hours to two decimals for a warning, matching the plots' hour axes. "at 0.00 hr" reads as
+    "no time elapsed at all" -- true for anything in the first ~18 s, not just the exact instant
+    of shut-in -- so "<0.01" is printed instead; gated on the formatted (rounded) string, since
+    that's what's actually printed."""
+    s = f"{dt_s/3600:.2f}"
+    return "<0.01" if s == "0.00" else s
 
 
 def compute_all(state: PickState, td: TestData) -> DerivedResults:
@@ -901,12 +902,12 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     detail += f", {duration_str} s"
                 detail += f", to {d.p_min:.0f} psi"
                 res.warnings.insert(0,
-                    f"Pressure dropout masked at {_min_label(d.dt_start)} min ({detail})")
+                    f"Pressure dropout masked at {_hr_label(d.dt_start)} hr ({detail})")
             elif len(res.dropouts) > 1:
                 first = res.dropouts[0]
                 res.warnings.insert(0,
                     f"{len(res.dropouts)} pressure dropouts masked, first at "
-                    f"{_min_label(first.dt_start)} min")
+                    f"{_hr_label(first.dt_start)} hr")
             # Front-inserted in reverse so they read rise, manual mask, manual keep, then the
             # dropout line.
             if res.n_keep_restored > 0:
@@ -921,13 +922,13 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             if len(res.rise_excursions) == 1:
                 e = res.rise_excursions[0]
                 res.warnings.insert(0,
-                    f"Pressure rise masked at {_min_label(e.dt_start)} min "
-                    f"({_min_label(e.dt_end - e.dt_start)} min, +{e.p_max - e.base:.0f} psi)")
+                    f"Pressure rise masked at {_hr_label(e.dt_start)} hr "
+                    f"({_hr_label(e.dt_end - e.dt_start)} hr, +{e.p_max - e.base:.0f} psi)")
             elif len(res.rise_excursions) > 1:
                 first = res.rise_excursions[0]
                 res.warnings.insert(0,
                     f"{len(res.rise_excursions)} pressure rises masked, first at "
-                    f"{_min_label(first.dt_start)} min")
+                    f"{_hr_label(first.dt_start)} hr")
 
     if not state.isip_use_tangent and res.t_shutin_s is not None and shutin_idx is not None:
         p_shutin = (float(res.bhp_all[shutin_idx])
@@ -1028,9 +1029,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     stride = -(-n // 500)
                     res.guard_excluded_G = tail_G[::stride]
                     res.guard_excluded_p = tail_p[::stride]
-            # Only worth reporting in its original form while the guard is still actually
-            # binding -- i.e. the resolved cutoff hasn't been overridden past it at all
-            # (cutoff <= guard_dt). Once an override DOES extend the cutoff past the guard, one
+            # Only worth reporting in its original form while the guard is the binding cutoff
+            # (cutoff == guard_dt: no trim, or a stale trim clamped back to it). A trim before
+            # guard_dt already excludes everything the guard would, and its own "Tail trimmed"
+            # warning says so, so the guard line would be noise. Once an override DOES extend the cutoff past the guard, one
             # of two things is true: either it actually admitted at least one new point into the
             # diagnostics for real (admitted_new_data -- with the bidirectional keep rule this is
             # now the common case, since even a flat excursion's own jump usually moves >= step
@@ -1049,14 +1051,14 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             # guard must never be buried in the UI. The tail-trim escape warning below (its own
             # insert(0), for a diagnostics-starving trim) runs after this in code order, so it
             # still lands frontmost of the two when both fire.
-            if cutoff is not None and cutoff <= rs_full.guard_dt:
+            if cutoff is not None and cutoff == rs_full.guard_dt:
                 res.warnings.insert(0,
-                    f"Tail guard stopped resampling at {rs_full.guard_dt/60:.0f} min "
+                    f"Tail guard stopped resampling at {rs_full.guard_dt/3600:.2f} hr "
                     "(sustained pressure rise)")
             elif override_extends_past_guard and not admitted_new_data:
                 res.warnings.insert(0,
-                    f"Tail-guard override to {cutoff/60:.0f} min added no points past "
-                    f"{rs_full.guard_dt/60:.0f} min; results unchanged")
+                    f"Tail-guard override to {cutoff/3600:.2f} hr added no points past "
+                    f"{rs_full.guard_dt/3600:.2f} hr; results unchanged")
         if cutoff is not None:
             # cutoff == guard_dt is exactly the "no trim narrower than the guard" case (either
             # state.tail_trim_dt is None, or an explicit trim got clamped back to guard_dt for
@@ -1086,7 +1088,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 # seed_tail_trim snaps to the last resampled sample STRICTLY BEFORE the crash,
                 # side="left") -- so this must point at the crash beginning just past the cut,
                 # not claim the cut is where pressure first read low.
-                msg = (f"Tail auto-trimmed at {state.tail_trim_dt/60:.0f} min "
+                msg = (f"Tail auto-trimmed at {state.tail_trim_dt/3600:.2f} hr "
                        "(surface pressure drops below "
                        f"{interpret.MIN_SURFACE_PRESSURE_PSI:.0f} psi)")
                 # A guard existing at all in this record means it fired LATER than this
@@ -1111,7 +1113,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 else:
                     n_excluded = int(np.sum(dt_all[post] > cutoff))
                 res.warnings.insert(0,
-                    f"Tail trimmed at {cutoff/60:.0f} min ({n_excluded} samples excluded)")
+                    f"Tail trimmed at {cutoff/3600:.2f} hr ({n_excluded} samples excluded)")
         res.resampled = rs
         if len(rs.p) >= 3:
             res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)

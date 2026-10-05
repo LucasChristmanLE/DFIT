@@ -533,6 +533,20 @@ def test_guard_warning_present_when_trim_is_stale_and_not_overridden():
     assert any(_WARNING_SNIPPET in w for w in res2.warnings)
 
 
+def test_guard_warning_suppressed_when_trim_cuts_before_guard():
+    """A trim before guard_dt already excludes everything the guard would, so only the trim
+    warning shows."""
+    td, st, res = _seeded_with_sustained_rise()
+    guard_dt = res.resampled_full.guard_dt
+    assert guard_dt is not None
+
+    st.tail_trim_dt = guard_dt - 600.0
+    res2 = compute_all(st, td)
+
+    assert any(_TRIMMED_SNIPPET in w for w in res2.warnings)
+    assert not any(_WARNING_SNIPPET in w for w in res2.warnings)
+
+
 def test_guard_warning_honest_when_override_admits_nothing():
     """Finding 1 (this round): overriding past a guard on a tail that never resumes a decline
     admits NOTHING new into the diagnostics -- res.resampled/res.diagnostics stay numerically
@@ -579,8 +593,8 @@ def test_guard_warning_honest_when_override_admits_nothing():
     assert not any(_TRIMMED_SNIPPET in w for w in res2.warnings)      # would be a confusing pair
     assert any(_OVERRIDE_NO_DATA_SNIPPET in w for w in res2.warnings)
     honest = next(w for w in res2.warnings if _OVERRIDE_NO_DATA_SNIPPET in w)
-    assert f"{st.tail_trim_dt/60:.0f} min" in honest
-    assert f"{guard_dt/60:.0f} min" in honest
+    assert f"{st.tail_trim_dt/3600:.2f} hr" in honest
+    assert f"{guard_dt/3600:.2f} hr" in honest
 
 
 def test_guard_warning_trimmed_present_and_data_changes_when_override_admits_real_data():
@@ -607,7 +621,7 @@ def test_guard_warning_trimmed_present_and_data_changes_when_override_admits_rea
     assert not any(_WARNING_SNIPPET in w for w in res2.warnings)
     assert not any(_OVERRIDE_NO_DATA_SNIPPET in w for w in res2.warnings)
     assert any(_TRIMMED_SNIPPET in w for w in res2.warnings)
-    assert any(f"{st.tail_trim_dt/60:.0f} min" in w for w in res2.warnings if
+    assert any(f"{st.tail_trim_dt/3600:.2f} hr" in w for w in res2.warnings if
                _TRIMMED_SNIPPET in w)
 
 

@@ -663,7 +663,7 @@ def test_compute_all_emits_explanatory_line_for_manual_trim():
     res2 = compute_all(st, td)
 
     assert res2.warnings[0] == (
-        f"Tail trimmed at {st.tail_trim_dt/60:.0f} min "
+        f"Tail trimmed at {st.tail_trim_dt/3600:.2f} hr "
         f"({expected_n_excluded} samples excluded)")
 
 

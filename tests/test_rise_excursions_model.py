@@ -53,7 +53,7 @@ def test_returning_bump_is_masked_and_resampling_continues():
     assert len(res.rise_excursions) == 1
     e = res.rise_excursions[0]
     assert e.dt_start == BUMP_LO and e.n_samples == BUMP_HI - BUMP_LO
-    want = (f"Pressure rise masked at 33 min (5 min, "
+    want = (f"Pressure rise masked at 0.56 hr (0.08 hr, "
             f"+{e.p_max - e.base:.0f} psi)")
     assert res.warnings[0] == want
     assert len(want) <= 90
@@ -70,7 +70,7 @@ def test_two_rises_warning():
     td.df.loc[_SHUTIN_IDX + 4000:_SHUTIN_IDX + 4299, PRESSURE_COL] += 300.0
     res = compute_all(st, td)
     assert len(res.rise_excursions) == 2
-    assert res.warnings[0] == "2 pressure rises masked, first at 33 min"
+    assert res.warnings[0] == "2 pressure rises masked, first at 0.56 hr"
 
 
 def test_keep_interval_restores_guard_and_warns():
@@ -92,7 +92,7 @@ def test_partially_kept_rise_is_still_reported():
     st.keep_intervals = [(_abs_t(BUMP_LO), _abs_t(BUMP_LO + 100))]
     res = compute_all(st, td)
     assert len(res.rise_excursions) == 1
-    assert any(w.startswith("Pressure rise masked at 33 min") for w in res.warnings)
+    assert any(w.startswith("Pressure rise masked at 0.56 hr") for w in res.warnings)
     assert res.resampled_full.guard_dt is not None   # the kept part of the bump fires the guard
 
 

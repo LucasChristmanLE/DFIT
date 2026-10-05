@@ -1136,8 +1136,10 @@ point), and that sample must stay excluded to preserve the guard's historic "not
 `guard_dt` is consumed" contract. Any other cutoff (an explicit trim, whether below the guard or,
 with an override, past it) keeps `<=` as before. `compute_all` reuses the same resolved cutoff
 for one more thing: the "Tail guard stopped resampling ... later data excluded" warning fires in
-its original form only while the guard is still actually binding, i.e. the resolved cutoff is
-`<= guard_dt` (the no-override default, and a stale trim that got clamped back). Once an override
+its original form only while the guard is the binding cutoff, i.e. the resolved cutoff is
+`== guard_dt` (the no-override default, and a stale trim that got clamped back). A trim before
+`guard_dt` suppresses it: the trim already excludes everything the guard would, and its own
+"Tail trimmed" warning reports the cut. Once an override
 lets the trim stick past `guard_dt`, `compute_all` checks whether that override actually admitted
 new resampled points there (`np.any((rs_full.dt >= guard_dt) & (rs_full.dt <= cutoff))` --
 INCLUSIVE of `guard_dt` itself, since the bidirectional resampler can keep a sample exactly there
@@ -1277,17 +1279,19 @@ the guard-excluded preview; the low-surface-pressure scan excludes masked sample
 and `picks.seed_tail_trim` masks `p_surface_post` to NaN before calling
 `interpret.suggest_tail_trim_dt` (which already ignores non-finite samples) so a dropout never
 triggers the `"low_pressure"` auto-trim. A firing detector is never silent: `compute_all`
-`insert(0)`s one warning line -- on the motivating Encore record, `"Pressure dropout masked at 11
-min (23 samples, 22 s, to 12 psi)"` -- or, for several events, `"3 pressure dropouts masked,
-first at 11 min"` -- silent when there are none. Both the minute and (single-event) duration figures are
-gated on their FORMATTED (rounded) value, not the raw number, so what's checked always matches
-what's printed: `"at 0 min"` reads as "no time elapsed at all" and is misleading for anything in
-the first ~30 s, so it becomes `"at <1 min"` instead when `f"{dt_start/60:.0f}"` rounds to `"0"`;
+`insert(0)`s one warning line -- on the motivating Encore record, `"Pressure dropout masked at 0.18
+hr (23 samples, 22 s, to 12 psi)"` -- or, for several events, `"3 pressure dropouts masked,
+first at 0.18 hr"` -- silent when there are none. Warning times are in hours to two decimals
+(`model._hr_label`), matching the plots' hour axes. Both the time and (single-event) duration
+figures are gated on their FORMATTED (rounded) value, not the raw number, so what's checked always
+matches what's printed: `"at 0.00 hr"` reads as "no time elapsed at all" and is misleading for
+anything in the first ~18 s, so it becomes `"at <0.01 hr"` instead when `f"{dt_start/3600:.2f}"`
+rounds to `"0.00"`;
 likewise the single-event duration clause is dropped entirely (not printed as the useless `"0
 s"`) when `f"{duration:.0f}"` rounds to `"0"` -- true for an exact-zero single-sample dip
 (`dt_end == dt_start`) and for a sub-0.5 s multi-sample one on a sub-1-Hz channel alike. The
 single-event line also grammar-checks the common case: `"1 sample"` not `"1 samples"` for a
-single-sample glitch -- e.g. `"Pressure dropout masked at <1 min (1 sample, to 15 psi)"`.
+single-sample glitch -- e.g. `"Pressure dropout masked at <0.01 hr (1 sample, to 15 psi)"`.
 `plots._split_dropouts(p, mask)` splits a trace into `(p_clean, p_masked)` (NaN in the
 other array); `render_overview`/`render_isip` plot `p_clean` as the main trace (so the line breaks
 across a masked gap instead of spiking to it) and `p_masked`'s finite samples as small magenta

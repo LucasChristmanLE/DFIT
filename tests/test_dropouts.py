@@ -525,9 +525,9 @@ def test_dropout_warning_omits_zero_duration_for_subsecond_multi_sample_dip():
     assert "to 20 psi" in msg
 
 
-def test_dropout_warning_shows_less_than_1_min_for_early_events():
-    """A dropout starting well within the first minute after shut-in must read "at <1 min", not
-    the misleading "at 0 min" (reads as "no time elapsed at all"). Covers both the single-event
+def test_dropout_warning_shows_less_than_0_01_hr_for_early_events():
+    """A dropout starting within ~18 s after shut-in must read "at <0.01 hr", not the
+    misleading "at 0.00 hr" (reads as "no time elapsed at all"). Covers both the single-event
     and the "N pressure dropouts masked (first at ...)" multi-event message, via a second, later
     dropout in the same record."""
     start_idx, shutin_idx = 20, 50
@@ -552,8 +552,8 @@ def test_dropout_warning_shows_less_than_1_min_for_early_events():
 
     assert len(res.dropouts) == 2
     msg = next(w for w in res.warnings if "pressure dropouts masked" in w)
-    assert "first at <1 min" in msg
-    assert "at 0 min" not in msg
+    assert "first at <0.01 hr" in msg
+    assert "at 0.00 hr" not in msg
 
 
 def test_compute_all_no_dropout_no_warning_no_mask():

@@ -107,7 +107,7 @@ def test_tail_trimmed_warning_reports_effective_cutoff_when_clamped_to_guard():
     res = compute_all(st, td)
     dt_all = td.t_s - res.t_shutin_s
     n_beyond = int(np.sum(dt_all >= guard_dt))
-    want = f"Tail trimmed at {guard_dt/60:.0f} min ({n_beyond} samples excluded)"
+    want = f"Tail trimmed at {guard_dt/3600:.2f} hr ({n_beyond} samples excluded)"
     assert want in res.warnings
 
 
@@ -119,7 +119,7 @@ def test_tail_trimmed_warning_unchanged_for_trim_before_guard():
     res = compute_all(st, td)
     dt_all = td.t_s - res.t_shutin_s
     n_beyond = int(np.sum(dt_all[dt_all >= 0] > st.tail_trim_dt))
-    assert f"Tail trimmed at {st.tail_trim_dt/60:.0f} min ({n_beyond} samples excluded)" \
+    assert f"Tail trimmed at {st.tail_trim_dt/3600:.2f} hr ({n_beyond} samples excluded)" \
         in res.warnings
 
 
