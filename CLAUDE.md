@@ -152,7 +152,9 @@ non-data `.xlsx` files; it never raises.
   saves.
 - `store.status_for`: `"done"`/`"in_progress"` derive purely from `step_status` (PC-F counts
   porepressure and stiffness as accounted for); `"skipped"` also comes from
-  `state.explicit_status` (the Skip-test toggle), which wins over derivation.
+  `state.explicit_status` (the Skip-test toggle), which wins over derivation. A test stays
+  `"new"` until some step is `"done"` or `"skipped"`; opening it (Overview `"visited"`) is not
+  progress.
 - `dfit_log.csv`: `build_log_row` maps `PickState`/`DerivedResults` to `store.LOG_COLUMNS`
   (computes nothing itself); `upsert_log_row` replaces or appends by `test_id`. **`LOG_COLUMNS`
   is append-only**: new columns go at the end.

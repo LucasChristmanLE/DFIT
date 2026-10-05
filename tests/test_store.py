@@ -418,6 +418,17 @@ def test_status_for_empty_step_status_is_new():
     assert store.status_for(st) == "new"
 
 
+def test_status_for_viewed_only_is_new():
+    # Opening a test marks Overview "visited"; viewing alone is not progress.
+    assert store.status_for(PickState(step_status={"overview": "visited"})) == "new"
+    st = PickState(step_status={"overview": "visited", "injection": "visited"})
+    assert store.status_for(st) == "new"
+
+
+def test_status_for_one_step_done_is_in_progress():
+    assert store.status_for(PickState(step_status={"overview": "done"})) == "in_progress"
+
+
 def test_status_for_partial_is_in_progress():
     st = PickState(step_status={"injection": "done", "isip": "done"})
     assert store.status_for(st) == "in_progress"
