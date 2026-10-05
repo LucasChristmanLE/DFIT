@@ -60,6 +60,9 @@ class FolderDecision:
     # "" for a decision recorded before this field existed (legacy) -- never a real fingerprint's
     # value, so a legacy decision always reads as a mismatch, never as accidentally "current".
     files_sig: str = ""
+    # Free-text reviewer note, flagging a folder for a closer look. Independent of the decision:
+    # `set_note` never touches status/ts/files_sig, and `set` carries it forward.
+    note: str = ""
 
 
 def _ledger_path(root: str) -> str:
@@ -136,8 +139,27 @@ class Ledger:
         ts = datetime.datetime.now().isoformat(timespec="seconds")
         self.decisions[rel] = FolderDecision(
             rel=rel, keeps=list(keeps), status=status, ts=ts, files_sig=files_sig,
+            note=self.get(rel).note,
         )
         self.save()
+
+    def set_note(self, rel: str, note: str) -> None:
+        """Set `rel`'s note and save. Only the note changes; an undecided folder gets a blank
+        record holding it, which still reads as undecided. A no-op when the note is unchanged."""
+        d = self.decisions.get(rel)
+        if d is None:
+            if not note:
+                return
+            d = self.decisions[rel] = FolderDecision(rel=rel)
+        elif d.note == note:
+            return
+        d.note = note
+        self.save()
+
+    def noted(self, order: list[str]) -> list[tuple[str, str]]:
+        """`(rel, note)` for every folder in `order` with a non-empty note, in `order`."""
+        return [(rel, self.decisions[rel].note) for rel in order
+                if rel in self.decisions and self.decisions[rel].note]
 
     def get(self, rel: str) -> FolderDecision:
         """The decision for `rel`, or a blank undecided one if `rel` has never been decided. This

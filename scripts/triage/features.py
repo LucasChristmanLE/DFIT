@@ -895,22 +895,27 @@ def scan_folders(
 
         files = [_feat_for(p) for p in group_files[g]]
 
-        likely = [f for f in files if f.verdict == "likely_dfit"]
-        suggested: list[str] = []
-        if likely:
-            best = max(likely, key=lambda f: f.post_shutin_hr or 0.0)
-            suggested = [best.path]
-
         scans.append(FolderScan(
             folder=g, rel=rel, well_name=well_name, formation=formation,
             questionnaire_path=questionnaire_path, n_wells=n_wells, files=files,
-            suggested=suggested,
+            suggested=suggest_keepers(files),
         ))
 
         if progress is not None:
             progress(i + 1, total, rel)
 
     return scans
+
+
+def suggest_keepers(files: list[FileFeatures]) -> list[str]:
+    """The path pre-selected as the keeper among `files`' `likely_dfit` files: one with a rate
+    channel first, then the longest falloff (`post_shutin_hr`). `[]` when none is likely. Uses
+    only stored features, so `load_scan` re-applies it to an existing features.json."""
+    likely = [f for f in files if f.verdict == "likely_dfit"]
+    if not likely:
+        return []
+    best = max(likely, key=lambda f: (f.rate_col is not None, f.post_shutin_hr or 0.0))
+    return [best.path]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -964,5 +969,8 @@ def load_scan(root: str) -> list[FolderScan]:
         ]
         filtered = {k: v for k, v in item.items() if k in scan_fields and k != "files"}
         filtered["files"] = files
+        # Recomputed rather than trusted, so a change to the suggestion rule applies without a
+        # rescan.
+        filtered["suggested"] = suggest_keepers(files)
         scans.append(FolderScan(**filtered))
     return scans

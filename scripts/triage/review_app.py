@@ -43,8 +43,11 @@ PER_PAGE = 8
 
 _KEY_LEGEND = (
     "Keys:  1-8 toggle keeper  |  Enter/Right = decide  |  0 = NO DFIT HERE (skip folder)  |  "
-    "u = unsure  |  Left = back (non-destructive)  |  [ / ] = prev/next page  |  q = quit"
+    "u = unsure  |  Left = back (non-destructive)  |  [ / ] = prev/next page  |  "
+    "n = edit note (Enter/Esc to leave)  |  q = quit"
 )
+_DEFAULT_FIGSIZE = (15.0, 9.0)   # until the window is mapped and the canvas frame has a size
+_RESIZE_DEBOUNCE_MS = 150
 
 
 def _status_text(keeps, suggested, page: int, pages: int) -> str:
@@ -139,6 +142,10 @@ class ReviewApp:
         # both must live on self for the same reason CLAUDE.md gives for holding slider refs.
         self.fig = None
         self.canvas: FigureCanvasTkAgg | None = None
+        # No folder is on screen yet, so the first `_goto` has no note to save.
+        self.index = -1
+        self._fig_px: tuple[int, int] | None = None
+        self._resize_job = None
 
         root_win.title("DFIT triage review")
 
@@ -155,14 +162,26 @@ class ReviewApp:
         # miss rather than silently picking one well's name for the whole page.
         self.warning_lbl = ttk.Label(header, text="", foreground="red", font=("", 9, "bold"))
         self.warning_lbl.pack(anchor="w")
+        self.note_lbl = ttk.Label(header, text="", foreground="darkorange", font=("", 9, "bold"))
+        self.note_lbl.pack(anchor="w")
 
+        # Packed after the footer (below), so the footer's space is reserved first and the
+        # canvas only gets what is left; Tk shrinks the last-packed widget when space runs out.
         self.canvas_frame = ttk.Frame(root_win)
-        self.canvas_frame.pack(side="top", fill="both", expand=True)
+        self.canvas_frame.bind("<Configure>", self._on_frame_resize)
 
         footer = ttk.Frame(root_win, padding=6)
         footer.pack(side="bottom", fill="x")
         self.status_lbl = ttk.Label(footer, text="")
         self.status_lbl.pack(anchor="w")
+        note_row = ttk.Frame(footer)
+        note_row.pack(anchor="w", fill="x", pady=(4, 0))
+        ttk.Label(note_row, text="Note:").pack(side="left")
+        self.note_entry = ttk.Entry(note_row, width=100)
+        self.note_entry.pack(side="left", padx=(4, 0), fill="x", expand=True)
+        self.note_entry.bind("<Return>", self._leave_note)
+        self.note_entry.bind("<Escape>", self._leave_note)
+        self.note_entry.bind("<FocusOut>", lambda _e: self._save_note())
         # Mouse equivalents of the decision keys. takefocus=False so a focused button never
         # swallows Enter/space meant for the root-window key binding.
         buttons = ttk.Frame(footer)
@@ -178,7 +197,17 @@ class ReviewApp:
         self.legend_lbl = ttk.Label(footer, text=_KEY_LEGEND, foreground="gray")
         self.legend_lbl.pack(anchor="w")
 
+        self.canvas_frame.pack(side="top", fill="both", expand=True)
+        # Start maximized so the window fits the screen; a 15x9 in canvas request alone would
+        # size it past the bottom of a 1536x960 (scaled) laptop screen.
+        try:
+            root_win.state("zoomed")
+        except tk.TclError:
+            pass
+
         root_win.bind("<Key>", self._on_key)
+        # The title-bar close saves a note still being typed, same as `q`.
+        root_win.protocol("WM_DELETE_WINDOW", self._quit)
 
         self._goto(self.ledger.first_undecided(self.order, self._files_sig_by_rel))
 
@@ -221,6 +250,7 @@ class ReviewApp:
         # already treats as past-the-end. Without this, repeated stray advances past the last
         # folder (e.g. several Enters in a row) would grow `index` unboundedly, each needing its
         # own Left to walk back.
+        self._save_note()
         self.index = max(0, min(idx, len(self.scans)))
         self.page = 0
         scan = self._current_scan()
@@ -228,7 +258,45 @@ class ReviewApp:
             self._seed_keeps(scan)
         else:
             self.keeps = set()
+        self._load_note()
         self._redraw()
+
+    # ----------------------------------------------------------------------------------------
+    # notes (stored on the ledger record, independent of the decision)
+    # ----------------------------------------------------------------------------------------
+    def _save_note(self) -> None:
+        """Write the note box to the ledger for the folder on screen. Called before every
+        navigation, on Enter/Esc in the box, and on focus-out, so a typed note is never lost."""
+        scan = self._current_scan()
+        if scan is None or self.note_entry is None:
+            return
+        self.ledger.set_note(scan.rel, self.note_entry.get().strip())
+
+    def _load_note(self) -> None:
+        """Fill the note box from the ledger. Only on folder change, never in `_redraw`, so a
+        redraw cannot overwrite a note still being typed."""
+        if self.note_entry is None:
+            return
+        scan = self._current_scan()
+        self.note_entry.delete(0, "end")
+        if scan is not None:
+            self.note_entry.insert(0, self.ledger.get(scan.rel).note)
+
+    def _note_has_focus(self) -> bool:
+        return self.root_win.focus_get() is self.note_entry
+
+    def _focus_note(self) -> None:
+        if self._current_scan() is None:
+            return  # queue complete: no folder to attach a note to
+        self.note_entry.focus_set()
+        self.note_entry.icursor("end")
+
+    def _leave_note(self, _event=None) -> str:
+        self._save_note()
+        self.root_win.focus_set()
+        if self._current_scan() is not None:
+            self._redraw()
+        return "break"
 
     # ----------------------------------------------------------------------------------------
     # rendering
@@ -251,18 +319,45 @@ class ReviewApp:
         else:
             self.quest_lbl.config(text="no questionnaire")
         self.warning_lbl.config(text=_multi_well_warning_text(scan.n_wells))
+        note = self.ledger.get(scan.rel).note
+        self.note_lbl.config(text=f"NOTE: {note}" if note else "")
 
         if self.canvas is not None:
             self.canvas.get_tk_widget().destroy()
+        # Lay the grid out for the space actually available, so a page with few files fills it.
+        # Before the window is mapped the frame reports 1x1; use the default size then.
+        fw, fh = self.canvas_frame.winfo_width(), self.canvas_frame.winfo_height()
+        mapped = fw > 50 and fh > 50
+        figsize = (fw / 100.0, fh / 100.0) if mapped else _DEFAULT_FIGSIZE
+        self._fig_px = (fw, fh) if mapped else None
         self.fig = figure.render_grid(scan, self.data_root, page=self.page, per_page=PER_PAGE,
-                                       keeps=self.keeps)
+                                       keeps=self.keeps, figsize=figsize)
         _annotate_file_subfolders(self.fig, scan, self.page, PER_PAGE)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.canvas_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
+        widget = self.canvas.get_tk_widget()
+        # Request the frame's current size (or a small one before it is mapped) so a new canvas
+        # never grows the window; fill/expand gives it the real space.
+        widget.configure(width=fw if mapped else 400, height=fh if mapped else 300)
+        widget.pack(side="top", fill="both", expand=True)
 
         pages = figure.page_count(scan, per_page=PER_PAGE)
         self.status_lbl.config(text=_status_text(self.keeps, scan.suggested, self.page, pages))
+
+    def _on_frame_resize(self, event) -> None:
+        """Re-lay out the grid after the window is resized (debounced). Ignores the Configure
+        events a redraw itself causes when the size is unchanged."""
+        if self._fig_px is not None and abs(event.width - self._fig_px[0]) < 8 \
+                and abs(event.height - self._fig_px[1]) < 8:
+            return
+        if self._resize_job is not None:
+            self.root_win.after_cancel(self._resize_job)
+        self._resize_job = self.root_win.after(_RESIZE_DEBOUNCE_MS, self._resize_redraw)
+
+    def _resize_redraw(self) -> None:
+        self._resize_job = None
+        if self._current_scan() is not None:
+            self._redraw()
 
     def _show_complete(self) -> None:
         if self.canvas is not None:
@@ -275,6 +370,7 @@ class ReviewApp:
         self.rel_lbl.config(text="")
         self.quest_lbl.config(text="")
         self.warning_lbl.config(text="")
+        self.note_lbl.config(text="")
         self.status_lbl.config(text="queue complete")
 
     # ----------------------------------------------------------------------------------------
@@ -359,6 +455,7 @@ class ReviewApp:
             self._goto(self.index - 1)
 
     def _quit(self) -> None:
+        self._save_note()
         self.ledger.save()
         self.root_win.destroy()
 
@@ -366,6 +463,10 @@ class ReviewApp:
     # key dispatch
     # ----------------------------------------------------------------------------------------
     def _on_key(self, event: tk.Event) -> None:
+        # Keys typed into the note box are text, never review commands. The root-window binding
+        # also sees the entry's key events (Tk bindtags), with `event.widget` the entry.
+        if getattr(event, "widget", None) is self.note_entry or self._note_has_focus():
+            return
         ch = event.char
         keysym = event.keysym
 
@@ -382,6 +483,9 @@ class ReviewApp:
             return
         if ch == "q":
             self._quit()
+            return
+        if ch == "n":
+            self._focus_note()
             return
         if keysym in ("Return", "Right"):
             self._commit_and_advance()

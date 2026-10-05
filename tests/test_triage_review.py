@@ -56,12 +56,16 @@ def _make_stub(scans, tmp_path, index=None):
     stub.keeps = set()
     stub._inprogress = {}
     stub.status_lbl = _FakeLabel()
+    stub.index = -1
+    stub.note_entry = None  # no note box; _save_note/_load_note are no-ops
 
     stub._current_scan = types.MethodType(review_app.ReviewApp._current_scan, stub)
     stub._sig_for = review_app.ReviewApp._sig_for
     stub._record = types.MethodType(review_app.ReviewApp._record, stub)
     stub._seed_keeps = types.MethodType(review_app.ReviewApp._seed_keeps, stub)
     stub._redraw = lambda: None
+    stub._save_note = types.MethodType(review_app.ReviewApp._save_note, stub)
+    stub._load_note = types.MethodType(review_app.ReviewApp._load_note, stub)
     stub._goto = types.MethodType(review_app.ReviewApp._goto, stub)
     stub._file_index = types.MethodType(review_app.ReviewApp._file_index, stub)
     stub._toggle_keep = types.MethodType(review_app.ReviewApp._toggle_keep, stub)
@@ -375,3 +379,63 @@ def test_status_text_no_hint_when_scan_has_a_suggestion():
 
 def test_key_legend_names_no_dfit_key():
     assert "0 = NO DFIT HERE" in review_app._KEY_LEGEND
+
+
+# --------------------------------------------------------------------------------------------------
+# notes: typing in the note box never triggers review keys; navigating saves the note
+# --------------------------------------------------------------------------------------------------
+class _FakeEntry:
+    def __init__(self, text=""):
+        self.text = text
+
+    def get(self):
+        return self.text
+
+    def delete(self, _first, _last):
+        self.text = ""
+
+    def insert(self, _index, text):
+        self.text = text
+
+
+def _note_stub(scans, tmp_path, focus_in_note):
+    stub = _make_stub(scans, tmp_path, index=0)
+    stub.note_entry = _FakeEntry()
+    stub._note_has_focus = lambda: focus_in_note
+    stub._save_note = types.MethodType(review_app.ReviewApp._save_note, stub)
+    stub._on_key = types.MethodType(review_app.ReviewApp._on_key, stub)
+    stub._quit = lambda: None
+    stub._next_page = lambda: None
+    stub._prev_page = lambda: None
+    stub._focus_note = lambda: None
+    return stub
+
+
+def test_digit_typed_in_note_box_does_not_toggle_keep(tmp_path):
+    scan = FolderScan(folder="/f", rel="C/f", files=_files("/f", 3))
+    stub = _note_stub([scan], tmp_path, focus_in_note=True)
+    before = set(stub.keeps)
+    stub._on_key(types.SimpleNamespace(char="2", keysym="2"))
+    stub._on_key(types.SimpleNamespace(char="0", keysym="0"))
+    assert stub.keeps == before
+    assert stub.index == 0
+    assert stub.ledger.get("C/f").status == ""
+
+
+def test_navigating_away_saves_the_pending_note(tmp_path):
+    scans = [FolderScan(folder=f"/{r}", rel=r, files=_files(f"/{r}", 1)) for r in ("A", "B")]
+    stub = _note_stub(scans, tmp_path, focus_in_note=False)
+    stub.note_entry.text = "  check this one  "
+    stub._mark_unsure_and_advance()
+    assert stub.index == 1
+    assert Ledger.load(str(tmp_path)).get("A").note == "check this one"
+
+
+def test_key_event_from_note_entry_is_ignored_without_focus_query(tmp_path):
+    """Tk also delivers the entry's key events to the root binding, with `event.widget` the
+    entry; that alone must block review keys (focus_get can lag or report the root)."""
+    scan = FolderScan(folder="/f", rel="C/f", files=_files("/f", 3))
+    stub = _note_stub([scan], tmp_path, focus_in_note=False)
+    before = set(stub.keeps)
+    stub._on_key(types.SimpleNamespace(char="2", keysym="2", widget=stub.note_entry))
+    assert stub.keeps == before

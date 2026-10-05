@@ -1388,7 +1388,7 @@ def test_render_grid_visible_axes_count_3_files(tmp_path):
     fig = figure.render_grid(scan, str(tmp_path), page=0, per_page=8)
     visible = [ax for ax in fig.axes if ax.axison]
     assert len(visible) == 3
-    assert len(fig.axes) == 8
+    assert len(fig.axes) == 3
 
 
 def test_render_grid_visible_axes_count_17_files_paginated(tmp_path):
@@ -1761,3 +1761,72 @@ def test_scan_folders_group_depth_one_puts_each_top_level_well_on_one_page(tmp_p
 def test_scan_folders_group_depth_rejects_non_positive(tmp_path):
     with pytest.raises(ValueError):
         features.scan_folders(str(tmp_path), group_depth=0)
+
+
+# --------------------------------------------------------------------------------------------------
+# suggest_keepers: prefer a rate channel among likely DFITs
+# --------------------------------------------------------------------------------------------------
+def _likely(path, post_si, rate_col=None, verdict="likely_dfit"):
+    return features.FileFeatures(
+        path=path, folder="/data", size_bytes=1, sig=f"1:{path}", verdict=verdict,
+        post_shutin_hr=post_si, rate_col=rate_col,
+    )
+
+
+def test_suggest_keepers_prefers_rate_over_longer_falloff():
+    files = [_likely("/data/long.csv", 20.0), _likely("/data/rate.csv", 5.0, rate_col="Rate")]
+    assert features.suggest_keepers(files) == ["/data/rate.csv"]
+
+
+def test_suggest_keepers_longest_falloff_when_rate_does_not_separate():
+    neither = [_likely("/data/a.csv", 5.0), _likely("/data/b.csv", 9.0)]
+    assert features.suggest_keepers(neither) == ["/data/b.csv"]
+    both = [_likely("/data/a.csv", 5.0, "Rate"), _likely("/data/b.csv", 9.0, "Rate")]
+    assert features.suggest_keepers(both) == ["/data/b.csv"]
+
+
+def test_suggest_keepers_ignores_non_likely_files():
+    files = [_likely("/data/flat.csv", 50.0, "Rate", verdict="flat"), _likely("/data/a.csv", 1.0)]
+    assert features.suggest_keepers(files) == ["/data/a.csv"]
+    assert features.suggest_keepers([_likely("/data/flat.csv", 5.0, verdict="flat")]) == []
+
+
+def test_load_scan_recomputes_suggested_from_stored_features(tmp_path):
+    """A features.json written under the old rule (longest falloff only) picks up the rate
+    preference on load, without a rescan."""
+    root = str(tmp_path)
+    scan = features.FolderScan(
+        folder="/data", rel="CustomerA/Well1",
+        files=[_likely("/data/long.csv", 20.0), _likely("/data/rate.csv", 5.0, rate_col="Rate")],
+        suggested=["/data/long.csv"],
+    )
+    features.save_scan(root, [scan])
+    assert features.load_scan(root)[0].suggested == ["/data/rate.csv"]
+
+
+# --------------------------------------------------------------------------------------------------
+# figure.grid_shape: fit panels to the screen
+# --------------------------------------------------------------------------------------------------
+def test_grid_shape_single_file_fills_figure():
+    assert figure.grid_shape(1, 15.0, 9.0) == (1, 1)
+
+
+def test_grid_shape_eight_files_is_two_by_four():
+    assert figure.grid_shape(8, 15.0, 9.0) == (2, 4)
+
+
+def test_grid_shape_two_files_stacks_on_a_landscape_screen():
+    # Panels are ~1.9:1 landscape, so two stacked panels are larger than two side by side.
+    assert figure.grid_shape(2, 15.0, 9.0) == (2, 1)
+
+
+def test_grid_shape_always_fits_and_never_exceeds_eight_cells():
+    for n in range(1, 9):
+        for w, h in ((15.0, 9.0), (8.0, 9.0), (20.0, 6.0)):
+            r, c = figure.grid_shape(n, w, h)
+            assert n <= r * c <= 8, (n, w, h, r, c)
+
+
+def test_render_grid_creates_one_axes_per_file(tmp_path):
+    fig = figure.render_grid(_dummy_scan(2), str(tmp_path), page=0, per_page=8)
+    assert len(fig.axes) == 2

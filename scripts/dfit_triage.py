@@ -11,6 +11,7 @@ the decision is a *set* of keepers, not a single choice.
     python scripts\\dfit_triage.py scan   --root "C:\\DFIT Data" [--all-folders] [--limit N] [--force]
     python scripts\\dfit_triage.py review --root "C:\\DFIT Data"
     python scripts\\dfit_triage.py apply   --root "C:\\DFIT Data" --out "C:\\DFIT Organized" [--commit]
+    python scripts\\dfit_triage.py notes   --root "C:\\DFIT Data"
 
 **scan** walks the root (`dfit_tool.store.scan_root`, folder-grouped), collapses byte-identical
 files, extracts measured features per remaining file (rows, duration, pressure/rate channel
@@ -25,7 +26,8 @@ necessarily incomplete, `--limit` refuses to overwrite an existing `features.jso
 **review** opens a Tkinter window over the cached scan, one folder per screen, and lets a human
 pick the keeper(s) (or say "no DFIT here" / "unsure"). Decisions land in
 `<root>/_triage/decisions.json`, written atomically after every folder, so quitting mid-way and
-relaunching resumes right where it left off.
+relaunching resumes right where it left off. A per-folder note (`n` in the review window) flags a
+folder for a closer look; **notes** prints every noted folder with its status and note.
 
 **apply** turns the reviewed ledger into a move/copy plan and prints it. Nothing on disk is
 touched unless `--commit` is also given -- **dry-run is the default**. Folders the ledger never
@@ -167,6 +169,27 @@ def _cmd_review(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------------------------------
+# notes
+# --------------------------------------------------------------------------------------------------
+def _cmd_notes(args: argparse.Namespace) -> None:
+    from triage import features
+    from triage.ledger import Ledger
+
+    ledger = Ledger.load(args.root)
+    try:
+        order = [s.rel for s in features.load_scan(args.root)]
+    except FileNotFoundError:
+        order = []
+    seen = set(order)
+    order += sorted(rel for rel in ledger.decisions if rel not in seen)
+
+    noted = ledger.noted(order)
+    for rel, note in noted:
+        print(f"{rel}\t{ledger.get(rel).status or 'undecided'}\t{note}")
+    print(f"{len(noted)} noted folder(s)", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------------------------------
 # apply
 # --------------------------------------------------------------------------------------------------
 def _cmd_apply(args: argparse.Namespace) -> None:
@@ -294,6 +317,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_review = sub.add_parser("review", help="open the Tkinter review window over a cached scan")
     p_review.add_argument("--root", required=True, help="folder-mode root previously `scan`ned")
     p_review.set_defaults(func=_cmd_review)
+
+    p_notes = sub.add_parser("notes", help="list folders with a review note")
+    p_notes.add_argument("--root", required=True, help="folder-mode root previously `review`ed")
+    p_notes.set_defaults(func=_cmd_notes)
 
     p_apply = sub.add_parser("apply", help="plan (and, with --commit, perform) the reorganize")
     p_apply.add_argument("--root", required=True, help="folder-mode root previously `scan`ned "

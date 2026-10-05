@@ -26,6 +26,10 @@ from .features import FileFeatures, FolderScan, monotonic_prefix, png_path_for  
 
 _ERROR_VERDICTS = ("load_error", "no_pressure")
 _GRID_NCOLS = 4
+# Width:height of the cached per-file PNG (`render_file_png`'s default figsize), used to size
+# grid cells so the upscaled image fills as much of the screen as possible.
+_PNG_ASPECT = 6.0 / 3.2
+_TITLE_H_IN = 0.35   # panel title height, taken off each cell before fitting the image
 
 
 # --------------------------------------------------------------------------------------------------
@@ -145,6 +149,25 @@ def page_count(scan: FolderScan, per_page: int = 8) -> int:
     return max(1, math.ceil(len(scan.files) / per_page))
 
 
+def grid_shape(n: int, fig_w: float, fig_h: float, max_rows: int = 2,
+               max_cols: int = _GRID_NCOLS) -> tuple[int, int]:
+    """`(nrows, ncols)` for `n` panels on a `fig_w` x `fig_h` inch figure: the shape with at least
+    `n` cells (at most `max_rows` x `max_cols`) that shows each `_PNG_ASPECT` image largest. Ties
+    go to fewer cells."""
+    n = max(1, min(n, max_rows * max_cols))
+    best = None
+    for r in range(1, max_rows + 1):
+        for c in range(1, max_cols + 1):
+            if r * c < n:
+                continue
+            cell_h = max(fig_h / r - _TITLE_H_IN, 0.01)
+            img_w = min(fig_w / c, cell_h * _PNG_ASPECT)
+            key = (round(img_w, 6), -(r * c))
+            if best is None or key > best[0]:
+                best = (key, (r, c))
+    return best[1]
+
+
 def render_grid(
     scan: FolderScan,
     root: str,
@@ -153,8 +176,8 @@ def render_grid(
     keeps: set[str] = frozenset(),
     figsize=(15.0, 9.0),
 ) -> Figure:
-    """One page of `scan`'s files, `per_page` panels laid out `_GRID_NCOLS` wide, each `imshow`ing
-    its cached `render_file_png` output. Panel N (1-indexed within the page, matching the
+    """One page of `scan`'s files, one panel per file on the `grid_shape` that fits `figsize`
+    best (up to `_GRID_NCOLS` wide), each `imshow`ing its cached `render_file_png` output. Panel N (1-indexed within the page, matching the
     review keys `1`-`8`) is titled `"N. <filename>"`. Spine color/weight encodes state: thick
     green for a kept file, thick amber dashed for `scan.suggested` when not (yet) kept, thin grey
     otherwise -- EXCEPT a `verdict == "duplicate"` panel, which always gets a thick dotted blue
@@ -164,20 +187,15 @@ def render_grid(
     the REPRESENTATIVE's plot/annotation (same bytes, different path) -- the overlay is what
     actually tells the reviewer this panel is not its own file. A missing cached PNG gets a
     "(no plot)" placeholder rather than raising. Cells past the end of this page's files are
-    hidden."""
+    not drawn, so `fig.axes[i]` is panel i + 1."""
     fig = Figure(figsize=figsize)
-    nrows = max(1, math.ceil(per_page / _GRID_NCOLS))
-
     start = page * per_page
     files = scan.files[start:start + per_page]
+    nrows, ncols = grid_shape(len(files), figsize[0], figsize[1],
+                              max_rows=max(1, math.ceil(per_page / _GRID_NCOLS)))
 
-    for i in range(per_page):
-        ax = fig.add_subplot(nrows, _GRID_NCOLS, i + 1)
-        if i >= len(files):
-            ax.axis("off")
-            continue
-
-        feat = files[i]
+    for i, feat in enumerate(files):
+        ax = fig.add_subplot(nrows, ncols, i + 1)
         is_duplicate = feat.verdict == "duplicate"
         ax.set_xticks([])
         ax.set_yticks([])

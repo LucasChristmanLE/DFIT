@@ -405,3 +405,51 @@ def test_save_cleans_up_tmp_file_when_replace_ultimately_fails(tmp_path, monkeyp
     triage_dir = os.path.join(root, "_triage")
     leftover_tmp = [n for n in os.listdir(triage_dir) if n.endswith(".tmp")]
     assert leftover_tmp == []
+
+
+# --------------------------------------------------------------------------------------------------
+# notes
+# --------------------------------------------------------------------------------------------------
+def test_set_note_round_trips_through_save_and_load(tmp_path):
+    root = str(tmp_path)
+    ledger = Ledger.load(root)
+    ledger.set_note("A/1", "check rate units")
+    assert Ledger.load(root).get("A/1").note == "check rate units"
+
+
+def test_set_after_set_note_keeps_the_note(tmp_path):
+    root = str(tmp_path)
+    ledger = Ledger.load(root)
+    ledger.set_note("A/1", "look closer")
+    ledger.set("A/1", ["/x.csv"], "decided", files_sig="sig")
+    d = Ledger.load(root).get("A/1")
+    assert (d.status, d.note) == ("decided", "look closer")
+
+
+def test_set_note_does_not_change_decision_state(tmp_path):
+    root = str(tmp_path)
+    ledger = Ledger.load(root)
+    ledger.set_note("A/1", "undecided but noted")
+    assert ledger.first_undecided(["A/1"], {"A/1": "sig"}) == 0
+    ledger.set("A/2", [], "none", files_sig="sig2")
+    ts = ledger.get("A/2").ts
+    ledger.set_note("A/2", "second look")
+    d = ledger.get("A/2")
+    assert (d.status, d.ts, d.files_sig) == ("none", ts, "sig2")
+
+
+def test_noted_lists_only_non_empty_notes_in_order(tmp_path):
+    ledger = Ledger.load(str(tmp_path))
+    ledger.set_note("B/1", "b")
+    ledger.set_note("A/1", "a")
+    ledger.set_note("C/1", "")
+    assert ledger.noted(["A/1", "B/1", "C/1"]) == [("A/1", "a"), ("B/1", "b")]
+
+
+def test_legacy_ledger_without_note_loads(tmp_path):
+    root = str(tmp_path)
+    os.makedirs(os.path.join(root, "_triage"))
+    with open(os.path.join(root, "_triage", "decisions.json"), "w", encoding="utf-8") as fh:
+        json.dump({"A/1": {"rel": "A/1", "keeps": [], "status": "none", "ts": "", "files_sig": "s"}},
+                  fh)
+    assert Ledger.load(root).get("A/1").note == ""
