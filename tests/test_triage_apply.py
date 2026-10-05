@@ -1406,3 +1406,65 @@ def test_validate_out_not_inside_root_rejects_out_nested_in_root(tmp_path):
 
 def test_validate_out_not_inside_root_allows_sibling_out(tmp_path):
     apply_mod.validate_out_not_inside_root(str(tmp_path / "root"), str(tmp_path / "out"))
+
+
+# --------------------------------------------------------------------------------------------------
+# --well-from-folder / --basin: a root flattened to one folder per well (aa_DJ Basin) names each
+# well by its folder and files every keeper under one basin, so the n_wells guard does not apply.
+# --------------------------------------------------------------------------------------------------
+def _flat_well_scan(root, name: str, n_wells: int, well_name: str = ""):
+    folder = root / name
+    f1 = _write(folder / "keep.dbs", b"1")
+    f2 = _write(folder / "other.csv", b"2")
+    scan = FolderScan(
+        folder=str(folder), rel=name, well_name=well_name, n_wells=n_wells,
+        files=[
+            FileFeatures(path=f1, folder=str(folder), size_bytes=1, sig="k", verdict="likely_dfit"),
+            FileFeatures(path=f2, folder=str(folder), size_bytes=1, sig="o", verdict="likely_dfit"),
+        ],
+    )
+    return scan, f1, f2
+
+
+def test_well_folder_name_from_folder_ignores_questionnaire_name(tmp_path):
+    scan = FolderScan(folder=str(tmp_path / "Arkansas 1AH"), rel="Arkansas 1AH", well_name="1AH")
+    assert apply_mod.well_folder_name(scan, from_folder=True) == "Arkansas 1AH"
+
+
+@pytest.mark.parametrize("n_wells", [0, 2])
+def test_plan_moves_well_from_folder_plans_ambiguous_count(monkeypatch, tmp_path, n_wells):
+    _fixed_basin(monkeypatch, basin=DEFAULT_BASIN, source="default")
+    root = tmp_path
+    scan, f1, f2 = _flat_well_scan(root, "Arkansas 1AH", n_wells, well_name="1AH")
+    ledger = Ledger.load(str(root))
+    _decide(ledger, scan, [f1])
+    out = str(root.parent / "out")
+
+    moves = apply_mod.plan_moves(str(root), out, [scan], ledger,
+                                 well_from_folder=True, basin_override="DJ")
+
+    by_kind = {m.kind: m for m in moves}
+    assert by_kind["keep"].dst == os.path.join(out, "DJ", "Arkansas 1AH", "keep.dbs")
+    assert by_kind["quarantine"].src == f2
+    assert apply_mod.plan_warnings([scan], ledger, well_from_folder=True) == []
+
+
+def test_plan_moves_well_from_folder_still_excludes_stale_decision(monkeypatch, tmp_path):
+    _fixed_basin(monkeypatch)
+    root = tmp_path
+    scan, f1, _f2 = _flat_well_scan(root, "Arkansas 1AH", 0)
+    ledger = Ledger.load(str(root))
+    ledger.set(scan.rel, [f1], "decided", files_sig="not-the-current-sig")
+
+    assert apply_mod.plan_moves(str(root), str(root.parent / "out"), [scan], ledger,
+                                well_from_folder=True) == []
+    warnings = apply_mod.plan_warnings([scan], ledger, well_from_folder=True)
+    assert [w.category for w in warnings] == ["stale_decision"]
+
+
+def test_destination_dir_basin_override(monkeypatch, tmp_path):
+    _fixed_basin(monkeypatch, basin=DEFAULT_BASIN, source="default")
+    scan = FolderScan(folder=str(tmp_path / "W"), rel="W", well_name="W")
+    dest, basin, source = apply_mod.destination_dir(scan, "OUT", str(tmp_path),
+                                                    basin_override="DJ")
+    assert (dest, basin, source) == (os.path.join("OUT", "DJ", "W"), "DJ", "override")

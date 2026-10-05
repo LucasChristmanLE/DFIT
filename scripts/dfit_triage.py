@@ -189,12 +189,14 @@ def _cmd_apply(args: argparse.Namespace) -> None:
     scans = features.load_scan(args.root)
     ledger = Ledger.load(args.root)
 
-    moves = apply_mod.plan_moves(args.root, args.out, scans, ledger)
+    moves = apply_mod.plan_moves(args.root, args.out, scans, ledger,
+                                 well_from_folder=args.well_from_folder,
+                                 basin_override=args.basin)
     # A decided folder that plan_moves silently excluded -- an ambiguous well (n_wells != 1) or a
     # decision whose files_sig no longer matches its current file set -- plus a ledger `rel` that
     # matches no scan at all. `excluded_rels` is exactly the set plan_moves also skipped, so the
     # provenance loop below never disagrees with what actually got planned.
-    warnings = apply_mod.plan_warnings(scans, ledger)
+    warnings = apply_mod.plan_warnings(scans, ledger, well_from_folder=args.well_from_folder)
     excluded_rels = {w.rel for w in warnings if w.category in ("ambiguous_well", "stale_decision")}
     n_ambiguous = sum(1 for w in warnings if w.category == "ambiguous_well")
     n_stale_or_unknown = sum(1 for w in warnings if w.category in ("stale_decision", "unknown_group"))
@@ -211,8 +213,10 @@ def _cmd_apply(args: argparse.Namespace) -> None:
             continue
         if scan.rel in excluded_rels:
             continue  # ambiguous well or stale decision -- reported via `warnings`, never filed
-        dest_dir, basin, basin_source = apply_mod.destination_dir(scan, args.out, args.root)
-        well = apply_mod.well_folder_name(scan)
+        dest_dir, basin, basin_source = apply_mod.destination_dir(
+            scan, args.out, args.root,
+            well_from_folder=args.well_from_folder, basin_override=args.basin)
+        well = apply_mod.well_folder_name(scan, from_folder=args.well_from_folder)
         record = apply_mod.provenance_for(scan, decision.keeps, basin, basin_source, well)
         provenance.setdefault(dest_dir, []).append(record)
 
@@ -297,6 +301,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_apply.add_argument("--out", required=True, help="destination root for the Basin/Well/ tree")
     p_apply.add_argument("--commit", action="store_true",
                           help="actually perform the plan (default: dry-run, print the plan only)")
+    p_apply.add_argument("--well-from-folder", action="store_true",
+                         help="name each well by its folder and skip the n_wells guard, for a "
+                              "root flattened to one folder per well (scanned with "
+                              "--group-depth 1)")
+    p_apply.add_argument("--basin", default=None,
+                         help="file every keeper under this basin instead of the formation/"
+                              "customer lookup")
     p_apply.set_defaults(func=_cmd_apply)
 
     return parser

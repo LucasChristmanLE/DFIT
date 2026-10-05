@@ -102,7 +102,7 @@ def _sanitize_component(name: str) -> str:
     return name
 
 
-def well_folder_name(scan: FolderScan) -> str:
+def well_folder_name(scan: FolderScan, *, from_folder: bool = False) -> str:
     """`scan.well_name` when it sanitizes to something non-blank, else the folder's basename,
     else a placeholder derived from `scan.rel`, else a fixed literal. Never returns `""`: an
     empty well folder name would make `destination_dir` return a path ending in a separator
@@ -111,8 +111,11 @@ def well_folder_name(scan: FolderScan) -> str:
     folder, mixing wells together (FIX 2). A blank or all-forbidden-characters `well_name`
     (`"???"`, `"..."`, `"   "`) is exactly the case this guards -- it falls through to the
     folder's own basename, which is itself sanitized in case the folder is *also* named
-    something like `"???"`."""
-    sanitized = _sanitize_component(scan.well_name)
+    something like `"???"`.
+
+    `from_folder=True` (`apply --well-from-folder`) skips `scan.well_name` and starts at the
+    folder basename, for a root laid out as one folder per well."""
+    sanitized = "" if from_folder else _sanitize_component(scan.well_name)
     if sanitized:
         return sanitized
     sanitized = _sanitize_component(os.path.basename(scan.folder))
@@ -151,13 +154,20 @@ def validate_out_not_inside_root(root: str, out_root: str) -> None:
         )
 
 
-def destination_dir(scan: FolderScan, out_root: str, root: str) -> tuple[str, str, str]:
+def destination_dir(scan: FolderScan, out_root: str, root: str, *,
+                    well_from_folder: bool = False,
+                    basin_override: str | None = None) -> tuple[str, str, str]:
     """Where a scan's keepers land: `<out_root>/<basin>/<well folder name>`. `root` is unused by
     the path math itself (the customer comes from `scan.rel`, already root-relative) but is kept
-    in the signature per the contract, matching `plan_moves`'s parameter list."""
-    customer = _customer(scan.rel)
-    basin, basin_source = basins.basin_for(scan.formation, customer)
-    well = well_folder_name(scan)
+    in the signature per the contract, matching `plan_moves`'s parameter list.
+
+    `basin_override` (`apply --basin`) files every scan under that basin, with source
+    `"override"`; `well_from_folder` is passed to `well_folder_name`."""
+    if basin_override:
+        basin, basin_source = basin_override, "override"
+    else:
+        basin, basin_source = basins.basin_for(scan.formation, _customer(scan.rel))
+    well = well_folder_name(scan, from_folder=well_from_folder)
     dir_path = os.path.join(out_root, basin, well)
     return dir_path, basin, basin_source
 
@@ -202,7 +212,7 @@ def _place(src: str, dst: str, kind: str, registry: dict[str, str], moves: list[
     moves.append(Move(src=src, dst=dst, kind=kind))
 
 
-def _exclusion_reason(scan: FolderScan, decision) -> str | None:
+def _exclusion_reason(scan: FolderScan, decision, *, well_from_folder: bool = False) -> str | None:
     """Which of the two group-level planning guards excludes `scan` from being planned as
     keep/questionnaire/quarantine moves, given its ledger `decision` -- `None` if neither applies
     (the group is plannable normally). Shared by `plan_moves` (which just skips the group) and
@@ -222,8 +232,12 @@ def _exclusion_reason(scan: FolderScan, decision) -> str | None:
       never itself makes an already-decided csv/dbs group's fingerprint stale) -- including a
       legacy decision with no `files_sig` at all, which can never match. The exact same staleness
       `review_app.py` treats as "resurface for review"; here it means never silently applying
-      this decision to files no human reviewed in this shape."""
-    if scan.n_wells != 1:
+      this decision to files no human reviewed in this shape.
+
+    `well_from_folder=True` drops the ambiguous-well guard: the caller asserts each group is one
+    well folder (a root flattened that way, scanned with `--group-depth 1`), so the folder names
+    the well and the questionnaire count does not matter. The stale-decision guard still applies."""
+    if scan.n_wells != 1 and not well_from_folder:
         return "ambiguous_well"
     current_sig = group_files_sig(f.sig for f in sig_files_for(scan.files, decision.keeps))
     if not decision.files_sig or decision.files_sig != current_sig:
@@ -231,7 +245,9 @@ def _exclusion_reason(scan: FolderScan, decision) -> str | None:
     return None
 
 
-def plan_moves(root: str, out_root: str, scans: list[FolderScan], ledger: Ledger) -> list[Move]:
+def plan_moves(root: str, out_root: str, scans: list[FolderScan], ledger: Ledger, *,
+               well_from_folder: bool = False,
+               basin_override: str | None = None) -> list[Move]:
     """The full move/copy plan for every reviewed folder.
 
     Folders whose ledger decision is undecided (`""`) or `"unsure"` are skipped entirely -- no
@@ -257,10 +273,11 @@ def plan_moves(root: str, out_root: str, scans: list[FolderScan], ledger: Ledger
         decision = ledger.get(scan.rel)
         if decision.status in ("", "unsure"):
             continue
-        if _exclusion_reason(scan, decision) is not None:
+        if _exclusion_reason(scan, decision, well_from_folder=well_from_folder) is not None:
             continue  # ambiguous well or stale/mismatched decision -- see plan_warnings
 
-        dest_dir, _basin, _basin_source = destination_dir(scan, out_root, root)
+        dest_dir, _basin, _basin_source = destination_dir(
+            scan, out_root, root, well_from_folder=well_from_folder, basin_override=basin_override)
         keeps = decision.keeps
 
         for src in keeps:
@@ -296,7 +313,8 @@ class PlanWarning:
     message: str    # ready to print, prefixed with `rel` (except "unknown_group", see below)
 
 
-def plan_warnings(scans: list[FolderScan], ledger: Ledger) -> list[PlanWarning]:
+def plan_warnings(scans: list[FolderScan], ledger: Ledger, *,
+                  well_from_folder: bool = False) -> list[PlanWarning]:
     """One `PlanWarning` per folder `plan_moves` silently excludes for a reason beyond plain
     undecided/unsure -- this round's FIX 3 (`scan.n_wells != 1`) and FIX 2 (a decided group whose
     current file fingerprint no longer matches the ledger's recorded one, or a legacy decision
@@ -316,7 +334,7 @@ def plan_warnings(scans: list[FolderScan], ledger: Ledger) -> list[PlanWarning]:
         decision = ledger.get(scan.rel)
         if decision.status in ("", "unsure"):
             continue
-        reason = _exclusion_reason(scan, decision)
+        reason = _exclusion_reason(scan, decision, well_from_folder=well_from_folder)
         if reason == "ambiguous_well":
             warnings.append(PlanWarning(
                 rel=scan.rel, category="ambiguous_well",
