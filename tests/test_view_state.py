@@ -287,10 +287,31 @@ def test_injection_clamps_plotted_data_to_last_nonzero_rate_plus_15_min():
     assert defaults.xlim[1] == pytest.approx(t_end_h)
 
 
+def test_injection_clamps_plotted_data_to_start_minus_15_min():
+    # dt=10s puts the injection start at 1000 s, past a 15-min lead, so the left clamp binds.
+    td = make_testdata(n=3000, dt=10.0)
+    state = injection_state(td)
+    res = compute_all(state, td)
+    fig, ax, defaults = _render(plots.render_injection, td, state, res)
+
+    t_h = td.t_s / 3600.0
+    t_start_h = t_h[state.start_idx] - 0.25
+    assert t_start_h > t_h[0]  # the clamp really is binding for this file
+
+    assert ax.get_lines()[0].get_xdata().min() >= t_start_h - 1e-9
+    twin = next(a for a in fig.axes if a is not ax)
+    assert twin.get_lines()[0].get_xdata().min() >= t_start_h - 1e-9
+    assert defaults.xlim[0] >= t_start_h - 1e-9
+    # The slider's outer range starts at the clamp, less matplotlib's autoscale margin.
+    xd = ax.get_lines()[0].get_xdata()
+    margin = ax.margins()[0] * (xd.max() - xd.min())
+    assert ax.get_xlim()[0] == pytest.approx(t_start_h - margin, abs=0.01)
+
+
 def test_injection_full_record_plots_whole_file_with_no_default_xlim():
-    """"Show all data": the whole record is plotted (past the 15-min clamp) and the default view
+    """"Show all data": the whole record is plotted (past the 15-min clamps) and the default view
     is the full autoscaled extent, so a missed injection anywhere in the file is reachable."""
-    td = make_testdata(n=3000, dt=1.0)
+    td = make_testdata(n=3000, dt=10.0)
     state = injection_state(td)
     res = compute_all(state, td)
     fig = Figure()
@@ -299,6 +320,7 @@ def test_injection_full_record_plots_whole_file_with_no_default_xlim():
 
     t_h = td.t_s / 3600.0
     assert ax.get_lines()[0].get_xdata().max() == pytest.approx(float(t_h[-1]))
+    assert ax.get_lines()[0].get_xdata().min() == pytest.approx(float(t_h[0]))
     twin = next(a for a in fig.axes if a is not ax)
     assert twin.get_lines()[0].get_xdata().max() == pytest.approx(float(t_h[-1]))
     assert defaults.xlim is None

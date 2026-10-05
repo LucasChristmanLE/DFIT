@@ -357,9 +357,10 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults,
     The falloff tail can run for weeks and would otherwise dwarf the active-injection region in
     both the autoscaled extent and the x-slider's full range, so -- following ``render_isip``'s
     precedent of clamping the *plotted data* -- every trace is masked to the last nonzero rate +
-    15 min before decimation when a rate channel exists and pumped at all; otherwise the full
-    record is plotted, unclamped. When shut-in sits past the clamp, the clamp moves to shut-in +
-    15 min instead, so the picks are never cut off.
+    15 min before decimation when a rate channel exists and pumped at all. When shut-in sits past
+    the clamp, the clamp moves to shut-in + 15 min instead, so the picks are never cut off. The
+    left side is clamped the same way, to injection start - 15 min (first nonzero rate - 15 min
+    when there is no start pick), so a long pre-injection record does not stretch the slider.
 
     ``full_record`` (the "Show all data" button) plots the whole record with no default xlim, so
     the analyst can find a missed injection and drag the lines to it.
@@ -368,13 +369,25 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults,
     p = res.bhp_all if res.bhp_all is not None else np.full(td.n, np.nan)
     t_h = _hours(td.t_s)
 
-    t_end_h = None
-    if not full_record and res.rate_all is not None and np.any(res.rate_all > 0):
+    t_start_h = t_end_h = None
+    pumped = res.rate_all is not None and np.any(res.rate_all > 0)
+    if not full_record and pumped:
         last_active = int(np.where(res.rate_all > 0)[0][-1])
         t_end_h = t_h[last_active] + 0.25
         if state.shutin_idx is not None and t_h[state.shutin_idx] > t_end_h:
             t_end_h = t_h[state.shutin_idx] + 0.25
-    m = (t_h <= t_end_h) if t_end_h is not None else np.ones_like(t_h, dtype=bool)
+    # Left clamp anchors on the start pick, not the first nonzero rate: an earlier prime or rate
+    # noise would otherwise pin it at file start.
+    if not full_record:
+        if state.start_idx is not None:
+            t_start_h = t_h[state.start_idx] - 0.25
+        elif pumped:
+            t_start_h = t_h[int(np.where(res.rate_all > 0)[0][0])] - 0.25
+    m = np.ones_like(t_h, dtype=bool)
+    if t_start_h is not None:
+        m &= t_h >= t_start_h
+    if t_end_h is not None:
+        m &= t_h <= t_end_h
 
     xt, xp = _decimate(t_h[m], p[m])
     press_color, press_ylabel, press_label = _pressure_style(res)
@@ -410,6 +423,8 @@ def render_injection(ax, td: TestData, state: PickState, res: DerivedResults,
         act = np.where(res.rate_all > 0.1)[0]
         if act.size:
             xlim = (max(0, t_h[act[0]] - 0.2), t_h[act[-1]] + 0.5)
+    if xlim is not None and t_start_h is not None:
+        xlim = (max(xlim[0], t_start_h), xlim[1])
     if xlim is not None and t_end_h is not None:
         xlim = (xlim[0], min(xlim[1], t_end_h))
 
