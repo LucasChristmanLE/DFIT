@@ -538,7 +538,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     """Step 4: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
     ax.clear()
     if res.diagnostics is None:
-        ax.set_title("G-Function -- Need te and a Falloff", fontsize=10)
+        ax.set_title("Compliance -- Need te and a Falloff", fontsize=10)
         # Recovery path: a pathological saved tail trim can leave <3 resampled points (the
         # diagnostics guard in compute_all fails), so there is nothing left to diagnose here.
         # The trim tool itself now lives on the Overview tab -- dragging it back right there is
@@ -655,7 +655,7 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     if state.contact_G is not None:
         ax.axvline(state.contact_G, color=C.PICK, ls=":", lw=1.2, gid="contact_vline")
 
-    title = "G-Function"
+    title = "Compliance"
     if res.effective_isip_compliance is not None:
         title += f"   eff.ISIP={res.effective_isip_compliance:.0f}"
     if res.shmin_compliance is not None:

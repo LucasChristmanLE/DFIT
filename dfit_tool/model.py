@@ -406,7 +406,7 @@ STEPS = [
     ("overview", "Overview"),
     ("injection", "Injection"),
     ("isip", "Apparent ISIP"),
-    ("gfunction", "G-function"),
+    ("gfunction", "Compliance"),
     ("tangent", "Tangent"),
     ("loglog", "Log-log"),
     ("porepressure", "Pore pressure"),
