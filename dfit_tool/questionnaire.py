@@ -126,7 +126,7 @@ _PSI_PER_PPG_FT = 0.052  # mirrors io_load.PSI_PER_PPG_FT; gradient(psi/ft) = 0.
 _KGM3_MIN, _KGM3_MAX = 800.0, 2600.0  # mirrors the SG sanity range, in kg/m3 terms
 _TVD_MIN, _TVD_MAX = 1000.0, 25000.0
 
-_FRESH_WATER_PPG = 8.34
+_FRESH_WATER_PPG = 8.33
 # Exact, trimmed, case-insensitive whole-cell fluid names that fall back to the fresh-water
 # density constant above when no numeric density is found anywhere -- deliberately minimal, the
 # only corpus-evidenced case (a Strathcona-style cell that just says "Fresh Water", no number).

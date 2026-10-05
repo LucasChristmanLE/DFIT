@@ -570,7 +570,7 @@ def test_fresh_water_whole_cell_fallback(tmp_path):
         "Fresh Water ",
     ])
     result = parse_questionnaire(str(path))
-    assert result.density_ppg == pytest.approx(8.34)
+    assert result.density_ppg == pytest.approx(8.33)
     assert any("assumed" in w.lower() for w in result.warnings)
 
 
@@ -581,12 +581,12 @@ def test_fresh_water_fallback_name_variants(tmp_path, cell):
         cell,
     ])
     result = parse_questionnaire(str(path))
-    assert result.density_ppg == pytest.approx(8.34)
+    assert result.density_ppg == pytest.approx(8.33)
 
 
 def test_fresh_water_with_real_number_uses_the_number_not_the_fallback(tmp_path):
     # Regression guard: a cell that both names the fluid and carries a real density number must
-    # use the number, not the 8.34 ppg fresh-water fallback.
+    # use the number, not the 8.33 ppg fresh-water fallback.
     path = _make_xlsx(tmp_path / "Questionnaire.xlsx", [
         "Type and density of fluid in the wellbore?",
         "Fresh Water - 8.6 lbs/gal",
@@ -812,7 +812,7 @@ def test_fresh_water_token_fallback(tmp_path, cell):
         cell,
     ])
     result = parse_questionnaire(str(path))
-    assert result.density_ppg == pytest.approx(8.34)
+    assert result.density_ppg == pytest.approx(8.33)
     assert any("assumed" in w.lower() for w in result.warnings)
 
 
