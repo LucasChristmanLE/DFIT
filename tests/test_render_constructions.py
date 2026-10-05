@@ -346,6 +346,28 @@ def test_render_gfunction_recovery_path_draws_guard_excluded_when_present():
     assert np.allclose(guard.get_ydata(), res.guard_excluded_p)
 
 
+@pytest.mark.parametrize("render", [plots.render_gfunction, plots.render_tangent])
+def test_g_time_steps_default_x_spans_kept_data_only(render):
+    """A tail trim cuts the diagnostics short; the default x range must stop at the last kept G,
+    not autoscale out to a pick or guard preview that sits past the trim."""
+    td, st, res = _seeded()
+    st.tail_trim_dt = 0.3 * float(res.resampled_full.dt[-1])
+    res = compute_all(st, td)
+    g_kept = float(res.diagnostics.G.max())
+    # Stand-ins for whatever can sit past the cut: a stale pick and a guard-excluded preview.
+    st.min_dpdg_G = 2.0 * g_kept
+    st.closure_G = 2.0 * g_kept
+    res.guard_excluded_G = np.array([g_kept, 3.0 * g_kept])
+    res.guard_excluded_p = np.array([1000.0, 900.0])
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    defaults = render(ax, td, st, res)
+
+    assert defaults.xlim is not None
+    assert defaults.xlim[0] <= 0.0
+    assert g_kept < defaults.xlim[1] <= 1.06 * g_kept
+
+
 # --------------------------------------------------------------------------------------------------
 # twinx interaction regressions
 # --------------------------------------------------------------------------------------------------

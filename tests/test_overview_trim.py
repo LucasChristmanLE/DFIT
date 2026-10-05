@@ -260,6 +260,7 @@ def _stub(td, st, res, step):
     stub.state = st
     stub.step = step
     stub._controllers = []
+    stub._views = {}
     stub.hint_lbl = types.SimpleNamespace(config=lambda **kw: None)
     stub.refresh = lambda: None
     stub._twin_axes = types.MethodType(DfitApp._twin_axes, stub)
@@ -354,6 +355,21 @@ def test_overview_wiring_drag_past_guard_sets_override_and_admits_data():
     after = compute_all(st, td)
     assert after.resampled.dt[-1] > guard_dt
     assert len(after.resampled.dt) > baseline_n
+
+
+def test_overview_trim_commit_drops_stored_falloff_views():
+    """A trim change resets the stored views of the steps plotted over the kept falloff, so the
+    Compliance x range re-defaults to the new kept data instead of keeping the pre-trim range."""
+    td, st, res = _seeded_with_guard_fire_and_more_data_after()
+    stub, commit = _trim_commit(td, st, res)
+    falloff = ("gfunction", "tangent", "loglog", "porepressure", "stiffness")
+    stub._views = {k: object() for k in ("overview", "injection", "isip") + falloff}
+    kept = res.resampled_full.dt[res.resampled_full.dt < res.resampled_full.guard_dt]
+    commit((float(kept[len(kept) // 2]) + res.t_shutin_s) / 3600.0)
+
+    assert st.tail_trim_dt is not None
+    assert all(stub._views[k] is None for k in falloff)
+    assert all(stub._views[k] is not None for k in ("overview", "injection", "isip"))
 
 
 def _seeded_with_guard_fire_rise_never_comes_back():

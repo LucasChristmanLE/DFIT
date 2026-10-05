@@ -534,6 +534,17 @@ def render_isip(ax, td: TestData, state: PickState, res: DerivedResults) -> View
                         y_color=press_color, y2_color=y2_color)
 
 
+def _kept_g_xlim(G: np.ndarray) -> Optional[tuple[float, float]]:
+    """Default G-time range: 0 to the last kept (post-trim) sample, with matplotlib's 5% margin.
+    Without it the axis autoscales out to a guard-excluded preview or a pick past the trim."""
+    g = G[np.isfinite(G)]
+    if not g.size:
+        return None
+    lo, hi = min(0.0, float(g.min())), float(g.max())
+    pad = 0.05 * (hi - lo) if hi > lo else 0.5
+    return (lo - pad, hi + pad)
+
+
 def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 4: P and dP/dG vs G-time; contact + min-dP/dG markers; effective-ISIP line to G=0."""
     ax.clear()
@@ -665,8 +676,8 @@ def render_gfunction(ax, td: TestData, state: PickState, res: DerivedResults) ->
     title += f"   ({state.closure_scenario or '?'})"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="lower left", fontsize=8)
-    return ViewDefaults(ylim=ylim, y2lim=y2lim, y3lim=y3lim, y_color=press_color,
-                        y2_color=C.DERIVATIVE)
+    return ViewDefaults(xlim=_kept_g_xlim(dg.G), ylim=ylim, y2lim=y2lim, y3lim=y3lim,
+                        y_color=press_color, y2_color=C.DERIVATIVE)
 
 
 def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
@@ -717,8 +728,8 @@ def render_tangent(ax, td: TestData, state: PickState, res: DerivedResults) -> V
             title += f"   Shmin(tangent)={res.shmin_tangent:.0f}"
     ax.set_title(title, fontsize=10)
     ax.legend(loc="upper left", fontsize=8)
-    return ViewDefaults(ylim=_pressure_ylim(rs.p), y2lim=y2lim, y_color=press_color,
-                        y2_color=C.DERIVATIVE)
+    return ViewDefaults(xlim=_kept_g_xlim(dg.G), ylim=_pressure_ylim(rs.p), y2lim=y2lim,
+                        y_color=press_color, y2_color=C.DERIVATIVE)
 
 
 def render_loglog(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:

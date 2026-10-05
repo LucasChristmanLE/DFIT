@@ -2208,7 +2208,13 @@ class DfitApp:
                             else:
                                 # never trim below 3 kept points
                                 dt = max(float(candidates[idx]), float(kept[2]))
+                    before = (self.state.tail_trim_dt, self.state.tail_guard_override)
                     picks.commit_tail_trim(self.state, dt, guard_dt)
+                    if (self.state.tail_trim_dt, self.state.tail_guard_override) != before:
+                        # The kept falloff changed length: drop stored falloff-step views so
+                        # each one re-defaults to the new kept range.
+                        for k in ("gfunction", "tangent", "loglog", "porepressure", "stiffness"):
+                            self._views[k] = None
                     self.refresh()
 
                 ctrl = picks.DragLineController(self.canvas, self.ax,
