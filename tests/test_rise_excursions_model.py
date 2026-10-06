@@ -35,7 +35,7 @@ def _fixture(bump: bool = True, false_low_at: int | None = None):
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
                    shutin_idx=_SHUTIN_IDX)
     return td, st
 

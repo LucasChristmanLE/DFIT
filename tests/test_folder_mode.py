@@ -13,6 +13,7 @@ import types
 
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
@@ -20,7 +21,7 @@ from dfit_tool import store, ui
 from dfit_tool.model import PickState, compute_all, infer_step_status
 from dfit_tool.ui import (STEPS, DfitApp, _next_new_index, _resolve_load_source,
                           first_not_visited_step)
-from tests.helpers import make_testdata, injection_state
+from tests.helpers import PRESSURE_COL, make_testdata, injection_state
 
 
 # --------------------------------------------------------------------------------------------------
@@ -54,7 +55,7 @@ def test_resolve_load_source_dbs_only_entry_defaults_to_dbs():
 # --------------------------------------------------------------------------------------------------
 def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monkeypatch):
     entry = store.TestEntry(test_id="w1", folder=str(tmp_path), csv_path=str(tmp_path / "w1.csv"))
-    store.save_picks_for(entry, PickState(pressure_col="P", active_source="csv"))
+    store.save_picks_for(entry, PickState(surface_col="P", active_source="csv"))
 
     calls = []
     real_load_picks_for = store.load_picks_for
@@ -84,7 +85,7 @@ def test_load_test_reads_picks_json_only_once_when_source_is_none(tmp_path, monk
 
     assert len(calls) == 1
     assert len(stub._apply_loaded_state_calls) == 1
-    assert stub._apply_loaded_state_calls[0].pressure_col == "P"
+    assert stub._apply_loaded_state_calls[0].surface_col == "P"
 
 
 def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monkeypatch):
@@ -92,7 +93,7 @@ def test_load_test_reads_picks_json_once_when_source_is_explicit(tmp_path, monke
     so the one resume read still happens (unless force_reset) -- also exactly once."""
     entry = store.TestEntry(test_id="w1", folder=str(tmp_path), csv_path=str(tmp_path / "w1.csv"),
                             dbs_path=str(tmp_path / "w1.dbs"))
-    store.save_picks_for(entry, PickState(pressure_col="P", active_source="csv"))
+    store.save_picks_for(entry, PickState(surface_col="P", active_source="csv"))
 
     calls = []
     real_load_picks_for = store.load_picks_for
@@ -130,11 +131,12 @@ def _save_stub(current_entry, td, notes="some notes"):
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: notes)
     # Widget stand-ins for _sync_state_from_widgets, defaulted to match PickState's own
     # defaults so existing assertions (which only look at notes/status) are unaffected.
-    stub.var_pressure = _Var("")
+    stub.var_surface = _Var("")
     stub.var_rate = _Var(None)
     stub.var_volume = _Var(None)
-    stub.var_isbhp = _Var(False)
-    stub.var_pressure_unit = _Var("auto")
+    stub.var_bhp = _Var(ui.BHP_CALCULATED)
+    stub.var_surface_unit = _Var("auto")
+    stub.var_bhp_unit = _Var("auto")
     stub.var_rate_unit = _Var("auto")
     stub.var_volume_unit = _Var("auto")
     stub.var_density = _Var(None)
@@ -544,12 +546,14 @@ class _Text:
 
 def _apply_stub():
     stub = types.SimpleNamespace()
-    for name in ("var_pressure", "var_rate", "var_volume", "var_density", "var_tvd",
+    for name in ("var_surface", "var_rate", "var_volume", "var_density", "var_tvd",
                  "var_well", "var_formation",
                  "var_alpha", "var_step", "var_cscen", "var_pcscen", "var_ppaxis"):
         setattr(stub, name, _Var())
-    stub.var_isbhp = _Var()
-    stub.var_pressure_unit = _Var()
+    stub.var_bhp = _Var()
+    stub.var_surface_unit = _Var()
+    stub.var_bhp_unit = _Var()
+    stub._update_bhp_combo_font = lambda: None
     stub.var_rate_unit = _Var()
     stub.var_volume_unit = _Var()
     stub.var_showd2 = _Var()
@@ -569,7 +573,7 @@ def _apply_stub():
 
 def test_apply_loaded_state_infers_step_status_when_missing():
     stub = _apply_stub()
-    state = PickState(pressure_col="P", shutin_idx=20, step_status={})
+    state = PickState(surface_col="P", shutin_idx=20, step_status={})
 
     stub._apply_loaded_state(state)
 
@@ -581,7 +585,7 @@ def test_apply_loaded_state_infers_step_status_when_missing():
 
 def test_apply_loaded_state_preserves_existing_step_status():
     stub = _apply_stub()
-    state = PickState(pressure_col="P", step_status={"injection": "done"})
+    state = PickState(surface_col="P", step_status={"injection": "done"})
 
     stub._apply_loaded_state(state)
 
@@ -591,7 +595,8 @@ def test_apply_loaded_state_preserves_existing_step_status():
 
 def test_apply_loaded_state_reflects_widgets_and_resets_views():
     stub = _apply_stub()
-    state = PickState(pressure_col="P", rate_col="R", volume_col=None, pressure_is_bhp=True,
+    state = PickState(surface_col="P", bhp_col="B", rate_col="R", volume_col=None,
+                      bhp_unit="kpa",
                       density_ppg=8.5, tvd_ft=9000.0, well_name="Foo State 1H",
                       formation="Eagle Ford", alpha=0.5, resample_step=15.0,
                       closure_scenario="C-A clear", postclosure_scenario="PC-A linear",
@@ -600,10 +605,11 @@ def test_apply_loaded_state_reflects_widgets_and_resets_views():
 
     stub._apply_loaded_state(state)
 
-    assert stub.var_pressure.value == "P"
+    assert stub.var_surface.value == "P"
     assert stub.var_rate.value == "R"
     assert stub.var_volume.value == ""
-    assert stub.var_isbhp.value is True
+    assert stub.var_bhp.value == "B"
+    assert stub.var_bhp_unit.value == "kpa"
     assert stub.var_density.value == "8.5"
     assert stub.var_tvd.value == "9000.0"
     assert stub.var_well.value == "Foo State 1H"
@@ -785,13 +791,13 @@ def test_on_source_change_accept_calls_load_test_with_force_reset(monkeypatch):
 def test_on_unit_change_noop_when_unchanged():
     stub = types.SimpleNamespace()
     stub.td = object()  # a file is loaded -- exercises the past-the-guard path
-    stub.state = PickState(pressure_unit="auto")
-    stub.var_pressure_unit = _Var("auto")
+    stub.state = PickState(surface_unit="auto")
+    stub.var_surface_unit = _Var("auto")
     stub._reset_picks_keep_mapping_calls = []
     stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
     stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
 
-    stub._on_unit_change("pressure")
+    stub._on_unit_change("surface")
 
     assert stub._reset_picks_keep_mapping_calls == []
 
@@ -800,25 +806,25 @@ def test_on_unit_change_decline_reverts_combobox(monkeypatch):
     monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: False)
     stub = types.SimpleNamespace()
     stub.td = object()
-    stub.state = PickState(pressure_unit="auto")
-    stub.var_pressure_unit = _Var("kpa")
+    stub.state = PickState(surface_unit="auto")
+    stub.var_surface_unit = _Var("kpa")
     stub._reset_picks_keep_mapping_calls = []
     stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
     stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
 
-    stub._on_unit_change("pressure")
+    stub._on_unit_change("surface")
 
-    assert stub.var_pressure_unit.value == "auto"
+    assert stub.var_surface_unit.value == "auto"
     assert stub._reset_picks_keep_mapping_calls == []
-    assert stub.state.pressure_unit == "auto"
+    assert stub.state.surface_unit == "auto"
 
 
 def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     monkeypatch.setattr(ui.messagebox, "askyesno", lambda *a, **kw: True)
     stub = types.SimpleNamespace()
     stub.td = object()
-    stub.state = PickState(pressure_unit="auto", pressure_col="P", min_dpdg_G=5.0)
-    stub.var_pressure_unit = _Var("kpa")
+    stub.state = PickState(surface_unit="auto", surface_col="P", min_dpdg_G=5.0)
+    stub.var_surface_unit = _Var("kpa")
     stub.var_rate_unit = _Var("auto")
     stub.var_volume_unit = _Var("auto")
     stub.var_cscen = _Var("C-A clear")
@@ -834,11 +840,11 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     stub._reset_picks_keep_mapping = types.MethodType(DfitApp._reset_picks_keep_mapping, stub)
     stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
 
-    stub._on_unit_change("pressure")
+    stub._on_unit_change("surface")
 
-    assert stub.state.pressure_unit == "kpa"
+    assert stub.state.surface_unit == "kpa"
     assert stub.state.min_dpdg_G is None  # the pick was reset, not carried forward
-    assert stub.state.pressure_col == "P"  # mapping preserved
+    assert stub.state.surface_col == "P"  # mapping preserved
     assert stub.var_cscen.value == ""
     assert stub.var_pcscen.value == ""
     assert stub.var_ppaxis.value == "tm12"
@@ -858,17 +864,17 @@ def test_on_unit_change_no_file_loaded_reverts_without_dialog(monkeypatch):
         lambda *a, **kw: askyesno_calls.append((a, kw)) or True)
     stub = types.SimpleNamespace()
     stub.td = None
-    stub.state = PickState(pressure_unit="auto")
-    stub.var_pressure_unit = _Var("kpa")
+    stub.state = PickState(surface_unit="auto")
+    stub.var_surface_unit = _Var("kpa")
     stub._reset_picks_keep_mapping_calls = []
     stub._reset_picks_keep_mapping = lambda: stub._reset_picks_keep_mapping_calls.append(1)
     stub._on_unit_change = types.MethodType(DfitApp._on_unit_change, stub)
 
-    stub._on_unit_change("pressure")
+    stub._on_unit_change("surface")
 
     assert askyesno_calls == []
-    assert stub.var_pressure_unit.value == "auto"
-    assert stub.state.pressure_unit == "auto"
+    assert stub.var_surface_unit.value == "auto"
+    assert stub.state.surface_unit == "auto"
     assert stub._reset_picks_keep_mapping_calls == []
 
 
@@ -878,8 +884,8 @@ def test_on_unit_change_no_file_loaded_reverts_without_dialog(monkeypatch):
 def test_reset_picks_keep_mapping_preserves_selected_fields_and_clears_rest():
     stub = types.SimpleNamespace()
     stub.state = PickState(
-        pressure_col="P", rate_col="R", volume_col="V", pressure_is_bhp=True,
-        pressure_unit="kpa", rate_unit="m3/min", volume_unit="bbl",
+        surface_col="P", bhp_col="B", rate_col="R", volume_col="V",
+        surface_unit="kpa", bhp_unit="mpa", rate_unit="m3/min", volume_unit="bbl",
         density_ppg=9.5, tvd_ft=8000.0, well_name="Foo 1H", formation="Eagle Ford",
         alpha=0.5, resample_step=25.0, notes="some notes", active_source="dbs",
         min_dpdg_G=5.0, contact_G=6.0, closure_scenario="C-A clear",
@@ -890,9 +896,10 @@ def test_reset_picks_keep_mapping_preserves_selected_fields_and_clears_rest():
     stub._reset_picks_keep_mapping()
 
     st = stub.state
-    assert (st.pressure_col, st.rate_col, st.volume_col) == ("P", "R", "V")
-    assert st.pressure_is_bhp is True
-    assert (st.pressure_unit, st.rate_unit, st.volume_unit) == ("kpa", "m3/min", "bbl")
+    assert (st.surface_col, st.rate_col, st.volume_col) == ("P", "R", "V")
+    assert st.bhp_col == "B"
+    assert (st.surface_unit, st.bhp_unit, st.rate_unit, st.volume_unit) == (
+        "kpa", "mpa", "m3/min", "bbl")
     assert st.density_ppg == 9.5
     assert st.tvd_ft == 8000.0
     assert st.well_name == "Foo 1H"
@@ -983,11 +990,12 @@ def _finish_stub(tmp_path, folder_mode, monkeypatch, second_status="new"):
     stub._update_skip_test_btn = lambda: None
     # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
     # (real _finish/_skip_test both sync these before refresh()).
-    stub.var_pressure = _Var(state.pressure_col)
+    stub.var_surface = _Var(state.surface_col)
     stub.var_rate = _Var(state.rate_col)
     stub.var_volume = _Var(state.volume_col)
-    stub.var_isbhp = _Var(state.pressure_is_bhp)
-    stub.var_pressure_unit = _Var(state.pressure_unit)
+    stub.var_bhp = _Var(state.bhp_col or ui.BHP_CALCULATED)
+    stub.var_surface_unit = _Var(state.surface_unit)
+    stub.var_bhp_unit = _Var(state.bhp_unit)
     stub.var_rate_unit = _Var(state.rate_unit)
     stub.var_volume_unit = _Var(state.volume_unit)
     stub.var_density = _Var(state.density_ppg)
@@ -1201,11 +1209,12 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub.txt_notes = types.SimpleNamespace(get=lambda *a, **kw: "skip test notes")
     # Widget stand-ins for _sync_state_from_widgets, defaulted to match the state built above
     # (real _skip_test syncs these before refresh()/the log write, same as _finish).
-    stub.var_pressure = _Var(state.pressure_col)
+    stub.var_surface = _Var(state.surface_col)
     stub.var_rate = _Var(state.rate_col)
     stub.var_volume = _Var(state.volume_col)
-    stub.var_isbhp = _Var(state.pressure_is_bhp)
-    stub.var_pressure_unit = _Var(state.pressure_unit)
+    stub.var_bhp = _Var(state.bhp_col or ui.BHP_CALCULATED)
+    stub.var_surface_unit = _Var(state.surface_unit)
+    stub.var_bhp_unit = _Var(state.bhp_unit)
     stub.var_rate_unit = _Var(state.rate_unit)
     stub.var_volume_unit = _Var(state.volume_unit)
     stub.var_density = _Var(state.density_ppg)
@@ -1271,12 +1280,13 @@ def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
     stub.var_density.set(9.3)
     stub.var_well.set("New Well 1H")
     stub.var_formation.set("Eagle Ford")
-    # pressure_is_bhp alone flips ChannelConfig.bhp_inputs_ready() regardless of density/tvd, so
-    # this is a res-DERIVED column (build_log_row reads res.pressure_is_bhp, not
-    # state.pressure_is_bhp directly) -- it only reflects the new widget value if _skip_test's
-    # refresh() actually recomputed self.res on the synced state, not just the sync itself.
-    assert stub.state.pressure_is_bhp is False
-    stub.var_isbhp.set(True)
+    # Map a bottomhole gauge column that reads 4000 psi above surface. The logged apparent ISIP
+    # (res.apparent_isip, BHP at shut-in) shows it only if _skip_test's refresh() recomputed
+    # self.res on the synced state, not just the sync itself.
+    assert stub.state.bhp_col == ""
+    stub.td.df["BHG"] = stub.td.df[PRESSURE_COL] + 4000.0
+    stub.var_bhp.set("BHG")
+    isip_before = stub.res.apparent_isip
 
     stub._skip_test()
 
@@ -1284,7 +1294,7 @@ def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
     assert loaded.density_ppg == 9.3
     assert loaded.well_name == "New Well 1H"
     assert loaded.formation == "Eagle Ford"
-    assert loaded.pressure_is_bhp is True
+    assert loaded.bhp_col == "BHG"
     assert loaded.notes == "skip test notes"
 
     log_df = store.load_log(str(tmp_path))
@@ -1292,7 +1302,8 @@ def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
     assert row["well_name"] == "New Well 1H"
     assert row["formation"] == "Eagle Ford"
     assert row["fluid_density"] == 9.3
-    assert row["pressure_source"] == "BHP"
+    assert row["pressure_source"] == "bottomhole gauge"
+    assert row["apparent_ISIP"] == pytest.approx(isip_before + 4000.0)
     assert row["notes"] == "skip test notes"
 
 
@@ -1304,10 +1315,9 @@ def test_skip_test_captures_unapplied_widget_edits_and_notes(tmp_path):
 def _overview_apply_stub(tmp_path):
     stub, _, _ = _skip_test_real_refresh_stub(tmp_path)
     stub.step = "overview"
-    stub.state.pressure_is_bhp = False
     stub.state.density_ppg = None
     stub.state.tvd_ft = None
-    stub.var_isbhp.set(False)
+    stub.var_bhp.set(ui.BHP_CALCULATED)
     stub.var_density.set(None)
     stub.var_tvd.set(None)
     stub._apply_config = types.MethodType(DfitApp._apply_config, stub)

@@ -34,7 +34,7 @@ def test_no_blocker_once_density_and_tvd_are_set():
 def test_no_blocker_when_channel_is_bhp():
     td = make_testdata()
     st = injection_state(td)
-    st.pressure_is_bhp = True
+    st.bhp_col, st.surface_col = st.surface_col, ""
     assert blocking_issues(st) == []
 
 
@@ -49,7 +49,7 @@ def test_no_pressure_channel_is_a_blocker():
 def test_missing_tvd_gradient_message_is_a_note():
     td = make_testdata()
     st = injection_state(td)
-    st.pressure_is_bhp = True
+    st.bhp_col, st.surface_col = st.surface_col, ""
     # The default shut-in ISIP gives an apparent ISIP, so there is a gradient source to report
     # against.
     res = compute_all(st, td)
@@ -124,7 +124,7 @@ def test_skip_blocked_on_overview_with_blocker():
 
 def test_next_allowed_on_overview_without_blocker():
     st = injection_state(make_testdata())
-    st.pressure_is_bhp = True
+    st.bhp_col, st.surface_col = st.surface_col, ""
     stub = _nav_stub("overview", st)
     stub._advance()
     assert stub._goto_calls == ["injection"]
@@ -144,7 +144,7 @@ def test_next_on_overview_applies_typed_density_tvd_first():
 
 def test_next_blocked_on_overview_when_bhp_conversion_failed():
     st = injection_state(make_testdata())
-    st.pressure_is_bhp = True  # blocking_issues is clean; only res reports the failure
+    st.bhp_col, st.surface_col = st.surface_col, ""  # blocking_issues is clean; only res reports the failure
     stub = _nav_stub("overview", st)
     stub.res = DerivedResults(blockers=["BHP computation failed: boom"])
     stub._advance()

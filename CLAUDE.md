@@ -19,8 +19,9 @@ into a queue of tests shown in a left sidebar and rolls each test's results into
 
 The eight steps (`model.STEPS`): overview → injection → isip → gfunction → tangent → loglog →
 porepressure → stiffness.
-- Overview: the whole dataset, unclamped, with the always-on tail-trim line. When BHP is converted
-  from surface pressure it also overlays the raw surface trace (`DerivedResults.p_surface_all`).
+- Overview: the whole dataset, unclamped, with the always-on tail-trim line. Whenever a surface
+  channel is mapped and BHP is a bottomhole gauge or converted from surface, it also overlays the
+  raw surface trace (`DerivedResults.p_surface_all`).
 - Injection: zoomed injection window with draggable start/shut-in lines and a te/Vinj/qmax title.
 - Stiffness: semilog-y relative stiffness vs effective pressure (URTeC-2019-123 A.8/A.9). Needs
   the pore-pressure estimate, so it comes last. Porepressure and stiffness are both skipped end
@@ -73,8 +74,11 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
 - **IO.** `io_load.py`: `load()` dispatches on extension (case-insensitive) to `load_csv`,
   `load_xlsx`, or the reverse-engineered Fracpro `.DBS` reader. CSV and XLSX share everything
   after "file → raw DataFrame" via `_finish_frame`, so every CSV time-base fix applies to XLSX.
-  Also: `suggest_channels` (ranked channel-role suggestion), the hydrostatic surface→BHP
-  conversion (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in), and per-channel unit detection.
+  Also: `suggest_channels` (ranked channel-role suggestion; returns `surface` and `bhp`, plus the
+  older `pressure`/`pressure_is_bhp` for triage), `ChannelConfig(surface_col, bhp_col, ...)`, the
+  hydrostatic surface→BHP conversion (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in, used only
+  when `bhp_col` is empty, shown as "Calculated"), and per-channel unit detection. Surface and
+  bottomhole are separate channels; "bottomhole gauge" means a mapped `bhp_col`.
   `questionnaire.py` reads fluid density and TVD from a `*questionnaire*.xlsx` next to the data.
 - **Interaction (matplotlib only, no Tkinter).** `picks.py`: event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`, `SpanController`,
@@ -215,8 +219,8 @@ Preserve these when changing the code.
   cut go at the front of `DerivedResults.warnings` (`insert(0)`). Keep each message to one short
   line (`tests/test_warning_levels.py` caps it at 90 characters). Empty trailing `.DBS` records
   are dropped without a warning.
-- **Three issue levels** on `DerivedResults`: `blockers` (no pressure channel, surface pressure
-  without density/TVD, a failed BHP conversion), `warnings` (changed or possibly invalid
+- **Three issue levels** on `DerivedResults`: `blockers` (neither surface nor a bottomhole gauge
+  mapped, Calculated BHP without density/TVD, a failed BHP conversion), `warnings` (changed or possibly invalid
   numbers), `notes` (informational: TVD missing so gradients are blank, stiffness decimation).
   `model.blocking_issues(state)` gates Next and Skip on Overview (`step_gate_error`); `_goto` and
   `refresh` send any other step back to Overview while a blocker holds. Overview shows every
@@ -271,7 +275,11 @@ is drawn (and draggable) on the stiffness step only.
   when pressure stays > 30 psi (`RISE_GUARD_PSI`) above its running minimum for >= 60 s and >= 5
   samples; `guard_dt` is pinned to the first qualifying run.
 - **Tail trim** (`PickState.tail_trim_dt`, shut-in-relative seconds): seeded on Overview's first
-  visit by `picks.seed_tail_trim` (sub-50-psi surface crash → trim strictly before the collapse
+  visit by `picks.seed_tail_trim` (sub-50-psi surface crash, checked whenever `surface_col` is
+  mapped, bottomhole gauge or not, since surface on vacuum also invalidates a bottomhole gauge;
+  the surface channel's own mask (auto dropouts + manual masks - keeps,
+  `DerivedResults.surface_dropout_mask`) is ignored when a bottomhole gauge is mapped, with a
+  warning; trim strictly before the collapse
   onset, not the first sub-50 sample: `suggest_tail_trim_dt` backs up over the prior
   min(300 s, 2% of elapsed) to the last sample within `state.resample_step` psi of the window max;
   reason `"low_pressure"`; a guard boundary sets no pick). `interpret.resolve_tail_cut_dt(trim,

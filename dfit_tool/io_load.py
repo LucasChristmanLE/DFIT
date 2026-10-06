@@ -603,8 +603,8 @@ _BARE_PRESSURE_WORDS = {"treating", "surface", "surf", "wellhead"}
 
 # Tier 3: demoted aux/aggregate/derived pressure channels -- checked first, overrides tiers 0/1.
 # "down" is deliberately absent: pump-down is already demoted via "pump", and a genuine
-# "Down Hole Pressure" channel (a bare BHP-like reading, distinct from surface/wellhead) should
-# not be.
+# "Down Hole Pressure" channel (a bottomhole-gauge reading, see `_is_bhp_named`, distinct from
+# surface/wellhead) should not be.
 _PRESSURE_DEMOTE_EXACT = {
     "add", "backside", "pump", "discharge", "max", "min", "avg", "average",
     "maximum", "minimum", "averaged", "boost", "triplex", "jet", "iron",
@@ -630,12 +630,23 @@ def _is_pressure_candidate(colname: str) -> bool:
 
 
 def _is_bhp_named(colname: str) -> bool:
-    """True for a column whose tokens name it explicitly as bottomhole pressure: a token starting
-    with "bhp" (so "BHP", "BHP1" both count) or "bottom" ("Bottomhole Press"). No "btmh" rule --
-    a Fracpro export's "Meas'd Btmh Press" reads as a computed/derived name, not a direct BHP
-    label, so it is left to rank as a generic (tier 2) pressure channel instead.
+    """True for a column whose tokens name it explicitly as a bottomhole-gauge pressure: a token
+    starting with "bhp" (so "BHP", "BHP1" both count), "bottomhole" ("Bottomhole Press") or
+    "downhole" ("Downhole Pressure", "DownholePress"), the adjacent tokens "bottom" + "hole" or
+    "down" + "hole" ("Bottom Hole Pressure", "Down Hole Pressure"), or an exact "dh" token ("DH
+    Press (psi)"). "Bottom" alone is not enough: APC Badger 11N/12N-3HZ's "Pressure Bottom Gauge"
+    and "Pressure Top Gauge" are both surface transducers. No "dhp" rule: "DHP" is
+    not a corpus name and a bare prefix would also match unrelated tokens ("DHCP" is excluded
+    because "dh" must be the whole token). No "btmh" rule -- a Fracpro export's "Meas'd Btmh
+    Press" reads as a computed/derived name, not a direct BHP label, so it is left to rank as a
+    generic (tier 2) pressure channel instead. Still only meaningful for a pressure candidate,
+    and a tier-3 demotion (e.g. "DH Max Press") still wins over this name.
     """
-    return any(t.startswith("bhp") or t.startswith("bottom") for t in _tokens(colname))
+    tokens = _tokens(colname)
+    if any(t.startswith(("bhp", "bottomhole", "downhole")) or t == "dh" for t in tokens):
+        return True
+    return any(tokens[i] in ("bottom", "down") and tokens[i + 1] == "hole"
+               for i in range(len(tokens) - 1))
 
 
 def _is_wellhead_named(tokens: list[str]) -> bool:
@@ -732,7 +743,7 @@ def _pressure_candidate_stats(colnames: list[str], column) -> dict[str, Optional
     return stats
 
 
-def _live_pressure_candidates(colnames: list[str], column) -> list[str]:
+def _live_pressure_candidates(colnames: list[str], column, strict: bool = False) -> list[str]:
     """Restrict `colnames` to the ones that look like a real, live pressure signal, using
     ``column(name) -> np.ndarray`` (see ``_pressure_candidate_stats`` for the header-unit scaling
     and subsampling applied first). A candidate is "live" iff: its finite fraction is
@@ -748,7 +759,8 @@ def _live_pressure_candidates(colnames: list[str], column) -> list[str]:
 
     Falls back to returning `colnames` unchanged whenever nothing qualifies (a genuinely dead
     file, or every candidate raised) -- callers then get today's name-only ranking rather than an
-    empty candidate list.
+    empty candidate list. With ``strict=True`` nothing qualifying returns ``[]`` instead, so a
+    caller judging one pool (see ``suggest_channels``) can tell "dead" from "live".
     """
     stats = _pressure_candidate_stats(colnames, column)
     baseline: dict[str, tuple] = {}
@@ -761,21 +773,26 @@ def _live_pressure_candidates(colnames: list[str], column) -> list[str]:
         if finite_frac >= LIVENESS_MIN_FINITE_FRAC and rng >= LIVENESS_MIN_RANGE_PSI:
             baseline[c] = (p99, rng)
     if not baseline:
-        return colnames
+        return [] if strict else colnames
     max_range = max(rng for _, rng in baseline.values())
     max_p99 = max(p99 for p99, _ in baseline.values())
     live = [c for c, (p99, rng) in baseline.items()
             if rng >= LIVENESS_MIN_RANGE_FRAC_OF_MAX * max_range
             and p99 >= LIVENESS_MIN_P99_FRAC_OF_MAX * max_p99]
-    return live if live else colnames
+    return live if live else ([] if strict else colnames)
 
 
 def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]]:
     """Best-guess mapping of column names to roles.
 
-    Returns keys: ``pressure``, ``rate``, ``volume``, ``pressure_is_bhp`` (bool guess),
-    ``datetime``, and ``time``. Values are column names (or None). The UI presents these as
-    defaults.
+    Returns keys: ``surface``, ``bhp``, ``pressure``, ``rate``, ``volume``, ``pressure_is_bhp``
+    (bool guess), ``datetime``, and ``time``. Values are column names (or None). The UI presents
+    these as defaults.
+
+    ``bhp`` is the bottomhole-gauge channel (first BH-named, non-demoted candidate), ``surface``
+    the best non-BH-named candidate; ``pressure`` and ``pressure_is_bhp`` are the older
+    single-channel view (the BHP source: ``bhp`` when there is one, else ``surface``) that
+    triage scripts still read. See the pool/liveness notes below.
 
     ``time`` is the name of a companion time-of-day column that has to be joined with
     ``datetime`` before parsing (measured case: Strathcona's separate ``Date`` + ``Time``
@@ -788,7 +805,7 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
     (HH:MM:SS)"), also in column order.
 
     ``pressure`` is chosen from ranked candidates rather than the first substring match in
-    column order: a column explicitly named as BHP (a token starting with "bhp" or "bottom")
+    column order: a column explicitly named as BHP (see ``_is_bhp_named``)
     wins outright and sets ``pressure_is_bhp`` -- unless that same column is also demoted (see
     below) -- else the highest-ranked candidate wins, ties broken by column order. The rank
     order is surface/WHP/wellhead-named, then treating-named, then generic, then demoted
@@ -800,7 +817,13 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
     narrows the pressure candidates to the "live" ones first -- see ``_live_pressure_candidates``
     -- since a dead/backside gauge or a locked-constant aggregate channel can otherwise outrank a
     real signal on name alone. Left ``None``, selection is name-only (unchanged from before this
-    filter existed).
+    filter existed). A BH-named channel must pass the joint liveness filter over every
+    candidate (as before the split), so a disconnected or flat bottomhole gauge next to a live
+    surface channel yields no ``bhp``. The non-BH pool is filtered on its own: a bottomhole gauge
+    reads far higher than surface, and judging them together would drop a live surface channel
+    on the relative range/p99 bars. With no BH-named channel, the non-BH pool is every
+    candidate, so ``surface`` equals the single-channel pick this function made before the
+    split.
     """
     lc = {c: c.lower() for c in columns}
 
@@ -820,18 +843,37 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
 
     time_col = _companion_time_col(datetime_col, columns) if datetime_col else None
 
+    order = {c: i for i, c in enumerate(columns)}
+
+    def best(cands):
+        return min(cands, key=lambda c: (_pressure_tier(c), order[c]))
+
     pressure_candidates = [c for c in columns if _is_pressure_candidate(c)]
+    bh_pool = [c for c in pressure_candidates if _is_bhp_named(c)]
+    other_pool = [c for c in pressure_candidates if not _is_bhp_named(c)]
+    # A BH-named channel must pass the same joint liveness filter as before the split (judged
+    # against every candidate): a lone BH-named channel is its own max and would otherwise always
+    # pass, so a disconnected or flat bottomhole gauge would beat a live surface channel. The
+    # non-BH pool is judged on its own, so a bottomhole gauge reading far above surface cannot
+    # drop a live surface channel on the relative range/p99 bars.
+    joint = pressure_candidates
+    live_other = other_pool
     if column is not None and pressure_candidates:
-        pressure_candidates = _live_pressure_candidates(pressure_candidates, column)
-    bhp_candidates = [c for c in pressure_candidates
-                      if _is_bhp_named(c) and _pressure_tier(c) != 3]
-    if bhp_candidates:
-        pressure = bhp_candidates[0]
-    elif pressure_candidates:
-        order = {c: i for i, c in enumerate(columns)}
-        pressure = min(pressure_candidates, key=lambda c: (_pressure_tier(c), order[c]))
+        joint = _live_pressure_candidates(pressure_candidates, column)
+        live_other = (_live_pressure_candidates(other_pool, column, strict=True)
+                      if other_pool else [])
+    live_bh = [c for c in bh_pool if c in joint]
+    bhp_candidates = [c for c in live_bh if _pressure_tier(c) != 3]
+    bhp = bhp_candidates[0] if bhp_candidates else None
+    if bhp is not None:
+        surface_candidates = [c for c in live_other if _pressure_tier(c) != 3]
+        surface = best(surface_candidates) if surface_candidates else None
+        pressure = bhp
     else:
-        pressure = None
+        # No usable bottomhole gauge: the single-channel pick, exactly as before the split
+        # (joint liveness; may land on a tier-3 channel).
+        pressure = best(joint) if joint else None
+        surface = pressure if pressure and not _is_bhp_named(pressure) else None
     pressure_is_bhp = _is_bhp_named(pressure) if pressure else False
 
     rate = find("rate", "bpm", "flow", "slurry")
@@ -840,6 +882,8 @@ def suggest_channels(columns: list[str], column=None) -> dict[str, Optional[str]
     return {
         "datetime": datetime_col,
         "time": time_col,
+        "surface": surface,
+        "bhp": bhp,
         "pressure": pressure,
         "rate": rate,
         "volume": volume,
@@ -940,14 +984,15 @@ def detect_channel_unit(colname: str, values: np.ndarray, kind: str, override: s
                          confidence="low")
 
 
-def _maybe_warn(kind: str, det: UnitDetection) -> list[str]:
+def _maybe_warn(kind: str, det: UnitDetection, label: Optional[str] = None) -> list[str]:
     """Warning policy for one channel's ``UnitDetection``: always warn when the resolved factor
     isn't 1.0 (a real conversion happened, silent would hide it); also warn on a low-confidence
     pressure heuristic call even at factor 1.0 (the magnitude call itself is uncertain, even
     though it landed on the assumed-default unit). Silent for a factor-1.0 inherited/header/
     override detection -- that's the ordinary field-units load, and warning on every load would
-    just be noise."""
-    label = kind.capitalize()
+    just be noise. ``label`` replaces the capitalized ``kind`` in the text (the surface and
+    bottomhole pressure channels are both ``kind="pressure"``)."""
+    label = label or kind.capitalize()
     if det.factor != 1.0:
         return [f"{label} converted from {det.unit} ×{det.factor:.6g} ({det.source})"]
     if kind == "pressure" and det.source == "heuristic" and det.confidence == "low":
@@ -960,18 +1005,29 @@ def _maybe_warn(kind: str, det: UnitDetection) -> list[str]:
 # --------------------------------------------------------------------------------------------------
 @dataclass
 class ChannelConfig:
-    """How the loaded columns map to physical channels, plus BHP-conversion inputs."""
+    """How the loaded columns map to physical channels, plus BHP-conversion inputs.
 
-    pressure_col: str
-    pressure_is_bhp: bool = False
+    ``bhp_col`` is a bottomhole-gauge channel (true BHP); empty means BHP is calculated from
+    ``surface_col`` plus the hydrostatic head.
+    """
+
+    surface_col: str = ""
+    bhp_col: str = ""
     rate_col: Optional[str] = None
     volume_col: Optional[str] = None
-    # Required only when pressure_is_bhp is False (surface pressure -> compute BHP):
+    # Required only when bhp_col is empty (surface pressure -> calculated BHP):
     mw_ppg: Optional[float] = None
     tvd_ft: Optional[float] = None
 
+    @property
+    def bhp_source_col(self) -> str:
+        """The channel dropout/rise detection and the no-rate window fallback read: the
+        bottomhole gauge when mapped, else surface."""
+        return self.bhp_col or self.surface_col
+
     def bhp_inputs_ready(self) -> bool:
-        return self.pressure_is_bhp or (self.mw_ppg is not None and self.tvd_ft is not None)
+        return bool(self.bhp_col or (self.surface_col and self.mw_ppg is not None
+                                     and self.tvd_ft is not None))
 
 
 @dataclass
@@ -1011,24 +1067,25 @@ class TestData:
         return raw * factor if factor != 1.0 else raw
 
     def pressure_surface(self, cfg: ChannelConfig) -> np.ndarray:
-        return self.column(cfg.pressure_col)
+        return self.column(cfg.surface_col)
 
     def bhp(self, cfg: ChannelConfig) -> np.ndarray:
         """Bottomhole pressure over all samples.
 
-        If the mapped pressure channel is already BHP, it is returned unchanged. Otherwise it is
-        treated as surface pressure and a constant hydrostatic head is added:
+        If a bottomhole-gauge channel is mapped (``cfg.bhp_col``), it is returned unchanged.
+        Otherwise the surface channel gets a constant hydrostatic head added:
 
             BHP = WHP + 0.052 * mw_ppg * tvd_ft
 
         Hydrostatic only (no friction) -- valid post-shut-in, which is where every pick is made.
         """
-        p = self.column(cfg.pressure_col)
-        if cfg.pressure_is_bhp:
-            return p
+        if cfg.bhp_col:
+            return self.column(cfg.bhp_col)
+        if not cfg.surface_col:
+            raise ValueError("No bottomhole or surface pressure channel mapped")
         if cfg.mw_ppg is None or cfg.tvd_ft is None:
             raise ValueError("Surface pressure selected but mw_ppg/tvd_ft not set for BHP conversion")
-        return p + hydrostatic_head(cfg.mw_ppg, cfg.tvd_ft)
+        return self.column(cfg.surface_col) + hydrostatic_head(cfg.mw_ppg, cfg.tvd_ft)
 
 
 def hydrostatic_head(mw_ppg: float, tvd_ft: float) -> float:
@@ -1036,10 +1093,11 @@ def hydrostatic_head(mw_ppg: float, tvd_ft: float) -> float:
     return PSI_PER_PPG_FT * mw_ppg * tvd_ft
 
 
-def refresh_unit_detection(td: TestData, pressure_col: Optional[str],
+def refresh_unit_detection(td: TestData, surface_col: Optional[str],
+                           bhp_col: Optional[str] = None,
                            rate_col: Optional[str] = None, volume_col: Optional[str] = None,
-                           pressure_unit: str = "auto", rate_unit: str = "auto",
-                           volume_unit: str = "auto") -> list[str]:
+                           surface_unit: str = "auto", bhp_unit: str = "auto",
+                           rate_unit: str = "auto", volume_unit: str = "auto") -> list[str]:
     """Rebuild `td.unit_factors`/`td.unit_detections`/`td.unit_warnings` from the raw, untouched
     columns in `td.df` -- lazy detection, not eager conversion (see units.py's module docstring).
     Idempotent: calling this again with the same arguments recomputes the same factors from the
@@ -1047,25 +1105,39 @@ def refresh_unit_detection(td: TestData, pressure_col: Optional[str],
 
     Plain-string params (not a PickState) so io_load stays below model.py in the import graph --
     model.compute_all calls this at the top of every compute_all with the state's column names
-    and unit overrides. `pressure_col`/`rate_col`/`volume_col` may be empty/None (channel not yet
-    mapped); that channel is then simply skipped, leaving no key in the resulting dicts and no
-    warning for it. A column name that doesn't exist in `td.df` (a foreign picks JSON, or a
-    folder-mode source switch that leaves a stale column name in `PickState`) is skipped the same
-    way rather than raising a `KeyError` -- it just gets no detection entry, so `column()` falls
-    back to factor 1.0 for it. Returns the list of warnings from this detection pass --
-    compute_all extends `DerivedResults.warnings` with it.
+    and unit overrides. Each of `surface_col`/`bhp_col`/`rate_col`/`volume_col` may be
+    empty/None (channel not yet mapped); that channel is then simply skipped, leaving no key in
+    the resulting dicts and no warning for it. A column name that doesn't exist in `td.df` (a
+    foreign picks JSON, or a folder-mode source switch that leaves a stale column name in
+    `PickState`) is skipped the same way rather than raising a `KeyError` -- it just gets no
+    detection entry, so `column()` falls back to factor 1.0 for it. Rate and volume inherit the
+    surface pressure verdict when surface is mapped, else the bottomhole one. When both pressure
+    params name the same column it is detected once (the surface override wins). Returns the list
+    of warnings from this detection pass -- compute_all extends `DerivedResults.warnings` with it.
     """
     factors: dict[str, float] = {}
     detections: dict[str, UnitDetection] = {}
     warnings: list[str] = []
 
-    pressure_detection: Optional[UnitDetection] = None
-    if pressure_col and pressure_col in td.df.columns:
-        raw = pd.to_numeric(td.df[pressure_col], errors="coerce").to_numpy(dtype=float)
-        pressure_detection = detect_channel_unit(pressure_col, raw, "pressure", pressure_unit)
-        factors[pressure_col] = pressure_detection.factor
-        detections[pressure_col] = pressure_detection
-        warnings.extend(_maybe_warn("pressure", pressure_detection))
+    surface_detection: Optional[UnitDetection] = None
+    bhp_detection: Optional[UnitDetection] = None
+    for col, override, label in ((surface_col, surface_unit, "Surface pressure"),
+                                 (bhp_col, bhp_unit, "Bottomhole pressure")):
+        if not col or col not in td.df.columns:
+            continue
+        if col in detections:  # same column mapped to both roles: detected once
+            det = detections[col]
+        else:
+            raw = pd.to_numeric(td.df[col], errors="coerce").to_numpy(dtype=float)
+            det = detect_channel_unit(col, raw, "pressure", override)
+            factors[col] = det.factor
+            detections[col] = det
+            warnings.extend(_maybe_warn("pressure", det, label))
+        if label == "Surface pressure":
+            surface_detection = det
+        else:
+            bhp_detection = det
+    pressure_detection = surface_detection or bhp_detection
 
     for col, override, kind in ((rate_col, rate_unit, "rate"), (volume_col, volume_unit, "volume")):
         if not col or col not in td.df.columns:

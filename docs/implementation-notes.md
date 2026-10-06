@@ -371,7 +371,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   treating-named beats generic beats demoted aux/pump/annulus/max/avg-type channels, though a
   BHP-named channel still wins outright; when given a loaded `TestData.column` callable, it also
   filters to "live" candidates first, since a dead/backside gauge or a locked-constant channel
-  can otherwise outrank a real signal by name alone). `io_load.py` also converts surface pressure
+  can otherwise outrank a real signal by name alone; see Surface and bottomhole channels below).
+  `io_load.py` also converts surface pressure
   to BHP hydrostatically
   (`BHP = WHP + 0.052·mw·tvd`, valid post-shut-in where flow → 0), and detects/converts
   per-channel units via `units.py` (see Unit detection and conversion below). `questionnaire.py`
@@ -1226,6 +1227,48 @@ the fit reads `loglog_window`, a Pore pressure drag writes it, and old saves' `p
 dropped on load (their Pp follows the log-log window on reopen). A Log-log drag past the last
 sample stores `hi = inf` (`handle_loglog_span(t_end=...)`): the span selector does not clamp to
 the data, and a finite hi past a trimmed edge would read as stale on a fresh pick.
+
+**Surface and bottomhole channels.** `PickState` carries `surface_col` and `bhp_col` (and
+`surface_unit`/`bhp_unit`) instead of the old `pressure_col` + `pressure_is_bhp` + `pressure_unit`.
+"Bottomhole gauge" means a mapped `bhp_col`; a surface transducer is also a gauge, so the bare word
+is not used. An empty `bhp_col` is "Calculated" in the UI: BHP is surface + hydrostatic, as before.
+Reason for the split: when surface goes on vacuum the fluid column is no longer full, so a
+bottomhole gauge reading is invalid too. The old gate (`not state.pressure_is_bhp`) switched off
+the Overview surface overlay, the "Surface pressure fell below 50 psi" warning, and the
+`low_pressure` auto trim together on every bottomhole-gauge test. They now key on `surface_col`
+being mapped. Dropout and rise detection (`res.dropout_mask`) run on the BHP source
+(`ChannelConfig.bhp_source_col`: `bhp_col` or `surface_col`). With both mapped, the surface
+channel's own mask, `(detect_dropouts | manual mask_intervals) & ~keep_intervals`, is computed once
+in `compute_all` (`DerivedResults.surface_dropout_mask`) and NaN'd in the low-surface scan,
+`seed_tail_trim` and the Overview overlay, so a single surface glitch to zero neither warns nor
+trims, and a keep over it restores the check. Auto-detected surface dropouts that stay ignored add
+one warning ("Surface: N dropout sample(s) ignored for the 50 psi check"). The mask never masks
+BHP. `suggest_channels` splits
+the pressure candidates into a BH-named pool and a non-BH pool. A BH-named channel must pass the
+old joint liveness filter over every candidate (a lone BH-named channel is its own max and would
+always pass a per-pool filter, so a disconnected or flat bottomhole gauge would beat a live surface
+channel). The non-BH pool is filtered on its own (`_live_pressure_candidates(..., strict=True)`):
+a bottomhole gauge reads far above surface, so judging them together dropped a live surface channel
+on the relative range/p99 bars (surface p99 2000 next to BHP p99 9000). `bhp` is the first
+BH-named non-tier-3 candidate that passes the joint filter; `surface` is the best non-BH,
+non-tier-3 candidate from its own pool, None when a `bhp` exists and nothing qualifies. With no usable `bhp` the old combined
+single-channel pick runs unchanged (may land on a tier-3 channel), so files with no BH-named channel
+give the same `pressure` as before and `surface` equals it. `_is_bhp_named` matches a token
+starting with `bhp`, `bottomhole` or `downhole`, the adjacent tokens `bottom` + `hole` or `down` +
+`hole`, and an exact `dh` token. "Bottom" alone does not count (it used to be a `bottom*` prefix
+rule): APC Badger 11N/12N-3HZ's "Pressure Bottom Gauge" and "Pressure Top Gauge" are both surface
+transducers, so the old rule mapped a surface channel as BHP with no hydrostatic. There is no
+`dhp` rule: it is not a corpus name and a prefix rule would also match unrelated tokens; "DHCP
+Pressure" stays non-BH. A tier-3 name ("DH Max Press") is still demoted and never suggested as
+`bhp`. Old saves migrate in `model._decode`: `pressure_is_bhp` True gives `bhp_col`/`bhp_unit`,
+otherwise `surface_col`/`surface_unit`. A migrated bottomhole-gauge save keeps `surface_col` empty
+(no auto-fill on reopen), so finished tests do not change. The old keys are not written again.
+`pressure_source` in `dfit_log.csv` is now "bottomhole gauge" or "calculated" (old rows keep
+"BHP"/"WHP" until re-upserted).
+DJ spot check (2026-10-05, 190 loadable files): 187 give the same `pressure`/`pressure_is_bhp` as
+before. APC Fehrn 38N-32HZ's "DH Gauge Pressure" is now BH-named (the analyst had already checked
+"is BHP"). APC Badger 11N/12N-3HZ now suggest Surface = "Pressure Bottom Gauge", Bottomhole =
+Calculated (their named surface channels are all zeros and fail liveness).
 
 **Pressure dropouts.** A brief gauge dropout -- pressure reads near zero for a few seconds, then
 returns -- otherwise poisons everything downstream of it: it pins `resample_pressure_increment`'s

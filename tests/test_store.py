@@ -357,7 +357,7 @@ def test_nested_entry_save_and_load_picks_roundtrip(tmp_path):
     entry = entries[0]
     assert "/" in entry.test_id
 
-    st = PickState(pressure_col="P")
+    st = PickState(surface_col="P")
     store.save_picks_for(entry, st)
 
     expected_path = os.path.join(str(sub), "Well1_DFIT" + store.PICKS_SUFFIX)
@@ -366,7 +366,7 @@ def test_nested_entry_save_and_load_picks_roundtrip(tmp_path):
 
     loaded = store.load_picks_for(entry)
     assert loaded is not None
-    assert loaded.pressure_col == "P"
+    assert loaded.surface_col == "P"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -387,13 +387,13 @@ def test_load_picks_for_corrupt_json_returns_none(tmp_path):
 
 def test_save_and_load_picks_roundtrip(tmp_path):
     entry = store.TestEntry(test_id="w", folder=str(tmp_path))
-    st = PickState(pressure_col="P", active_source="dbs", explicit_status="skipped")
+    st = PickState(surface_col="P", active_source="dbs", explicit_status="skipped")
 
     store.save_picks_for(entry, st)
     loaded = store.load_picks_for(entry)
 
     assert loaded is not None
-    assert loaded.pressure_col == "P"
+    assert loaded.surface_col == "P"
     assert loaded.active_source == "dbs"
     assert loaded.explicit_status == "skipped"
 
@@ -765,9 +765,9 @@ def test_build_log_row_closure_time_none_stays_none(tmp_path):
     assert row["closure_time_compliance_min"] is None
 
 
-def test_build_log_row_pressure_source_bhp_vs_whp(tmp_path):
+def test_build_log_row_pressure_source_calculated_by_default(tmp_path):
     row, _, res = _built_row(tmp_path)
-    assert row["pressure_source"] == ("BHP" if res.pressure_is_bhp else "WHP")
+    assert row["pressure_source"] == "calculated"
 
 
 def test_log_row_has_net_pressure_isip_source(tmp_path):

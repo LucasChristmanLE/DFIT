@@ -84,7 +84,6 @@ def test_too_tight_trim_warning_is_inserted_first():
     """warn_lbl now stacks every warning, but the escape instruction for an otherwise-blank plot
     must still land topmost, ahead of other warnings queued before it in compute_all."""
     td, st, res = _seeded_with_crash()
-    st.pressure_is_bhp = False
     td.load_warnings = ["Earlier load warning"]  # queued ahead of the trim warning
     st.tail_trim_dt = 0.0
     res2 = compute_all(st, td)

@@ -17,7 +17,7 @@ from dfit_tool.ui import FIELD_STEP, PANEL_FIELDS
 # PickState.step_status persistence
 # --------------------------------------------------------------------------------------------------
 def test_to_json_from_json_round_trips_step_status(tmp_path):
-    state = PickState(pressure_col="P", step_status={"injection": "done", "isip": "visited"})
+    state = PickState(surface_col="P", step_status={"injection": "done", "isip": "visited"})
     path = str(tmp_path / "picks.json")
     state.to_json(path)
 
@@ -35,7 +35,7 @@ def test_from_json_missing_step_status_key_defaults_empty(tmp_path):
     loaded = PickState.from_json(str(path))
 
     assert loaded.step_status == {}
-    assert loaded.pressure_col == "P"
+    assert loaded.surface_col == "P"
 
 
 def test_from_json_unknown_key_is_tolerated(tmp_path):
@@ -45,7 +45,7 @@ def test_from_json_unknown_key_is_tolerated(tmp_path):
 
     loaded = PickState.from_json(str(path))
 
-    assert loaded.pressure_col == "P"
+    assert loaded.surface_col == "P"
     assert loaded.step_status == {"injection": "done"}
 
 

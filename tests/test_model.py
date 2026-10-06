@@ -25,7 +25,7 @@ def test_decode_migrates_old_eff_isip_line_anchor_to_min_dpdg_g(tmp_path):
     loaded = PickState.from_json(str(path))
 
     assert loaded.min_dpdg_G == 12.5
-    assert loaded.pressure_col == "P"
+    assert loaded.surface_col == "P"
 
 
 def test_decode_does_not_override_an_explicit_min_dpdg_g():
@@ -104,10 +104,10 @@ def _kpa_testdata():
 
 
 def test_decode_without_new_unit_fields_defaults_to_auto():
-    # An old save predating pressure_unit/rate_unit/volume_unit lacks the keys entirely -- the
+    # An old save predating surface_unit/rate_unit/volume_unit lacks the keys entirely -- the
     # known-field filter in _decode must default them to "auto", not raise.
     loaded = _decode({"pressure_col": "P"})
-    assert loaded.pressure_unit == "auto"
+    assert loaded.surface_unit == "auto"
     assert loaded.rate_unit == "auto"
     assert loaded.volume_unit == "auto"
 
@@ -115,7 +115,7 @@ def test_decode_without_new_unit_fields_defaults_to_auto():
 def test_compute_all_converts_header_suffixed_kpa_pressure_to_psi_range():
     td_kpa, kpa_col = _kpa_testdata()
     state = injection_state(td_kpa)
-    state.pressure_col = kpa_col
+    state.surface_col = kpa_col
 
     td_psi = make_testdata()
     state_psi = injection_state(td_psi)
@@ -142,7 +142,7 @@ def test_compute_all_converts_header_suffixed_kpa_pressure_to_psi_range():
 def test_compute_all_kpa_conversion_warns_and_sets_note():
     td_kpa, kpa_col = _kpa_testdata()
     state = injection_state(td_kpa)
-    state.pressure_col = kpa_col
+    state.surface_col = kpa_col
 
     res = compute_all(state, td_kpa)
 
@@ -153,7 +153,7 @@ def test_compute_all_kpa_conversion_warns_and_sets_note():
 def test_compute_all_kpa_conversion_idempotent_across_repeated_calls():
     td_kpa, kpa_col = _kpa_testdata()
     state = injection_state(td_kpa)
-    state.pressure_col = kpa_col
+    state.surface_col = kpa_col
 
     res1 = compute_all(state, td_kpa)
     res2 = compute_all(state, td_kpa)

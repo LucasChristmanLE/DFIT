@@ -434,7 +434,7 @@ def _dropout_fixture(glitch: bool = True):
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
                    shutin_idx=_SHUTIN_IDX)
     return td, st, glitch_idx
 
@@ -486,7 +486,7 @@ def test_multi_sample_dropout_warning_keeps_plural_and_duration():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
 
@@ -515,7 +515,7 @@ def test_dropout_warning_omits_zero_duration_for_subsecond_multi_sample_dip():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
 
@@ -546,7 +546,7 @@ def test_dropout_warning_shows_less_than_0_01_hr_for_early_events():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
 
@@ -581,7 +581,7 @@ def test_dropout_masking_reproduces_result_with_the_row_absent():
     t_s_clean = np.delete(td_dirty.t_s, glitch_idx)
     td_clean = IoTestData(path="<synthetic>", df=df_clean, datetime_col="DATETIME",
                           t_s=t_s_clean, columns=list(df_clean.columns))
-    st_clean = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
+    st_clean = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=_START_IDX,
                          shutin_idx=_SHUTIN_IDX)
     res_clean = compute_all(st_clean, td_clean)
 
@@ -805,7 +805,7 @@ def _encore_style_leadin_fixture():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     return (td, st, shutin_idx + _LEADIN_MASKED_FROM, shutin_idx + _LEADIN_RAMP,
             shutin_idx + _LEADIN_RECOVERED)

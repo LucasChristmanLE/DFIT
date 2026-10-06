@@ -1542,7 +1542,9 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
     post = td.t_s >= res.t_shutin_s
     dt_post = td.t_s[post] - res.t_shutin_s
     p_surface_post = None
-    if not state.pressure_is_bhp:  # state, not res -- see model.compute_all's same gate
+    # Gated on a mapped surface channel, not on res -- see model.compute_all's same gate. Runs on
+    # a bottomhole-gauge test too: surface on vacuum invalidates the gauge reading as well.
+    if state.surface_col:
         p_surface_post = td.pressure_surface(state.channel_config())[post]
         if res.dropout_mask is not None:
             # A masked gauge glitch is not a real sub-floor reading -- suggest_tail_trim_dt
@@ -1551,6 +1553,11 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
             # triggering the "low_pressure" auto-trim.
             p_surface_post = p_surface_post.copy()
             p_surface_post[res.dropout_mask[post]] = np.nan
+        if res.surface_dropout_mask is not None:
+            # Bottomhole gauge mapped: dropout_mask covers that channel, so surface's own mask
+            # (auto dropouts + manual masks - keeps, computed once in compute_all) applies here.
+            p_surface_post = p_surface_post.copy()
+            p_surface_post[res.surface_dropout_mask[post]] = np.nan
     cut_dt, reason = interpret.suggest_tail_trim_dt(dt_post, p_surface_post,
                                                      res.resampled_full.guard_dt,
                                                      onset_tol_psi=state.resample_step)
@@ -1614,14 +1621,15 @@ def resync_auto_tail_trim(state: PickState, td: TestData, res: DerivedResults) -
 
 
 def _seed_surface_pressure(state: PickState, td: TestData) -> Optional[np.ndarray]:
-    """Surface (or surface-equivalent) pressure for the injection seed's prime filter: the
-    mapped channel when it is surface pressure, BHP minus hydrostatic when density and TVD are
-    usable, else None (the filter is skipped)."""
-    if not state.pressure_col:
+    """Surface (or surface-equivalent) pressure for the injection seed's prime filter: the mapped
+    surface channel when there is one (even on a bottomhole-gauge test), else the bottomhole
+    gauge minus hydrostatic when density and TVD are usable, else None (the filter is
+    skipped)."""
+    if state.surface_col:
+        return td.column(state.surface_col)
+    if not state.bhp_col:
         return None
-    p = td.column(state.pressure_col)
-    if not state.pressure_is_bhp:
-        return p
+    p = td.column(state.bhp_col)
     try:
         mw, tvd = float(state.density_ppg), float(state.tvd_ft)
     except (TypeError, ValueError):
@@ -1649,11 +1657,12 @@ def seed_injection(state: PickState, td: TestData) -> None:
             return
         except ValueError:
             pass  # e.g. an all-zero rate channel -- fall through to the pressure fallback
-    if not state.pressure_col:
+    bhp_source = state.channel_config().bhp_source_col
+    if not bhp_source:
         return
     try:
         state.start_idx, state.shutin_idx = interpret.suggest_injection_window_pressure(
-            td.column(state.pressure_col))
+            td.column(bhp_source))
     except ValueError:
         pass
 

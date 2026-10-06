@@ -1,7 +1,7 @@
 """Low-surface-pressure warning (CLAUDE.md TODO #4): a surface-pressure channel whose post-
 shut-in reading falls below interpret.MIN_SURFACE_PRESSURE_PSI makes BHP unreliable there
 (whether or not a hydrostatic conversion is even happening). Only fires when the mapped channel
-is surface pressure (state.pressure_is_bhp is False); the mask's upper bound is where the
+is mapped as surface pressure (state.surface_col); the mask's upper bound is where the
 resampler actually stopped consuming raw samples (resampled_full.guard_dt, when the rise guard
 fired) intersected with the trim, if any -- NOT the last *kept* resampled point, which can sit
 up to one resample_step above the true minimum and so miss a crash sitting just past it."""
@@ -42,12 +42,12 @@ def test_clears_when_trim_excludes_the_crash():
     assert not any(_WARNING_SNIPPET in w for w in res2.warnings)
 
 
-def test_absent_when_pressure_is_bhp():
-    """Gated on state.pressure_is_bhp (the mapped channel), not res.pressure_is_bhp -- that
-    flips True after hydrostatic conversion too, which would hide the very condition that makes
-    the conversion unreliable."""
+def test_absent_when_only_a_bottomhole_gauge_is_mapped():
+    """Gated on state.surface_col (a mapped surface channel), not res.pressure_is_bhp -- that is
+    True after hydrostatic conversion too, which would hide the very condition that makes the
+    conversion unreliable. With only a bottomhole gauge mapped there is no surface to scan."""
     td, st, res = _seeded_with_crash()
-    st.pressure_is_bhp = True
+    st.bhp_col, st.surface_col = st.surface_col, ""
     res2 = compute_all(st, td)
     assert not any(_WARNING_SNIPPET in w for w in res2.warnings)
 
@@ -115,7 +115,7 @@ def _seeded_with_guard_then_crash_past_it():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
     return td, st, res

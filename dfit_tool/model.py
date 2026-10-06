@@ -67,14 +67,19 @@ class TangentPick:
 @dataclass
 class PickState:
     # --- channel mapping / BHP inputs ---
-    pressure_col: str = ""
+    # Surface and bottomhole pressure are separate channels. bhp_col is a bottomhole gauge; empty
+    # means BHP is calculated from surface_col plus the hydrostatic head. Old saves carried one
+    # pressure_col + pressure_is_bhp + pressure_unit; _decode migrates them (a bottomhole-gauge
+    # save keeps surface_col empty).
+    surface_col: str = ""
+    bhp_col: str = ""
     rate_col: Optional[str] = None
     volume_col: Optional[str] = None
-    pressure_is_bhp: bool = False
     # Per-channel unit override, "auto" (the default) meaning "detect it" -- see
     # io_load.detect_channel_unit/refresh_unit_detection. Old saves lack these keys and take the
     # "auto" default via _decode's known-field filter, no migration needed.
-    pressure_unit: str = "auto"
+    surface_unit: str = "auto"
+    bhp_unit: str = "auto"
     rate_unit: str = "auto"
     volume_unit: str = "auto"
     density_ppg: Optional[float] = None
@@ -197,8 +202,8 @@ class PickState:
 
     def channel_config(self) -> ChannelConfig:
         return ChannelConfig(
-            pressure_col=self.pressure_col,
-            pressure_is_bhp=self.pressure_is_bhp,
+            surface_col=self.surface_col,
+            bhp_col=self.bhp_col,
             rate_col=self.rate_col,
             volume_col=self.volume_col,
             mw_ppg=self.density_ppg,
@@ -261,6 +266,17 @@ def _clean_window(raw):
 
 
 def _decode(d: dict) -> PickState:
+    # Migrate the old single pressure channel: pressure_is_bhp True -> a bottomhole gauge
+    # (bhp_col/bhp_unit), else surface (surface_col/surface_unit). A migrated bottomhole-gauge
+    # save keeps surface_col empty (no auto-fill on reopen), so finished tests do not change.
+    # Runs when both new keys are absent or empty.
+    if "pressure_col" in d and not d.get("surface_col") and not d.get("bhp_col"):
+        col = d.get("pressure_col") or ""
+        unit = d.get("pressure_unit") or "auto"
+        if d.get("pressure_is_bhp"):
+            d["bhp_col"], d["bhp_unit"] = col, unit
+        else:
+            d["surface_col"], d["surface_unit"] = col, unit
     # Migrate an old save's eff_isip_line (a stored, draggable pick on P-vs-G) to min_dpdg_G: its
     # anchor sat on the P-vs-G curve at the same G the min-dP/dG point now lives at.
     if d.get("min_dpdg_G") is None and isinstance(d.get("eff_isip_line"), dict):
@@ -387,10 +403,11 @@ def compliance_isip_anchor_G(state: PickState) -> Optional[float]:
 
 def blocking_issues(state: PickState) -> list[str]:
     """Conditions that make every downstream step meaningless, so navigation past Overview is
-    blocked while any holds: no pressure channel, or surface pressure with no density/TVD to
-    convert it to BHP. ``compute_all`` reports these (plus a failed BHP conversion) as
+    blocked while any holds: no pressure channel (neither a bottomhole gauge nor surface), or a
+    calculated BHP (no bottomhole gauge) with no density/TVD to convert surface pressure.
+    ``compute_all`` reports these (plus a failed BHP conversion) as
     ``DerivedResults.blockers``."""
-    if not state.pressure_col:
+    if not (state.bhp_col or state.surface_col):
         return [NO_PRESSURE_CHANNEL]
     if not state.channel_config().bhp_inputs_ready():
         return [SURFACE_NEEDS_BHP_INPUTS]
@@ -562,9 +579,16 @@ class DerivedResults:
     t_all_s: Optional[np.ndarray] = field(default=None, repr=False)
     bhp_all: Optional[np.ndarray] = field(default=None, repr=False)
     pressure_is_bhp: bool = field(default=False, repr=False)  # bhp_all holds true BHP, not surface
-    # Raw surface pressure, set only when bhp_all was converted from it hydrostatically
-    # (Overview overlays it on the BHP trace); None when the mapped channel is already BHP.
+    # Raw surface pressure, set whenever a surface channel is mapped and bhp_all holds true BHP
+    # (a bottomhole gauge, or converted from surface); Overview overlays it on the BHP trace.
+    # None when surface is unmapped or bhp_all is unconverted surface pressure.
     p_surface_all: Optional[np.ndarray] = field(default=None, repr=False)
+    # Full-length bool, post-shut-in: (surface detect_dropouts | manual mask_intervals) &
+    # ~keep_intervals. Computed only when a bottomhole gauge is mapped alongside surface
+    # (otherwise dropout_mask already is the surface mask). The low-surface scan, seed_tail_trim
+    # and the Overview overlay treat these samples as missing, so a surface glitch to zero
+    # neither warns nor trims (compute_all adds a warning saying so); it never masks BHP.
+    surface_dropout_mask: Optional[np.ndarray] = field(default=None, repr=False)
     rate_all: Optional[np.ndarray] = field(default=None, repr=False)
     resampled: Optional[resample.Resampled] = field(default=None, repr=False)
     # Untrimmed counterparts of resampled/diagnostics.G, kept so the renderer can draw the
@@ -752,19 +776,21 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     res.warnings.extend(td.load_warnings)
 
     unit_warnings = io_load.refresh_unit_detection(
-        td, state.pressure_col, state.rate_col, state.volume_col,
-        state.pressure_unit, state.rate_unit, state.volume_unit)
+        td, state.surface_col, state.bhp_col, state.rate_col, state.volume_col,
+        state.surface_unit, state.bhp_unit, state.rate_unit, state.volume_unit)
     res.warnings.extend(unit_warnings)
     notes = []
-    for kind, col in (("pressure", state.pressure_col), ("rate", state.rate_col),
-                      ("volume", state.volume_col)):
-        det = td.unit_detections.get(col) if col else None
+    noted_cols = set()  # a column mapped to both pressure roles is listed once
+    for kind, col in (("surface", state.surface_col), ("bottomhole", state.bhp_col),
+                      ("rate", state.rate_col), ("volume", state.volume_col)):
+        det = td.unit_detections.get(col) if col and col not in noted_cols else None
+        noted_cols.add(col)
         if det is not None and det.factor != 1.0:
             notes.append(f"{kind}: {det.unit}×{det.factor:.6g} ({det.source})")
     res.unit_conversion_note = "; ".join(notes)
 
     res.blockers.extend(blocking_issues(state))
-    if not state.pressure_col:
+    if not (state.bhp_col or state.surface_col):
         return res
 
     # Full-length channels
@@ -776,7 +802,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.blockers.append(f"BHP computation failed: {e}")
         res.bhp_all = td.pressure_surface(cfg)
         res.pressure_is_bhp = False
-    if res.pressure_is_bhp and not state.pressure_is_bhp:
+    if res.pressure_is_bhp and state.surface_col:
         res.p_surface_all = td.pressure_surface(cfg)
     if cfg.rate_col:
         res.rate_all = td.column(cfg.rate_col)
@@ -834,8 +860,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.apparent_isip_method = "tangent"
 
     # Pressure dropouts: detect momentary near-zero gauge glitches after shut-in, on the raw
-    # mapped pressure channel (before any hydrostatic offset -- "near zero" means near zero on
-    # the gauge, not on a converted BHP). Full-length and False before shut-in so every consumer
+    # BHP source channel (the bottomhole gauge if mapped, else surface), before any hydrostatic
+    # offset -- "near zero" means near zero on the raw channel, not on a converted BHP.
+    # Full-length and False before shut-in so every consumer
     # below (the resample block, the guard-excluded preview, the low-surface-pressure scan, and
     # picks.seed_tail_trim) applies the same mask by treating a masked sample as missing; res.
     # bhp_all itself stays raw and unmodified. See ../CLAUDE.md's "Pressure dropouts" section.
@@ -844,7 +871,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         dt_all_dropout = td.t_s - res.t_shutin_s
         post_dropout = dt_all_dropout >= 0
         if post_dropout.any():
-            raw_pressure = td.column(state.pressure_col)
+            raw_pressure = td.column(cfg.bhp_source_col)
             dt_post = dt_all_dropout[post_dropout]
             p_post_raw = raw_pressure[post_dropout]
             auto_drop, res.dropouts = resample.detect_dropouts(dt_post, p_post_raw)
@@ -868,6 +895,17 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             auto_rise, res.rise_excursions = resample.detect_rise_excursions(dt_post, p_for_rise)
             final = (auto_drop | auto_rise | manual) & ~keep
             res.dropout_mask[post_dropout] = final
+            n_surface_ignored = 0
+            if cfg.bhp_col and cfg.surface_col:
+                # The surface channel's own mask, for the low-surface checks and the Overview
+                # overlay only: its auto-detected dropouts plus the analyst's manual masks, minus
+                # keeps, built from the same manual/keep arrays as the combined mask. With no
+                # bottomhole gauge the BHP source IS surface, so dropout_mask already covers it.
+                surf_drop, _ = resample.detect_dropouts(
+                    dt_post, td.column(cfg.surface_col)[post_dropout])
+                res.surface_dropout_mask = np.zeros(td.n, dtype=bool)
+                res.surface_dropout_mask[post_dropout] = (surf_drop | manual) & ~keep
+                n_surface_ignored = int(np.count_nonzero(surf_drop & ~keep))
             res.n_manual_masked = int(np.count_nonzero(manual & ~keep))
             res.n_keep_restored = int(np.count_nonzero((auto_drop | auto_rise) & keep))
             if keep.any():
@@ -908,6 +946,10 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                 res.warnings.insert(0,
                     f"{len(res.dropouts)} pressure dropouts masked, first at "
                     f"{_hr_label(first.dt_start)} hr")
+            if n_surface_ignored:
+                n_word = "sample" if n_surface_ignored == 1 else "samples"
+                res.warnings.insert(0, f"Surface: {n_surface_ignored} dropout {n_word} ignored "
+                                       f"for the {interpret.MIN_SURFACE_PRESSURE_PSI:.0f} psi check")
             # Front-inserted in reverse so they read rise, manual mask, manual keep, then the
             # dropout line.
             if res.n_keep_restored > 0:
@@ -1129,9 +1171,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             res.warnings.insert(0, f"Tail trim leaves {len(rs.p)} resampled point(s); move "
                                    "the Overview trim line right")
 
-    # Low-surface-pressure warning: only when the mapped channel is surface pressure
-    # (state.pressure_is_bhp, not res.pressure_is_bhp -- that flips True after hydrostatic
-    # conversion too, which would hide the very condition that makes the conversion unreliable).
+    # Low-surface-pressure warning: whenever a surface channel is mapped (state.surface_col, not
+    # res.pressure_is_bhp -- that is True after hydrostatic conversion too, which would hide the
+    # very condition that makes the conversion unreliable). It runs on a bottomhole-gauge test
+    # as well: surface on vacuum means the fluid column is no longer full, so the bottomhole
+    # gauge reading is invalid there too.
     # The upper bound is where the resampler actually STOPPED CONSUMING raw samples
     # (resampled_full.guard_dt, strict < to exclude the rising sample itself), not the last
     # *kept* point -- dt[-1] can sit up to one resample_step below guard_dt, so bounding there
@@ -1139,11 +1183,13 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # literal motivating case: a record bottoming out just above the last kept point never
     # warned). A trim, if set, narrows the window further on top of that. Falls back to trim-
     # only (or no upper bound at all) when the resample block above never ran.
-    if not state.pressure_is_bhp and res.t_shutin_s is not None:
+    if state.surface_col and res.t_shutin_s is not None:
         surf = td.pressure_surface(cfg)          # raw WHP column -- NOT res.bhp_all (converted)
         dt_ws = td.t_s - res.t_shutin_s
         m = dt_ws >= 0
         m &= ~res.dropout_mask  # a masked gauge glitch is not a real low-pressure reading
+        if res.surface_dropout_mask is not None:  # bottomhole gauge mapped: surface's own mask
+            m &= ~res.surface_dropout_mask
         # The guard-based restriction is skipped when an active override has actually extended
         # the effective cutoff past the guard (reusing the same override_extends_past_guard
         # computed above -- not re-deriving it here) -- a sub-floor crash the override admits

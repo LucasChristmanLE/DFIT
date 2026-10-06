@@ -190,10 +190,10 @@ def _postclosure(state: PickState, res: DerivedResults) -> Section:
 def _inputs(state: PickState, res: DerivedResults) -> Section:
     if res.bhp_all is None:
         source = DASH
-    elif res.p_surface_all is not None:
-        source = "BHP converted from surface"
+    elif res.pressure_is_bhp and state.bhp_col:
+        source = "bottomhole gauge"
     elif res.pressure_is_bhp:
-        source = "BHP channel"
+        source = "BHP calculated from surface"
     else:
         source = "surface pressure (not converted)"
     cut = None

@@ -233,7 +233,6 @@ def test_seed_injection_uses_surface_pressure_filter():
     # A big low-pressure prime well before the injection.
     td.df.loc[1:on[0] - 2, "RATE"] = 120.0  # ~15x the main run
     td.df.loc[1:on[0] - 2, PRESSURE_COL] = 10.0
-    st.pressure_is_bhp = False
     picks.seed_injection(st, td)
     assert (st.start_idx, st.shutin_idx) == expected
 
@@ -252,7 +251,7 @@ def test_seed_injection_bhp_subtracts_hydrostatic_before_the_filter():
     td.df[PRESSURE_COL] = td.df[PRESSURE_COL] + hydro
     td.df.loc[1:on[0] - 2, "RATE"] = 120.0  # ~15x the main run
     td.df.loc[1:on[0] - 2, PRESSURE_COL] = hydro + 10.0
-    st.pressure_is_bhp = True
+    st.bhp_col, st.surface_col = st.surface_col, ""
 
     st.start_idx = st.shutin_idx = None
     st.density_ppg, st.tvd_ft = 8.33, 8000.0

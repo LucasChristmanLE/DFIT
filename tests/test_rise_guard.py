@@ -407,7 +407,7 @@ def _seeded_with_sustained_rise():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
     return td, st, res
@@ -472,7 +472,7 @@ def _seeded_with_sustained_rise_and_two_earlier_warnings():
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns),
                     load_warnings=["Earlier load warning"])  # queued ahead of everything
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", volume_col="VOLUME",
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", volume_col="VOLUME",
                    start_idx=start_idx, shutin_idx=shutin_idx)
     res = compute_all(st, td)
     return res
@@ -655,7 +655,7 @@ def _seeded_with_guard_then_long_further_decline():
     df = pd.DataFrame({PRESSURE_COL: pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col=PRESSURE_COL, rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
     return td, st, res

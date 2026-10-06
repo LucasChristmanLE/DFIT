@@ -601,7 +601,7 @@ def _goto_stub(postclosure_scenario):
     stub.td = object()
     stub.state = PickState(postclosure_scenario=postclosure_scenario,
                            step_status={k: "visited" for k, _ in ui.STEPS},
-                           pressure_col="P", pressure_is_bhp=True)  # no blocking issue
+                           bhp_col="P")  # no blocking issue
     stub.step = "injection"
     stub._seed_step = lambda key: None
     stub._refresh_calls = []

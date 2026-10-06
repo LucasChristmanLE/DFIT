@@ -285,10 +285,13 @@ def render_overview(ax, td: TestData, state: PickState, res: DerivedResults,
     if excluded.any():
         xte, xpe = _decimate(t_h[excluded], p_clean[excluded])
         ax.plot(xte, xpe, color=C.EXCLUDED, alpha=C.EXCLUDED_ALPHA, lw=0.8, gid="tail_excluded")
-    # Converted-BHP record: overlay the raw surface pressure it came from, thin red, same axis.
-    ps = res.p_surface_all if res.pressure_is_bhp else None
+    # True-BHP record (bottomhole gauge or converted) with a surface channel mapped: overlay the
+    # raw surface pressure, thin red, same axis.
+    ps = res.p_surface_all
     if ps is not None:
-        ps_clean, _ = _split_dropouts(ps, res.dropout_mask)
+        ps_mask = (res.dropout_mask if res.surface_dropout_mask is None
+                   else res.surface_dropout_mask)
+        ps_clean, _ = _split_dropouts(ps, ps_mask)
         xst, xsp = _decimate(t_h[kept], ps_clean[kept])
         ax.plot(xst, xsp, color=C.SURFACE_PRESSURE, lw=0.5, label="Surface Pressure",
                 gid="surface_pressure")

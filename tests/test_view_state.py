@@ -387,7 +387,7 @@ def test_injection_panel_frame_only_on_injection_with_toggle_label():
 
 def test_injection_no_clamp_when_rate_is_none():
     td = make_testdata()
-    state = PickState(pressure_col=PRESSURE_COL)
+    state = PickState(surface_col=PRESSURE_COL)
     res = compute_all(state, td)
     assert res.rate_all is None
     fig, ax, defaults = _render(plots.render_injection, td, state, res)
@@ -431,7 +431,7 @@ def _refresh_stub(td, state, step):
     same headless-Agg approach as test_build_sliders.py's _make_app_stub."""
     # Treat the synthetic channel as BHP so the surface-pressure blocker never redirects the
     # requested step to Overview. Same numbers: an unconverted surface trace is used as-is.
-    state.pressure_is_bhp = True
+    state.bhp_col, state.surface_col = state.surface_col, ""
     stub = types.SimpleNamespace()
     stub.fig = Figure()
     stub.ax = stub.fig.add_subplot(111)

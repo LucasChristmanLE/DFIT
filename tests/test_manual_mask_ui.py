@@ -54,7 +54,7 @@ def test_overview_attaches_mask_controllers_with_trim():
 
 def test_overview_attaches_mask_controllers_without_resampled_data():
     td = make_testdata()
-    st = PickState(pressure_col="PRESSURE")
+    st = PickState(surface_col="PRESSURE")
     stub = _stub(td, st, compute_all(st, td))
     DfitApp._attach_controllers(stub)
     names = _names(stub)

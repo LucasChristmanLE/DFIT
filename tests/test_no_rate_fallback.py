@@ -91,7 +91,7 @@ def test_pressure_window_too_few_finite_samples_raises():
 # --------------------------------------------------------------------------------------------------
 def test_seed_injection_no_rate_col_seeds_from_pressure():
     td = make_testdata()
-    st = PickState(pressure_col=PRESSURE_COL)  # no rate_col
+    st = PickState(surface_col=PRESSURE_COL)  # no rate_col
     picks.seed_injection(st, td)
     assert st.start_idx is not None and st.shutin_idx is not None
     assert st.start_idx < st.shutin_idx
@@ -102,7 +102,7 @@ def test_seed_injection_no_rate_col_seeds_from_pressure():
 def test_seed_injection_dead_rate_channel_falls_back_to_pressure():
     td = make_testdata()
     td.df[RATE_COL] = 0.0  # rate never exceeds threshold -> suggest_injection_window raises
-    st = PickState(pressure_col=PRESSURE_COL, rate_col=RATE_COL)
+    st = PickState(surface_col=PRESSURE_COL, rate_col=RATE_COL)
     picks.seed_injection(st, td)
     assert st.start_idx is not None and st.shutin_idx is not None
     assert st.start_idx < st.shutin_idx
@@ -112,7 +112,7 @@ def test_seed_injection_dead_rate_channel_falls_back_to_pressure():
 
 def test_seed_injection_fallback_never_clobbers_existing_picks():
     td = make_testdata()
-    st = PickState(pressure_col=PRESSURE_COL, start_idx=5, shutin_idx=7)
+    st = PickState(surface_col=PRESSURE_COL, start_idx=5, shutin_idx=7)
     picks.seed_injection(st, td)
     assert (st.start_idx, st.shutin_idx) == (5, 7)
 
@@ -129,7 +129,7 @@ def test_seed_injection_no_pressure_col_is_a_noop():
 # --------------------------------------------------------------------------------------------------
 def test_compute_all_no_rate_sets_t_shutin_and_fallback_te():
     td = make_testdata()
-    st = PickState(pressure_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
+    st = PickState(surface_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
     res = compute_all(st, td)
     assert res.t_shutin_s == pytest.approx(float(td.t_s[SHUTIN_IDX]))
     assert res.te_s == pytest.approx(float(td.t_s[SHUTIN_IDX] - td.t_s[START_IDX]))
@@ -164,7 +164,7 @@ def test_compute_all_dead_rate_channel_falls_back_to_pump_duration():
 # --------------------------------------------------------------------------------------------------
 def test_render_injection_title_with_fallback_te_and_no_rate():
     td = make_testdata()
-    st = PickState(pressure_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
+    st = PickState(surface_col=PRESSURE_COL, start_idx=START_IDX, shutin_idx=SHUTIN_IDX)
     res = compute_all(st, td)
     assert res.te_s is not None and res.vinj is None  # the crash precondition
     ax = Figure().add_subplot(111)
@@ -176,7 +176,7 @@ def test_render_injection_title_with_fallback_te_and_no_rate():
 
 def test_render_injection_no_rate_still_draws_the_draggable_vlines():
     td = make_testdata()
-    st = PickState(pressure_col=PRESSURE_COL)  # no rate_col
+    st = PickState(surface_col=PRESSURE_COL)  # no rate_col
     picks.seed_injection(st, td)
     res = compute_all(st, td)
     ax = Figure().add_subplot(111)

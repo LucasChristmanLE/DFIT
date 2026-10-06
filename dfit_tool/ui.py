@@ -17,6 +17,7 @@ import pathlib
 import shutil
 from typing import Optional
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
 from matplotlib.figure import Figure
@@ -68,6 +69,10 @@ _BOTTOM_LABEL_GAP_PX = 6.0
 # Nominal (100dpi) small pad added below the x slider's split text's estimated height
 # (sliders.TEXT_HEIGHT_PT; never measured), so the text doesn't sit flush against the figure's bottom edge.
 _BOTTOM_TEXT_PAD_PX = 3.0
+
+# Bottomhole combobox entry meaning "no bottomhole gauge: calculate BHP from surface + hydrostatic"
+# (PickState.bhp_col == "").
+BHP_CALCULATED = "Calculated"
 
 CLOSURE_SCENARIOS = ["", "C-A clear", "C-B adequate", "C-C no-contact", "C-D rapid",
                      "C-X uninterpretable"]
@@ -314,8 +319,8 @@ class DfitApp:
 
         cfg = ttk.Frame(self.root, padding=(6, 0))
         cfg.pack(side="top", fill="x")
-        self.var_pressure = tk.StringVar()
-        self.var_isbhp = tk.BooleanVar(value=False)
+        self.var_surface = tk.StringVar()
+        self.var_bhp = tk.StringVar(value=BHP_CALCULATED)
         self.var_rate = tk.StringVar()
         self.var_volume = tk.StringVar()
         self.var_density = tk.StringVar()
@@ -328,7 +333,8 @@ class DfitApp:
         # Per-channel unit overrides -- "auto" (the default) means "detect it" (header suffix ->
         # magnitude heuristic -> field-unit inheritance; see io_load.detect_channel_unit). Changing
         # one away from "auto" resets picks (_on_unit_change), same reasoning as the Source combo.
-        self.var_pressure_unit = tk.StringVar(value="auto")
+        self.var_surface_unit = tk.StringVar(value="auto")
+        self.var_bhp_unit = tk.StringVar(value="auto")
         self.var_rate_unit = tk.StringVar(value="auto")
         self.var_volume_unit = tk.StringVar(value="auto")
 
@@ -346,11 +352,17 @@ class DfitApp:
             lbl.pack(side="left", padx=(2, 0))
             return c, lbl
 
-        self.cmb_pressure = combo(cfg, "Pressure:", self.var_pressure)
-        self.cmb_pressure_unit, self.lbl_pressure_unit = unit_combo(
-            cfg, self.var_pressure_unit, ["auto", "psi", "kpa", "mpa", "bar"], "pressure")
-        ttk.Checkbutton(cfg, text="is BHP", variable=self.var_isbhp,
-                        command=self._apply_config).pack(side="left", padx=4)
+        pressure_units = ["auto", "psi", "kpa", "mpa", "bar"]
+        self.cmb_surface = combo(cfg, "Surface:", self.var_surface, 20)
+        self.cmb_surface_unit, self.lbl_surface_unit = unit_combo(
+            cfg, self.var_surface_unit, pressure_units, "surface")
+        # "Calculated" (BHP from surface + hydrostatic) is shown in italics so it reads as a
+        # fallback rather than a mapped bottomhole-gauge column.
+        self.cmb_bhp = combo(cfg, "Bottomhole:", self.var_bhp, 20)
+        self.cmb_bhp.bind("<<ComboboxSelected>>", lambda e: self._update_bhp_combo_font(), add="+")
+        self._bhp_fonts = None
+        self.cmb_bhp_unit, self.lbl_bhp_unit = unit_combo(
+            cfg, self.var_bhp_unit, pressure_units, "bhp")
         self.cmb_rate = combo(cfg, "Rate:", self.var_rate, 20)
         self.cmb_rate_unit, self.lbl_rate_unit = unit_combo(
             cfg, self.var_rate_unit, ["auto", "bpm", "m3/min"], "rate")
@@ -688,14 +700,25 @@ class DfitApp:
             return False
         self.file_lbl.config(text=os.path.basename(path))
         cols = self.td.columns
-        for cmb in (self.cmb_pressure, self.cmb_rate, self.cmb_volume):
+        for cmb in (self.cmb_surface, self.cmb_rate, self.cmb_volume):
             cmb["values"] = [""] + cols
+        self.cmb_bhp["values"] = [BHP_CALCULATED] + cols
         g = io_load.suggest_channels(cols, column=self.td.column)
-        self.var_pressure.set(g["pressure"] or "")
+        surface, bhp = g["surface"], g["bhp"]
+        if not surface and not bhp and g["pressure"]:
+            # A lone BH-named channel that suggest_channels demoted (e.g. "Calc BHP"): keep the
+            # old single-channel mapping rather than leaving both boxes empty.
+            if io_load._is_bhp_named(g["pressure"]):
+                bhp = g["pressure"]
+            else:
+                surface = g["pressure"]
+        self.var_surface.set(surface or "")
+        self.var_bhp.set(bhp or BHP_CALCULATED)
+        self._update_bhp_combo_font()
         self.var_rate.set(g["rate"] or "")
         self.var_volume.set(g["volume"] or "")
-        self.var_isbhp.set(bool(g["pressure_is_bhp"]))
-        self.var_pressure_unit.set("auto")
+        self.var_surface_unit.set("auto")
+        self.var_bhp_unit.set("auto")
         self.var_rate_unit.set("auto")
         self.var_volume_unit.set("auto")
         self.state = PickState()
@@ -970,17 +993,17 @@ class DfitApp:
         self._load_test(self.current_entry, source=new, force_reset=True)
 
     def _on_unit_change(self, kind: str):
-        """One of the three per-channel unit dropdowns (pressure/rate/volume): mirrors
+        """One of the four per-channel unit dropdowns (surface/bottomhole/rate/volume): mirrors
         _on_source_change -- an override rescales the same column under existing picks
         (`isip_tangent` stores an absolute psi anchor/slope, and `te_s` feeds `g_time`, shifting
         the meaning of every stored G pick), so switching it resets picks rather than silently
         reinterpreting them under a new scale. Confirm first; decline reverts the combobox to
         its prior value. The existing plain channel-remap combos keep their current no-confirm
         behavior -- a deliberate scope boundary (see ../CLAUDE.md)."""
-        # kind is "pressure"/"rate"/"volume" -- both the widget var and the PickState attribute
-        # it mirrors follow the same "<kind>_unit" naming, so this is looked up rather than
-        # spelled out three times (and, unlike a dict literal of all three, never touches the
-        # other two kinds' widgets).
+        # kind is "surface"/"bhp"/"rate"/"volume" -- both the widget var and the PickState
+        # attribute it mirrors follow the same "<kind>_unit" naming, so this is looked up rather
+        # than spelled out four times (and, unlike a dict literal of all four, never touches the
+        # other kinds' widgets).
         var = getattr(self, f"var_{kind}_unit")
         attr = f"{kind}_unit"
         current = getattr(self.state, attr)
@@ -1018,11 +1041,12 @@ class DfitApp:
         can't just be carried forward)."""
         old = self.state
         self.state = PickState(
-            pressure_col=old.pressure_col,
+            surface_col=old.surface_col,
+            bhp_col=old.bhp_col,
             rate_col=old.rate_col,
             volume_col=old.volume_col,
-            pressure_is_bhp=old.pressure_is_bhp,
-            pressure_unit=old.pressure_unit,
+            surface_unit=old.surface_unit,
+            bhp_unit=old.bhp_unit,
             rate_unit=old.rate_unit,
             volume_unit=old.volume_unit,
             density_ppg=old.density_ppg,
@@ -1183,12 +1207,35 @@ class DfitApp:
         if parts:
             self._quest_lines = [f"File: {os.path.basename(xlsx_path)}"] + parts
 
+    def _update_bhp_combo_font(self):
+        """Italic Bottomhole combobox text while "Calculated" is selected, normal otherwise, and
+        the Bottomhole unit combo disabled then (no channel, so no unit to change and no picks
+        reset for an unused unit). The italic font is a copy of the combobox's current font,
+        built on first use."""
+        calculated = self.var_bhp.get() == BHP_CALCULATED
+        try:
+            self.cmb_bhp_unit.configure(state="disabled" if calculated else "readonly")
+        except tk.TclError:
+            pass
+        try:
+            if self._bhp_fonts is None:
+                base = tkfont.nametofont(str(self.cmb_bhp.cget("font")))
+                italic = base.copy()
+                italic.configure(slant="italic")
+                self._bhp_fonts = (base, italic)
+            normal, italic = self._bhp_fonts
+            self.cmb_bhp.configure(font=italic if calculated else normal)
+        except tk.TclError:
+            pass  # cosmetic only
+
     def _sync_state_from_widgets(self):
-        self.state.pressure_col = self.var_pressure.get()
+        self.state.surface_col = self.var_surface.get()
+        bhp = self.var_bhp.get()
+        self.state.bhp_col = "" if bhp == BHP_CALCULATED else bhp
         self.state.rate_col = self.var_rate.get() or None
         self.state.volume_col = self.var_volume.get() or None
-        self.state.pressure_is_bhp = self.var_isbhp.get()
-        self.state.pressure_unit = self.var_pressure_unit.get()
+        self.state.surface_unit = self.var_surface_unit.get()
+        self.state.bhp_unit = self.var_bhp_unit.get()
         self.state.rate_unit = self.var_rate_unit.get()
         self.state.volume_unit = self.var_volume_unit.get()
         # This can fire mid-edit (e.g. on autosave), so a non-empty but
@@ -1209,8 +1256,9 @@ class DfitApp:
         # anything (e.g. a step seeder) reads a channel off self.td directly.
         if self.td is not None:
             io_load.refresh_unit_detection(
-                self.td, self.state.pressure_col, self.state.rate_col, self.state.volume_col,
-                self.state.pressure_unit, self.state.rate_unit, self.state.volume_unit)
+                self.td, self.state.surface_col, self.state.bhp_col, self.state.rate_col,
+                self.state.volume_col, self.state.surface_unit, self.state.bhp_unit,
+                self.state.rate_unit, self.state.volume_unit)
 
     def _apply_config(self):
         if self.td is None:
@@ -1223,7 +1271,7 @@ class DfitApp:
 
     def _overview_scale_key(self):
         """What, if changed by a widget sync, invalidates the stored Overview view."""
-        return self.state.channel_config(), self.state.pressure_unit
+        return self.state.channel_config(), self.state.surface_unit, self.state.bhp_unit
 
     def _on_pcscen_selected(self):
         """Any pick in the postclosure combobox is the analyst's, including re-picking an
@@ -2608,13 +2656,14 @@ class DfitApp:
         self._warn_lbl_hidden = True
 
     def _update_unit_labels(self):
-        """Gray "(detected unit)" hint beside each of the three unit dropdowns, from
+        """Gray "(detected unit)" hint beside each of the four unit dropdowns, from
         `td.unit_detections` -- refreshed every `refresh()` call (compute_all just rebuilt that
         cache) so it always reflects the current channel mapping/override, not just the
         load-time guess."""
         if self.td is None:
             return
-        for col, lbl in ((self.state.pressure_col, self.lbl_pressure_unit),
+        for col, lbl in ((self.state.surface_col, self.lbl_surface_unit),
+                         (self.state.bhp_col, self.lbl_bhp_unit),
                          (self.state.rate_col, self.lbl_rate_unit),
                          (self.state.volume_col, self.lbl_volume_unit)):
             det = self.td.unit_detections.get(col) if col else None
@@ -2712,11 +2761,13 @@ class DfitApp:
             # breadcrumb doesn't present the whole workflow as unreached.
             self.state.step_status = infer_step_status(self.state)
         # reflect into widgets
-        self.var_pressure.set(self.state.pressure_col)
+        self.var_surface.set(self.state.surface_col)
+        self.var_bhp.set(self.state.bhp_col or BHP_CALCULATED)
+        self._update_bhp_combo_font()
         self.var_rate.set(self.state.rate_col or "")
         self.var_volume.set(self.state.volume_col or "")
-        self.var_isbhp.set(self.state.pressure_is_bhp)
-        self.var_pressure_unit.set(self.state.pressure_unit)
+        self.var_surface_unit.set(self.state.surface_unit)
+        self.var_bhp_unit.set(self.state.bhp_unit)
         self.var_rate_unit.set(self.state.rate_unit)
         self.var_volume_unit.set(self.state.volume_unit)
         self.var_density.set("" if self.state.density_ppg is None else str(self.state.density_ppg))

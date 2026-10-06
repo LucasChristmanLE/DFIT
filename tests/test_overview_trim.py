@@ -206,7 +206,7 @@ def test_render_overview_override_past_guard_uses_trim_dt_not_guard_dt():
 
 def test_render_overview_no_resampled_full_no_gids_no_crash():
     td = make_testdata()
-    st = PickState(pressure_col="PRESSURE")  # no start/shutin picked -> no t_shutin_s/resampled_full
+    st = PickState(surface_col="PRESSURE")  # no start/shutin picked -> no t_shutin_s/resampled_full
     res = compute_all(st, td)
     fig = Figure()
     ax = fig.add_subplot(111)
@@ -284,7 +284,7 @@ def test_overview_wiring_attaches_drag_and_hover():
 
 def test_overview_wiring_no_resampled_full_no_trim_controllers():
     td = make_testdata()
-    st = PickState(pressure_col="PRESSURE")  # no start/shutin -> no t_shutin_s/resampled_full
+    st = PickState(surface_col="PRESSURE")  # no start/shutin -> no t_shutin_s/resampled_full
     res = compute_all(st, td)
     stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
@@ -319,7 +319,7 @@ def _seeded_with_guard_fire_and_more_data_after():
     df = pd.DataFrame({"PRESSURE": pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx)
     res = compute_all(st, td)
     return td, st, res
@@ -408,7 +408,7 @@ def _seeded_with_guard_fire_rise_never_comes_back():
     df = pd.DataFrame({"PRESSURE": pressure, "RATE": rate})
     td = IoTestData(path="<synthetic>", df=df, datetime_col="DATETIME", t_s=t_s,
                     columns=list(df.columns))
-    st = PickState(pressure_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
+    st = PickState(surface_col="PRESSURE", rate_col="RATE", start_idx=start_idx,
                    shutin_idx=shutin_idx, resample_step=300.0)
     res = compute_all(st, td)
     return td, st, res

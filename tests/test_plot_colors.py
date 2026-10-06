@@ -16,7 +16,7 @@ def _injection_axis(state):
 
 
 def test_rate_trace_is_blue_and_bhp_black_when_bhp():
-    st = injection_state(make_testdata()); st.pressure_is_bhp = True
+    st = injection_state(make_testdata()); st.bhp_col, st.surface_col = st.surface_col, ""
     fig, ax = _injection_axis(st)
     # pressure trace on primary axis is black
     press_line = ax.get_lines()[0]
@@ -28,17 +28,16 @@ def test_rate_trace_is_blue_and_bhp_black_when_bhp():
 
 
 def test_pressure_trace_is_red_when_surface():
-    st = injection_state(make_testdata()); st.pressure_is_bhp = False
+    st = injection_state(make_testdata())
     _, ax = _injection_axis(st)
     assert ax.get_lines()[0].get_color() == C.SURFACE_PRESSURE
 
 
 def test_pressure_trace_is_black_and_labeled_bhp_when_density_and_tvd_convert_surface_to_bhp():
-    # pressure_is_bhp stays False (the checkbox is unchecked) but density/TVD are set, so
-    # model.compute_all derives true BHP from surface pressure -- the trace should follow the
-    # derived result (res.pressure_is_bhp), not the raw checkbox state.
+    # bhp_col stays empty (Calculated) but density/TVD are set, so model.compute_all derives
+    # true BHP from surface pressure -- the trace should follow the derived result
+    # (res.pressure_is_bhp), not the raw mapping.
     st = injection_state(make_testdata())
-    st.pressure_is_bhp = False
     st.density_ppg = 9.0
     st.tvd_ft = 8000.0
     _, ax = _injection_axis(st)
@@ -57,7 +56,6 @@ def _overview_axis(state):
 
 def test_overview_overlays_thin_red_surface_pressure_when_converted_to_bhp():
     st = injection_state(make_testdata())
-    st.pressure_is_bhp = False
     st.density_ppg = 9.0
     st.tvd_ft = 8000.0
     ax = _overview_axis(st)
@@ -73,7 +71,9 @@ def test_overview_overlays_thin_red_surface_pressure_when_converted_to_bhp():
 
 def test_overview_no_surface_overlay_when_channel_is_bhp_or_unconverted():
     for is_bhp in (True, False):
-        st = injection_state(make_testdata()); st.pressure_is_bhp = is_bhp
+        st = injection_state(make_testdata())
+        if is_bhp:  # a bottomhole gauge with no surface channel mapped
+            st.bhp_col, st.surface_col = st.surface_col, ""
         ax = _overview_axis(st)
         assert not [l for l in ax.get_lines() if l.get_gid() == "surface_pressure"]
         assert ax.get_ylabel() == ("Bottomhole Pressure (psi)" if is_bhp else "Surface Pressure (psi)")
@@ -89,7 +89,6 @@ def _step_axis(renderer, state):
 
 def _surface_state(converted):
     st = injection_state(make_testdata())
-    st.pressure_is_bhp = False
     if converted:
         st.density_ppg = 9.0
         st.tvd_ft = 8000.0

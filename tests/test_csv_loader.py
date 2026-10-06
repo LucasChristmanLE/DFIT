@@ -2375,7 +2375,7 @@ def test_refresh_unit_detection_idempotent(tmp_path):
 
 def test_override_bypasses_header_and_heuristic(tmp_path):
     td = _kpa_csv(tmp_path)
-    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)", pressure_unit="psi")
+    io_load.refresh_unit_detection(td, "CASING Pressure (KPAg)", surface_unit="psi")
     det = td.unit_detections["CASING Pressure (KPAg)"]
     assert det.unit == "psi"
     assert det.factor == 1.0

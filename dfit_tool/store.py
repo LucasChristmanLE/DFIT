@@ -562,7 +562,7 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "orientation": "",
         "fluid_type": "",
         "play": "",
-        "pressure_source": "BHP" if res.pressure_is_bhp else "WHP",
+        "pressure_source": "bottomhole gauge" if state.bhp_col else "calculated",
         "tvd": state.tvd_ft,
         "fluid_density": state.density_ppg,
         "t_start_inj": t_start_inj,

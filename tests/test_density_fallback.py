@@ -112,8 +112,8 @@ def test_uncheck_restores_previous_value_and_enables_entry():
 
 def test_sync_forces_fallback_density():
     stub = types.SimpleNamespace(td=None, state=PickState(density_ppg=9.0))
-    for name, val in [("var_pressure", ""), ("var_rate", ""), ("var_volume", ""),
-                      ("var_isbhp", False), ("var_pressure_unit", "auto"),
+    for name, val in [("var_surface", ""), ("var_rate", ""), ("var_volume", ""),
+                      ("var_bhp", "Calculated"), ("var_surface_unit", "auto"), ("var_bhp_unit", "auto"),
                       ("var_rate_unit", "auto"), ("var_volume_unit", "auto"),
                       ("var_density", "9.0"), ("var_density_fallback", True),
                       ("var_tvd", ""), ("var_well", ""), ("var_formation", ""),
