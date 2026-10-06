@@ -29,7 +29,16 @@ def test_volume_factors_exact_values():
 
 def test_m_to_ft_and_kgm3_to_ppg_constants():
     assert units.M_TO_FT == pytest.approx(3.280839895)
-    assert units.KGM3_TO_PPG == pytest.approx(1.0 / 119.8264)
+    # Project convention: water = 8.33 ppg, so SG 1.0 and 1000 kg/m3 both read 8.33 ppg.
+    assert units.WATER_PPG == 8.33
+    assert units.KGM3_TO_PPG == pytest.approx(8.33 / 1000)
+
+
+def test_every_water_density_constant_is_8_33():
+    from dfit_tool import model, questionnaire
+    assert model.FALLBACK_DENSITY_PPG == 8.33
+    assert questionnaire._SG_TO_PPG == 8.33
+    assert questionnaire._FRESH_WATER_PPG == 8.33
 
 
 # --------------------------------------------------------------------------------------------------

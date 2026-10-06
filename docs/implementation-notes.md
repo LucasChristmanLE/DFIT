@@ -1700,8 +1700,10 @@ the number (e.g. `"TVD (mKB): 3368"`, `"TVD in mKB = 3368"`) -- and is converted
 meters value like 3368 sits inside the feet-assumed 1000-25000 window and would otherwise be
 silently accepted as feet; density gained a kg/m3 unit (`units.KGM3_TO_PPG`) alongside the
 existing ppg/SG/psi-per-ft forms, and a fluid-name fallback (`"fresh water"`/`"freshwater"`/
-`"water"`, exact trimmed whole-cell match) that assumes 8.34 ppg with a warning when a cell names
-the fluid but gives no number at all. Multi-well workbooks
+`"water"`, exact trimmed whole-cell match) that assumes fresh water with a warning when a cell
+names the fluid but gives no number at all. Water density is 8.33 ppg everywhere
+(`units.WATER_PPG`, 2026-10-05): the SG multiplier, the kg/m3 factor (8.33/1000, not the exact
+1/119.83), the fresh-water fallback, and `model.FALLBACK_DENSITY_PPG` all derive from it. Multi-well workbooks
 (`parse_questionnaire(path, well_hint=...)`) disambiguate a
 multi-sheet workbook by matching `well_hint` against each sheet's title, then its "Well Name"
 answer cell; a positive match narrows to that one sheet, but a missing hint or no match reads

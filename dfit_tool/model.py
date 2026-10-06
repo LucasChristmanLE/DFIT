@@ -18,7 +18,7 @@ from typing import Optional
 
 import numpy as np
 
-from . import interpret, io_load, resample
+from . import interpret, io_load, resample, units
 from .gfunction import g_time
 from .io_load import ChannelConfig, TestData
 
@@ -40,7 +40,7 @@ def closure_uninterpretable(state: "PickState") -> bool:
 NO_TREND_POSTCLOSURE = ("PC-E", "PC-F")
 
 # Fresh-water density used by the "Fallback (8.33)" checkbox when no measured density is known.
-FALLBACK_DENSITY_PPG = 8.33
+FALLBACK_DENSITY_PPG = units.WATER_PPG
 
 
 def loglog_window_suppressed(state: "PickState") -> bool:

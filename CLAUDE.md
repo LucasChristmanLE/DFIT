@@ -207,6 +207,9 @@ Preserve these when changing the code.
   `io_load.refresh_unit_detection` is idempotent and runs at the top of every `compute_all`. A
   real conversion is never silent (warning + `units_note` log column). No filename-based unit
   sniffing, ever.
+- **Water is 8.33 ppg everywhere** (`units.WATER_PPG`): SG → ppg, kg/m3 → ppg (8.33/1000), the
+  questionnaire fresh-water fallback, and `model.FALLBACK_DENSITY_PPG`. Derive from it; never
+  hard-code 8.33/8.34/8.345.
 - **Warnings are never silent about changed numbers.** An auto-trim, a masked dropout, a guard
   cutoff, or an extrapolated timestamp block always produces a warning. Warnings that explain a
   cut go at the front of `DerivedResults.warnings` (`insert(0)`). Keep each message to one short

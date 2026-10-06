@@ -19,7 +19,10 @@ MPA_TO_PSI = 145.0377377
 BAR_TO_PSI = 14.50377
 M3_TO_BBL = 6.2898107704
 M_TO_FT = 3.280839895
-KGM3_TO_PPG = 1.0 / 119.8264
+# Project convention: water is 8.33 ppg, used for every SG -> ppg conversion and every fresh-water
+# assumption. kg/m3 follows it (1000 kg/m3 = SG 1.0 = 8.33 ppg) rather than the exact 1/119.83.
+WATER_PPG = 8.33
+KGM3_TO_PPG = WATER_PPG / 1000.0
 
 # --------------------------------------------------------------------------------------------------
 # factor tables, keyed by canonical unit

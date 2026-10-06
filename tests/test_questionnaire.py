@@ -104,7 +104,7 @@ def test_true_specific_gravity_converted_to_ppg(tmp_path):
         "Produced water - 1.02 SG",
     ])
     result = parse_questionnaire(str(path))
-    assert result.density_ppg == pytest.approx(1.02 * 8.345)
+    assert result.density_ppg == pytest.approx(1.02 * 8.33)
     assert result.density_source == "Produced water - 1.02 SG"
 
 
@@ -539,7 +539,7 @@ def test_density_kgm3_converted_to_ppg(tmp_path):
         "1000 kg/m3",
     ])
     result = parse_questionnaire(str(path))
-    assert result.density_ppg == pytest.approx(1000 * units.KGM3_TO_PPG, rel=1e-6)
+    assert result.density_ppg == pytest.approx(8.33, rel=1e-6)
 
 
 def test_density_kgm3_superscript_variant(tmp_path):
