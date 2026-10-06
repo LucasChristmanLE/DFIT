@@ -932,6 +932,104 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
     return ViewDefaults(xlim=xlim, ylim=ylim, y_color=C.PRESSURE)
 
 
+# --------------------------------------------------------------------------------------------------
+# hover readout (live canvas only; picks.HoverReadoutController consumes these)
+# --------------------------------------------------------------------------------------------------
+@dataclass
+class HoverSeries:
+    """The primary trace of one step as the hover readout sees it. ``x``/``y`` are in the step's
+    plotted units on the primary axes (never the twin); ``t_file_s`` is seconds from file start,
+    aligned with them. ``value_label`` ("BHP"/"Surface") is None for a time-only readout, or a
+    per-sample array when one series carries two traces (Overview's surface overlay)."""
+    x: np.ndarray
+    y: np.ndarray
+    t_file_s: np.ndarray
+    t_shutin_s: Optional[float]
+    value_label: Optional[str | np.ndarray]
+
+
+def hover_series(step_key: str, td: TestData, state: PickState,
+                 res: DerivedResults) -> Optional[HoverSeries]:
+    """What the hover readout can snap to on ``step_key``, mirroring each renderer's x/y
+    transform (finite samples only); None when the step has nothing to hover."""
+    t_si = res.t_shutin_s
+    label = "BHP" if _pressure_style(res)[2] == "Bottomhole Pressure" else "Surface"
+    if step_key in ("overview", "injection", "isip"):
+        if res.bhp_all is None or td is None:
+            return None
+        if step_key == "isip":
+            if t_si is None:
+                return None
+            x = (td.t_s - t_si) / 60.0
+        else:
+            x = _hours(td.t_s)
+        x, y, t = np.asarray(x, float), np.asarray(res.bhp_all, float), np.asarray(td.t_s, float)
+        ok = np.isfinite(x) & np.isfinite(y)
+        ps = res.p_surface_all
+        if step_key == "overview" and ps is not None:
+            # Same samples render_overview draws for the overlay: its own mask, NaN'd out.
+            ps_mask = (res.dropout_mask if res.surface_dropout_mask is None
+                       else res.surface_dropout_mask)
+            ps_clean, _ = _split_dropouts(ps, ps_mask)
+            ok_s = np.isfinite(x) & np.isfinite(ps_clean)
+            labels = np.concatenate([np.full(int(ok.sum()), label),
+                                     np.full(int(ok_s.sum()), "Surface")])
+            return HoverSeries(np.concatenate([x[ok], x[ok_s]]),
+                               np.concatenate([y[ok], ps_clean[ok_s]]),
+                               np.concatenate([t[ok], t[ok_s]]), t_si, labels)
+        return HoverSeries(x[ok], y[ok], t[ok], t_si, label) if ok.any() else None
+    dg, rs = res.diagnostics, res.resampled
+    if step_key in ("gfunction", "tangent", "loglog", "porepressure"):
+        if dg is None or rs is None or t_si is None:
+            return None
+        t_rel = np.asarray(dg.t, float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if step_key in ("gfunction", "tangent"):
+                x, y, t_rel, lab = np.asarray(dg.G, float), np.asarray(rs.p, float), \
+                    np.asarray(rs.dt, float), label
+                ok = np.isfinite(x) & np.isfinite(y)
+            elif step_key == "loglog":
+                x, y, lab = t_rel, np.asarray(dg.dp, float), None
+                ok = (t_rel > 0) & (y > 0)
+            else:
+                expo = -0.5 if state.pp_axis == "tm12" else -1.0
+                x, y, lab = t_rel ** expo, np.asarray(dg.p, float), label
+                ok = np.isfinite(x) & np.isfinite(y)
+        n = min(len(x), len(y), len(t_rel))
+        ok = ok[:n] & np.isfinite(x[:n]) & np.isfinite(y[:n])
+        if not ok.any():
+            return None
+        return HoverSeries(x[:n][ok], y[:n][ok], t_si + t_rel[:n][ok], t_si, lab)
+    if step_key == "stiffness":
+        if (res.stiffness_S is None or res.stiffness_p_eff is None or res.stiffness_dt is None
+                or t_si is None):
+            return None
+        S = np.asarray(res.stiffness_S, float)
+        x = np.asarray(res.stiffness_p_eff, float)[1:]
+        dt = np.asarray(res.stiffness_dt, float)[1:]
+        n = min(len(S), len(x), len(dt))
+        S, x, dt = S[:n], x[:n], dt[:n]
+        ok = np.isfinite(S) & (S > 0) & np.isfinite(x) & np.isfinite(dt)
+        return HoverSeries(x[ok], S[ok], t_si + dt[ok], t_si, None) if ok.any() else None
+    return None
+
+
+def hover_text(series: HoverSeries, i: int) -> str:
+    """Readout lines for sample ``i``: value (pressure steps), hours from file start, hours from
+    shut-in (omitted without a shut-in; negative before it). Hours 2 decimals, psi 0."""
+    t = float(series.t_file_s[i])
+    lines = []
+    label = series.value_label
+    if label is not None and not isinstance(label, str):
+        label = str(label[i])
+    if label is not None:
+        lines.append(f"{label} {float(series.y[i]):.0f} psi")
+    lines.append(f"{t / 3600.0:.2f} h from file start")
+    if series.t_shutin_s is not None:
+        lines.append(f"{(t - series.t_shutin_s) / 3600.0:.2f} h from shut-in")
+    return "\n".join(lines)
+
+
 RENDERERS = {
     "overview": render_overview,
     "injection": render_injection,

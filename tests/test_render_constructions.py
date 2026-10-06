@@ -484,6 +484,8 @@ def test_isip_wiring_get_pick_and_commit_round_trip_seconds_through_axes_minutes
     td, st, res = _seeded()
     stub = _stub(td, st, res, "isip")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     assert len(stub._controllers) == 2  # AnchorLineController + its HoverCursorController
     ctrl = stub._controllers[0]
 
@@ -521,6 +523,8 @@ def test_gfunction_wiring_attaches_span_and_two_point_controllers_sharing_one_ga
     td, st, res = _seeded()
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     assert len(stub._controllers) == 4  # window span + min-dP/dG point + contact point + hover
     span_ctrl, min_dpdg_ctrl, contact_ctrl, hover_ctrl = stub._controllers
     assert isinstance(span_ctrl, picks.ModifierSpanController)
@@ -559,6 +563,8 @@ def test_gfunction_wiring_blank_scenario_contact_and_hover_only():
     res = compute_all(st, td)
     stub = _stub(td, st, res, "gfunction")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     assert len(stub._controllers) == 2
     contact_ctrl, hover_ctrl = stub._controllers
     assert isinstance(contact_ctrl, picks.DraggablePointController)
@@ -575,6 +581,8 @@ def test_gfunction_wiring_cc_cd_zero_controllers():
         res = compute_all(st, td)
         stub = _stub(td, st, res, "gfunction")
         DfitApp._attach_controllers(stub)
+        stub._controllers = [c for c in stub._controllers
+                            if not isinstance(c, picks.HoverReadoutController)]
         assert stub._controllers == [], scen
 
 
@@ -627,6 +635,8 @@ def test_tangent_wiring_attaches_to_the_twin_axes_sharing_one_gate():
     td, st, res = _seeded()
     stub = _stub(td, st, res, "tangent")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     # point controller first: press/hover priority follows list order, and the closure marker/
     # vline must beat the through-origin line body's rotate hit zone where they cross on screen
     assert len(stub._controllers) == 3  # DraggablePointController + AnchorLineController + hover

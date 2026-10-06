@@ -40,6 +40,9 @@ DROPOUT = "magenta"                 # alarm marker, must not match any series
 NET_PRESSURE = RATE_BLUE
 COMPLEXITY = GOLD
 BAR_LABEL = "white"                 # value text drawn on a net-pressure bar
+HOVER_TEXT = LBRT_BLACK             # hover readout box text and snapped-sample ring
+HOVER_BG = "white"                  # hover readout box fill
+HOVER_EDGE = MID_GREY               # hover readout box border
 
 # UI roles.
 UI_ERROR = LBRT_RED                 # blockers, gate label, warning label

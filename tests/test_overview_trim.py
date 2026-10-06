@@ -271,6 +271,8 @@ def test_overview_wiring_attaches_drag_and_hover():
     td, st, res = _seeded_with_crash()
     stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     # Two mask/keep span controllers and the remove controller precede the trim pair.
     assert len(stub._controllers) == 5
     ctrl, hover_ctrl = stub._controllers[3:]
@@ -288,6 +290,8 @@ def test_overview_wiring_no_resampled_full_no_trim_controllers():
     res = compute_all(st, td)
     stub = _stub(td, st, res, "overview")
     DfitApp._attach_controllers(stub)
+    stub._controllers = [c for c in stub._controllers
+                        if not isinstance(c, picks.HoverReadoutController)]
     # No trim tool, but the manual mask tool is still attached.
     assert [type(c).__name__ for c in stub._controllers] == [
         "ModifierSpanController", "ModifierSpanController", "IntervalRemoveController"]

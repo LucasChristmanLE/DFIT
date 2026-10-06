@@ -627,6 +627,8 @@ class DerivedResults:
     # limit memory" line. Not serialized (DerivedResults never is).
     stiffness_p_eff: Optional[np.ndarray] = field(default=None, repr=False)
     stiffness_G: Optional[np.ndarray] = field(default=None, repr=False)
+    # Shut-in seconds of each stiffness_p_eff sample (hover readout only; not logged).
+    stiffness_dt: Optional[np.ndarray] = field(default=None, repr=False)
     stiffness_S: Optional[np.ndarray] = field(default=None, repr=False)
 
     # Compact summary of any non-1.0 unit conversion applied this compute (see
@@ -1435,6 +1437,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
             sel = np.arange(n)
         h = interpret.h_function(rs.dt[sel], p_eff[sel], res.pore_pressure, res.te_s)
         res.stiffness_p_eff = p_eff[sel]
+        res.stiffness_dt = rs.dt[sel]
         res.stiffness_G = dg.G[sel]
         res.stiffness_S = interpret.relative_stiffness(res.stiffness_p_eff, h)
         # stiffness_no_upturn is an explicit negative finding ("no slope change apparent") --

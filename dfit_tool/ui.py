@@ -2207,6 +2207,12 @@ class DfitApp:
             c.disconnect()
         self._controllers = []
 
+        series = plots.hover_series(self.step, self.td, self.state, self.res)
+        if series is not None:
+            self._controllers.append(picks.HoverReadoutController(
+                self.canvas, self.ax, series.x, series.y,
+                lambda i: plots.hover_text(series, i)))
+
         step = self.step
         if step == "overview":
             res = self.res

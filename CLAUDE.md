@@ -82,7 +82,8 @@ The package `dfit_tool/` is layered. Lower layers never import higher ones.
   `questionnaire.py` reads fluid density and TVD from a `*questionnaire*.xlsx` next to the data.
 - **Interaction (matplotlib only, no Tkinter).** `picks.py`: event controllers
   (`DragLineController`, `AnchorLineController`, `DraggablePointController`, `SpanController`,
-  `ModifierSpanController`, `HoverCursorController`, `_CaptureGate` press arbiter), pure
+  `ModifierSpanController`, `HoverCursorController`, `_CaptureGate` press arbiter, and the
+  display-only `HoverReadoutController` fed by `plots.hover_series`/`hover_text`), pure
   `commit_*` functions turning finished geometry into `PickState` changes, and per-step `seed_*`
   functions. `plots.py`: `render_*` renderers and the headless PNG export
   (`render_step_figure`/`save_all_step_pngs`, which also writes `9_summary.png` via

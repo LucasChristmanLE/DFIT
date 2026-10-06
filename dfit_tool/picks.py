@@ -1082,6 +1082,141 @@ class HoverCursorController:
         self._cids = []
 
 
+class HoverReadoutController:
+    """Shows a small text box (``text_fn(i)``) and a ring marker at the sample of ``(x, y)``
+    nearest the pointer, when it is within ``tol_px`` pixels. Display only: it picks nothing and
+    is not passed to ``HoverCursorController``.
+
+    The search is done in pixel space through ``ax``'s own transforms (never ``event.inaxes``, which
+    a twin axes owns), so it works on log axes and with a twin present. ``x`` is argsorted once;
+    each motion inverts ``event.x +/- tol_px`` to a data-x window, ``searchsorted``s it, and
+    transforms only those candidates, so a 10^6-sample Overview stays responsive.
+
+    Both artists are created once, hidden, ``animated`` and drawn by blitting over a background
+    snapshotted on every ``draw_event`` (``draw_idle`` with plain artists when the canvas cannot
+    blit). A redraw happens only when the snapped index or visibility changes. The readout is
+    hidden while any mouse button is held (drags, span selects, sliders), off the axes, and on
+    ``figure_leave_event``. The text box flips left/down in the right half/top of the axes so it
+    stays on the canvas.
+    """
+
+    _OFFSET_PT = 12
+
+    def __init__(self, canvas, ax, x, y, text_fn: Callable[[int], str], tol_px: float = 8):
+        self.canvas = canvas
+        self.ax = ax
+        self.text_fn = text_fn
+        self.tol_px = float(tol_px)
+        self._x = np.asarray(x, dtype=float)
+        self._y = np.asarray(y, dtype=float)
+        self._order = np.argsort(self._x, kind="stable")
+        self._xs = self._x[self._order]
+        self._idx: Optional[int] = None
+        self._bg = None
+        self._blit = bool(getattr(canvas, "supports_blit", False))
+        self._annot = ax.annotate(
+            "", xy=(0.0, 0.0), xytext=(self._OFFSET_PT, self._OFFSET_PT),
+            textcoords="offset points", fontsize=8, color=C.HOVER_TEXT, zorder=100,
+            annotation_clip=False, animated=self._blit,
+            bbox=dict(boxstyle="round,pad=0.3", fc=C.HOVER_BG, ec=C.HOVER_EDGE))
+        self._annot.set_visible(False)
+        self._marker, = ax.plot([], [], linestyle="none", marker="o", ms=9, mfc="none",
+                                mec=C.HOVER_TEXT, zorder=99, animated=self._blit)
+        self._marker.set_visible(False)
+        self._cids = [canvas.mpl_connect("motion_notify_event", self._on_motion),
+                      canvas.mpl_connect("figure_leave_event", self._on_leave),
+                      canvas.mpl_connect("draw_event", self._on_draw)]
+
+    def _nearest_index(self, event) -> Optional[int]:
+        ax, tol = self.ax, self.tol_px
+        inv = ax.transData.inverted()
+        x_lo = float(inv.transform((event.x - tol, event.y))[0])
+        x_hi = float(inv.transform((event.x + tol, event.y))[0])
+        if not (np.isfinite(x_lo) and np.isfinite(x_hi)):
+            return None
+        if x_lo > x_hi:
+            x_lo, x_hi = x_hi, x_lo
+        a = int(np.searchsorted(self._xs, x_lo, side="left"))
+        b = int(np.searchsorted(self._xs, x_hi, side="right"))
+        if b <= a:
+            return None
+        cand = self._order[a:b]
+        pts = np.column_stack([self._x[cand], self._y[cand]])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            px = ax.transData.transform(pts)
+        bb = ax.bbox
+        dist = np.hypot(px[:, 0] - event.x, px[:, 1] - event.y)
+        dist[~((px[:, 0] >= bb.x0) & (px[:, 0] <= bb.x1)
+               & (px[:, 1] >= bb.y0) & (px[:, 1] <= bb.y1))] = np.inf
+        dist[~np.isfinite(px).all(axis=1)] = np.inf
+        k = int(np.argmin(dist))
+        if not dist[k] <= tol:
+            return None
+        return int(cand[k])
+
+    def _on_motion(self, event):
+        held = bool(getattr(event, "buttons", None)) or event.button is not None
+        idx = None
+        if not held and _axes_contains_pixel(self.ax, event):
+            idx = self._nearest_index(event)
+        self._show(idx, event)
+
+    def _on_leave(self, event):
+        self._show(None, None)
+
+    def _on_draw(self, event):
+        if self._blit:
+            self._bg = self.canvas.copy_from_bbox(self.ax.figure.bbox)
+            self._idx = None  # the full draw skipped the animated readout; repaint on next motion
+
+    def _show(self, idx: Optional[int], event):
+        if idx == self._idx:
+            return
+        if self._blit and self._bg is None and idx is not None:
+            # No snapshot yet (attached after the last draw): one synchronous draw takes it
+            # through draw_event; animated artists are not part of it.
+            self.canvas.draw()
+            if self._bg is None:
+                return
+        self._idx = idx
+        if idx is None:
+            self._annot.set_visible(False)
+            self._marker.set_visible(False)
+        else:
+            xd, yd = float(self._x[idx]), float(self._y[idx])
+            px, py = self.ax.transData.transform((xd, yd))
+            bb = self.ax.bbox
+            right = px > bb.x0 + 0.5 * bb.width
+            top = py > bb.y0 + 0.5 * bb.height
+            off = self._OFFSET_PT
+            self._annot.xy = (xd, yd)
+            self._annot.set_position((-off if right else off, -off if top else off))
+            self._annot.set_ha("right" if right else "left")
+            self._annot.set_va("top" if top else "bottom")
+            self._annot.set_text(self.text_fn(idx))
+            self._marker.set_data([xd], [yd])
+            self._annot.set_visible(True)
+            self._marker.set_visible(True)
+        if self._blit and self._bg is not None:
+            self.canvas.restore_region(self._bg)
+            if idx is not None:
+                self.ax.draw_artist(self._marker)
+                self.ax.draw_artist(self._annot)
+            self.canvas.blit(self.ax.figure.bbox)
+        else:
+            self.canvas.draw_idle()
+
+    def disconnect(self):
+        for cid in self._cids:
+            self.canvas.mpl_disconnect(cid)
+        self._cids = []
+        for art in (self._annot, self._marker):
+            try:
+                art.remove()
+            except (ValueError, NotImplementedError):
+                pass
+
+
 # --------------------------------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------------------------------
