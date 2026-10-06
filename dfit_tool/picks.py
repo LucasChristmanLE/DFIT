@@ -1509,7 +1509,7 @@ def suggest_pp_axis(scenario: str) -> Optional[str]:
 # Each seeder below fires exactly once per step, from ``ui.DfitApp._seed_step`` on that step's
 # first visit (never on a revisit). They are made non-destructive anyway -- each early-returns
 # if its target pick(s) are already set -- so a state loaded from JSON with real picks but an
-# un-visited step (e.g. an old save resumed via ``first_not_visited_step``) is never clobbered by
+# un-visited step (e.g. an old save reopened and stepped through) is never clobbered by
 # arriving at that step. Every seeder also degrades to a no-op (never a crash) when the inputs it
 # needs (``res.t_shutin_s``, ``res.diagnostics``, etc.) aren't ready yet -- out-of-order entry into
 # a step whose prerequisites weren't picked simply seeds nothing.

@@ -447,18 +447,6 @@ def prev_step(key: str) -> str:
     return STEP_KEYS[max(step_index(key) - 1, 0)]
 
 
-def first_not_visited_step(step_status: dict[str, str]) -> str:
-    """Where ``_load_picks`` should land after loading a file: the first (in ``STEPS`` order)
-    step that is still ``not_visited``, so the breadcrumb resumes wherever the saved workflow
-    left off. If every step already has some status -- an old file whose picks cover the whole
-    workflow -- there is no natural "resume point", so the simplest sensible fallback is the
-    first step, "overview"."""
-    for key in STEP_KEYS:
-        if step_status.get(key, "not_visited") == "not_visited":
-            return key
-    return STEP_KEYS[0]
-
-
 def skipped_steps(state: PickState) -> frozenset[str]:
     """Steps this test's interpretation leaves out end to end. PC-F (no peak): the derivative
     never peaks, so there is no postclosure line (porepressure) and no pore-pressure estimate

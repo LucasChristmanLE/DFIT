@@ -27,7 +27,7 @@ from . import APP_NAME
 from . import (colors as C, guide_content, interpret, io_load, picks, plots, sliders, store,
                summary)
 from .model import (FALLBACK_DENSITY_PPG, NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
-                    closure_uninterpretable, compute_all, first_not_visited_step,
+                    closure_uninterpretable, compute_all,
                     infer_step_status, last_step, loglog_window_suppressed, next_step,
                     pp_from_peak, prev_step, resolve_step, skipped_steps, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults, ViewState
@@ -1569,7 +1569,7 @@ class DfitApp:
 
         A destination the workflow leaves out (model.skipped_steps; PC-F/PC-X drop porepressure and
         stiffness) redirects through model.resolve_step -- this one place covers the log-log
-        Skip button, resume-on-load (first_not_visited_step), and any other programmatic jump."""
+        Skip button and any other programmatic jump."""
         if self.td is None:
             return
         step = resolve_step(self.state, step)
@@ -2792,10 +2792,8 @@ class DfitApp:
         self.var_isip_use_tangent.set(self.state.isip_use_tangent)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)
-        # Resume at the first not-yet-visited step so the breadcrumb picks up where the saved
-        # workflow left off; if every step already has some status, there is no natural resume
-        # point, so land on "overview" (first_not_visited_step's fallback).
-        self._goto(first_not_visited_step(self.state.step_status))
+        # A reopened test always lands on Overview, whatever its progress or last step.
+        self._goto("overview")
 
     def _load_picks(self):
         path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])

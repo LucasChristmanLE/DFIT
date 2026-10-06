@@ -19,8 +19,7 @@ from matplotlib.figure import Figure
 
 from dfit_tool import store, ui
 from dfit_tool.model import PickState, compute_all, infer_step_status
-from dfit_tool.ui import (STEPS, DfitApp, _next_new_index, _resolve_load_source,
-                          first_not_visited_step)
+from dfit_tool.ui import STEPS, DfitApp, _next_new_index, _resolve_load_source
 from tests.helpers import PRESSURE_COL, make_testdata, injection_state
 
 
@@ -580,7 +579,7 @@ def test_apply_loaded_state_infers_step_status_when_missing():
     assert stub.state is state
     assert stub._quest_lines == []  # picks-file values must not keep questionnaire provenance
     assert stub.state.step_status == infer_step_status(state)
-    assert stub._goto_calls == [first_not_visited_step(stub.state.step_status)]
+    assert stub._goto_calls == ["overview"]
 
 
 def test_apply_loaded_state_preserves_existing_step_status():
@@ -590,7 +589,17 @@ def test_apply_loaded_state_preserves_existing_step_status():
     stub._apply_loaded_state(state)
 
     assert stub.state.step_status == {"injection": "done"}
-    assert stub._goto_calls == [first_not_visited_step({"injection": "done"})]
+    assert stub._goto_calls == ["overview"]
+
+
+def test_apply_loaded_state_always_opens_overview_regardless_of_progress():
+    stub = _apply_stub()
+    state = PickState(surface_col="P", step_status={
+        "overview": "done", "injection": "done", "isip": "done", "gfunction": "visited"})
+
+    stub._apply_loaded_state(state)
+
+    assert stub._goto_calls == ["overview"]
 
 
 def test_apply_loaded_state_reflects_widgets_and_resets_views():

@@ -1647,8 +1647,8 @@ t·dP/dt over the last decade.
 
 Seeding happens in `seed_loglog`, in `ui._on_scenario` on selecting PC-E, and in every
 `ui._goto` through `ui._ensure_pce_peak`. The `_goto` path is not limited to loglog/porepressure:
-a 7-step-era save resumes onto stiffness, and Skip/Unskip from Overview logs a row, and both
-would otherwise log a blank Pp where the old window fit had a value.
+every reopened test lands on Overview, and Skip/Unskip from Overview logs a row, which would
+otherwise log a blank Pp where the old window fit had a value.
 
 `_ensure_pce_peak` also re-seeds an unusable pick, with a one-shot hint. Unusable means the
 pick is past the last sample or has no positive t·dP/dt; in that case `res.pce_peak_t` stays
