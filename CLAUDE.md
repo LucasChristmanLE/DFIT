@@ -287,7 +287,9 @@ is drawn (and draggable) on the stiffness step only.
   display; when the cutoff equals `guard_dt` the mask is `<`, otherwise `<=`. A drag past
   `guard_dt` sets `tail_guard_override`. `seed_tail_trim` is called from `ui._seed_step`, not
   `SEEDERS`, because it needs a recomputed `res`. Moving shut-in calls
-  `picks.resync_auto_tail_trim`, which only touches `"low_pressure"` trims. Scenario changes and
+  `picks.resync_auto_tail_trim`, which only touches `"low_pressure"` trims. Overview's "Reset tail
+  trim to auto" button (`picks.reset_tail_trim`) re-runs the seed regardless of reason and clears
+  `tail_guard_override`; it is disabled when `picks.tail_trim_is_auto` holds. Scenario changes and
   min-dP/dG corrections never touch the trim.
 - **Masking**: `res.dropout_mask` is the combined mask (the name is historical), post-shut-in
   only: (`resample.detect_dropouts` near-zero dips that recover | `resample.detect_rise_excursions`

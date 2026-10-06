@@ -1030,6 +1030,7 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.state = PickState(stiffness_no_upturn=stiffness_no_upturn)
     stub._update_ppaxis_enabled = lambda: None
     stub._update_masks_button = types.MethodType(DfitApp._update_masks_button, stub)
+    stub._update_trim_button = lambda: None
     stub._update_panel_visibility = types.MethodType(DfitApp._update_panel_visibility, stub)
     return stub
 

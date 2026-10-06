@@ -122,6 +122,38 @@ def test_clear_button_update_and_command():
     assert stub.refreshed == 1
 
 
+def test_reset_trim_button_update_and_command():
+    td = make_testdata(n=1200, zero_crash_at=0.5)
+    st = injection_state(td)
+    picks.seed_injection(st, td)
+    res = compute_all(st, td)
+    picks.seed_tail_trim(st, td, res)
+    auto_dt = st.tail_trim_dt
+    assert auto_dt is not None
+    btn_calls = []
+    stub = types.SimpleNamespace(
+        state=st, td=td, res=res, refreshed=0,
+        _views={k: object() for k in ("overview", "injection", "gfunction", "tangent",
+                                      "loglog", "porepressure", "stiffness")},
+        btn_reset_trim=types.SimpleNamespace(config=lambda **kw: btn_calls.append(kw)))
+    stub.refresh = lambda: setattr(stub, "refreshed", stub.refreshed + 1)
+
+    DfitApp._update_trim_button(stub)
+    assert btn_calls[-1] == {"state": "disabled"}
+
+    picks.commit_tail_trim(st, auto_dt / 2)
+    stub.res = compute_all(st, td)
+    DfitApp._update_trim_button(stub)
+    assert btn_calls[-1] == {"state": "normal"}
+
+    DfitApp._on_reset_trim(stub)
+    assert st.tail_trim_dt == auto_dt and st.tail_trim_reason == "low_pressure"
+    assert stub.refreshed == 1
+    for k in ("gfunction", "tangent", "loglog", "porepressure", "stiffness"):
+        assert stub._views[k] is None
+    assert stub._views["overview"] is not None and stub._views["injection"] is not None
+
+
 def test_frm_masks_packed_on_overview_only_below_notes():
     from tests.test_stiffness import _panel_visibility_stub
     stub = _panel_visibility_stub()

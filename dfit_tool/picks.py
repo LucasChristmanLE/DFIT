@@ -1536,8 +1536,20 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
     (res.resampled_full/res.t_shutin_s) aren't ready yet."""
     if state.tail_trim_dt is not None:
         return
+    dt = suggest_tail_trim_pick(state, td, res)
+    if dt is not None:
+        commit_tail_trim(state, dt)
+        state.tail_trim_reason = "low_pressure"
+
+
+def suggest_tail_trim_pick(state: PickState, td: TestData, res: DerivedResults) -> Optional[float]:
+    """The auto ("low_pressure") tail trim seed_tail_trim would apply, as shut-in-relative
+    seconds, or None when it would set no pick. Pure: never touches ``state``.
+
+    Valid against a ``res`` computed with any trim in state: it reads only res.resampled_full,
+    res.t_shutin_s, guard_dt, and the dropout masks, none of which tail_trim_dt affects."""
     if res.resampled_full is None or res.t_shutin_s is None:
-        return
+        return None
     dt_full = res.resampled_full.dt
     post = td.t_s >= res.t_shutin_s
     dt_post = td.t_s[post] - res.t_shutin_s
@@ -1570,7 +1582,7 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
         # a genuine further decline resumes; resample.resample_pressure_increment's
         # stop_at_guard=False), but either way nothing past it is admitted into the diagnostics
         # unless the analyst drags an explicit override (PickState.tail_guard_override).
-        return
+        return None
     # Snap to the last RAW sample strictly before the cut, not a resampled one. The 30-psi
     # resampler keeps nothing on a slow late falloff, so the last kept point before the crash can
     # sit hours early (AEF 05-61-34-5649B: 251.9 h for a 290.96 h crash). The kept points at or
@@ -1583,12 +1595,31 @@ def seed_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
     # sits at or past the cut (crash beyond where resampling reached, nothing to remove). Both
     # are still covered by the separate low-surface-pressure warning, which scans raw samples.
     if len(dt_full) < 3 or len(raw_before) == 0 or dt_full[-1] < cut_dt:
-        return
+        return None
     trim_dt = float(raw_before[-1])
     if trim_dt < dt_full[2]:
-        return
-    commit_tail_trim(state, trim_dt)
-    state.tail_trim_reason = "low_pressure"
+        return None
+    return trim_dt
+
+
+def reset_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
+    """Overview's "Reset tail trim to auto" button: replace whatever trim is in state (manual
+    drag, drag-to-end clear, guard override) with what a fresh first visit would seed. Unlike
+    resync_auto_tail_trim it runs regardless of tail_trim_reason, since a cleared auto trim
+    reads the same as no trim at all. Always clears tail_guard_override: auto never overrides
+    the guard."""
+    dt = suggest_tail_trim_pick(state, td, res)
+    commit_tail_trim(state, dt)
+    if dt is not None:
+        state.tail_trim_reason = "low_pressure"
+
+
+def tail_trim_is_auto(state: PickState, td: TestData, res: DerivedResults) -> bool:
+    """True when the trim in state already equals what reset_tail_trim would set (drives the
+    reset button's enabled state)."""
+    dt = suggest_tail_trim_pick(state, td, res)
+    return (state.tail_trim_dt == dt and not state.tail_guard_override
+            and state.tail_trim_reason == ("low_pressure" if dt is not None else ""))
 
 
 def resync_auto_tail_trim(state: PickState, td: TestData, res: DerivedResults) -> None:
@@ -1602,22 +1633,18 @@ def resync_auto_tail_trim(state: PickState, td: TestData, res: DerivedResults) -
     at all) is never touched here -- ``tail_trim_reason == ""`` covers both, and only the
     analyst's own drag/clear may set or clear those.
 
-    Clears the existing pick first so ``seed_tail_trim``'s non-destructive guard (it returns
-    immediately when ``tail_trim_dt is not None``) doesn't block the re-derive, then reseeds
-    from scratch against the new window. If the new window has no crash (and no guard fire),
-    the correct outcome is no trim at all, which falling through to seed_tail_trim gives for
-    free.
+    Delegates to ``reset_tail_trim``, which reseeds from scratch against the new window. If the
+    new window has no crash (and no guard fire), the correct outcome is no trim at all, which
+    reset_tail_trim gives for free.
 
     ``res`` is expected to have been computed with the STALE trim still in state (the caller
-    calls this before clearing anything) -- that's fine, because seed_tail_trim only reads
+    calls this before clearing anything) -- that's fine, because suggest_tail_trim_pick only reads
     ``res.resampled_full``/``res.t_shutin_s``/``res.resampled_full.guard_dt``, none of which are
     masked by ``tail_trim_dt`` (only ``res.resampled``/``res.diagnostics`` are; see the
     resample block in ``model.compute_all``)."""
     if state.tail_trim_reason != "low_pressure":
         return
-    state.tail_trim_dt = None
-    state.tail_trim_reason = ""
-    seed_tail_trim(state, td, res)
+    reset_tail_trim(state, td, res)
 
 
 def _seed_surface_pressure(state: PickState, td: TestData) -> Optional[np.ndarray]:

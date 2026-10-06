@@ -181,6 +181,13 @@ def _next_new_index(statuses: list[str], current_index: int) -> Optional[int]:
     return None
 
 
+def _drop_falloff_views(views: dict) -> None:
+    """The kept falloff changed length: drop stored falloff-step views so each one re-defaults
+    to the new kept range."""
+    for k in ("gfunction", "tangent", "loglog", "porepressure", "stiffness"):
+        views[k] = None
+
+
 def _isip_pick_in_minutes(pick: Optional[TangentPick],
                           t_shutin_s: float) -> Optional[TangentPick]:
     """Convert the stored apparent-ISIP tangent -- ``anchor_x`` in seconds-since-file-start
@@ -614,11 +621,15 @@ class DfitApp:
                                              command=self._on_injection_full_toggle)
         self.btn_injection_full.pack(anchor="w")
 
-        # Overview's manual-mask tool: one button that drops every analyst mask/keep band.
+        # Overview's tools: one button that drops every analyst mask/keep band, one that puts the
+        # tail-trim line back where the auto seed would place it.
         self.frm_masks = ttk.Frame(panel)
         self.btn_clear_masks = ttk.Button(self.frm_masks, text="Clear manual masks (0)",
                                           state="disabled", command=self._on_clear_masks)
         self.btn_clear_masks.pack(anchor="w")
+        self.btn_reset_trim = ttk.Button(self.frm_masks, text="Reset tail trim to auto",
+                                         state="disabled", command=self._on_reset_trim)
+        self.btn_reset_trim.pack(anchor="w", pady=(4, 0))
 
     def _show_queue(self):
         """Add the folder-mode sidebar as the leftmost pane -- `before=` re-slots it ahead
@@ -1814,6 +1825,7 @@ class DfitApp:
         if self.step == "overview":
             self.frm_masks.pack(side="bottom", fill="x", after=self.frm_notes)
             self._update_masks_button()
+            self._update_trim_button()
             self.frm_results.pack_forget()
             # Ahead of frm_notes in pack order (still drawn at the top): the issues list is the
             # only full list of blockers, so a short panel squeezes Notes instead of it.
@@ -1854,6 +1866,18 @@ class DfitApp:
 
     def _on_clear_masks(self):
         picks.clear_manual_masks(self.state)
+        self.refresh()
+
+    def _update_trim_button(self):
+        """Disable "Reset tail trim to auto" when the trim already sits where the seed puts it."""
+        auto = picks.tail_trim_is_auto(self.state, self.td, self.res)
+        self.btn_reset_trim.config(state="disabled" if auto else "normal")
+
+    def _on_reset_trim(self):
+        before = (self.state.tail_trim_dt, self.state.tail_guard_override)
+        picks.reset_tail_trim(self.state, self.td, self.res)
+        if (self.state.tail_trim_dt, self.state.tail_guard_override) != before:
+            _drop_falloff_views(self._views)
         self.refresh()
 
     def _twin_axes(self):
@@ -2261,10 +2285,7 @@ class DfitApp:
                     before = (self.state.tail_trim_dt, self.state.tail_guard_override)
                     picks.commit_tail_trim(self.state, dt, guard_dt)
                     if (self.state.tail_trim_dt, self.state.tail_guard_override) != before:
-                        # The kept falloff changed length: drop stored falloff-step views so
-                        # each one re-defaults to the new kept range.
-                        for k in ("gfunction", "tangent", "loglog", "porepressure", "stiffness"):
-                            self._views[k] = None
+                        _drop_falloff_views(self._views)
                     self.refresh()
 
                 ctrl = picks.DragLineController(self.canvas, self.ax,

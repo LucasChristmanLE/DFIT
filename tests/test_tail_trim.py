@@ -571,6 +571,83 @@ def test_resync_auto_tail_trim_clears_when_new_window_has_no_crash():
     assert st.tail_trim_reason == ""
 
 
+# --------------------------------------------------------------------------------------------------
+# picks.suggest_tail_trim_pick / reset_tail_trim / tail_trim_is_auto -- the Overview "Reset tail
+# trim to auto" button
+# --------------------------------------------------------------------------------------------------
+def test_suggest_tail_trim_pick_matches_seed_and_does_not_mutate():
+    td, st, res = _seeded_with_crash()
+    dt = picks.suggest_tail_trim_pick(st, td, res)
+    assert dt is not None
+    assert st.tail_trim_dt is None and st.tail_trim_reason == ""
+    picks.seed_tail_trim(st, td, res)
+    assert st.tail_trim_dt == pytest.approx(dt)
+
+
+def test_suggest_tail_trim_pick_none_on_clean_record():
+    td, st, res = _seeded_with_crash(zero_crash_at=None)
+    assert picks.suggest_tail_trim_pick(st, td, res) is None
+
+
+def test_reset_tail_trim_restores_auto_after_manual_drag():
+    td, st, res = _seeded_with_crash()
+    picks.seed_tail_trim(st, td, res)
+    auto_dt = st.tail_trim_dt
+    picks.commit_tail_trim(st, auto_dt / 2)
+    assert st.tail_trim_reason == ""
+    res = compute_all(st, td)
+
+    picks.reset_tail_trim(st, td, res)
+
+    assert st.tail_trim_dt == pytest.approx(auto_dt)
+    assert st.tail_trim_reason == "low_pressure"
+    assert st.tail_guard_override is False
+
+
+def test_reset_tail_trim_restores_auto_after_drag_to_end():
+    """Dragging the auto trim off the end leaves trim None, reason "" -- indistinguishable from
+    a record that never had an auto trim, so reset must not key off the reason."""
+    td, st, res = _seeded_with_crash()
+    picks.seed_tail_trim(st, td, res)
+    auto_dt = st.tail_trim_dt
+    picks.commit_tail_trim(st, None)
+    res = compute_all(st, td)
+
+    picks.reset_tail_trim(st, td, res)
+
+    assert st.tail_trim_dt == pytest.approx(auto_dt)
+    assert st.tail_trim_reason == "low_pressure"
+
+
+def test_reset_tail_trim_clears_manual_override_on_clean_record():
+    td, st, res = _seeded_with_crash(zero_crash_at=None)
+    picks.commit_tail_trim(st, 150.0, guard_dt=100.0)
+    assert st.tail_guard_override is True
+
+    picks.reset_tail_trim(st, td, res)
+
+    assert st.tail_trim_dt is None
+    assert st.tail_trim_reason == ""
+    assert st.tail_guard_override is False
+
+
+def test_tail_trim_is_auto_tracks_seed_drag_and_reset():
+    td, st, res = _seeded_with_crash()
+    picks.seed_tail_trim(st, td, res)
+    assert picks.tail_trim_is_auto(st, td, res)
+    picks.commit_tail_trim(st, st.tail_trim_dt / 2)
+    assert not picks.tail_trim_is_auto(st, td, res)
+    picks.reset_tail_trim(st, td, res)
+    assert picks.tail_trim_is_auto(st, td, res)
+
+
+def test_tail_trim_is_auto_on_clean_untrimmed_record():
+    td, st, res = _seeded_with_crash(zero_crash_at=None)
+    assert picks.tail_trim_is_auto(st, td, res)
+    picks.commit_tail_trim(st, 500.0)
+    assert not picks.tail_trim_is_auto(st, td, res)
+
+
 def test_injection_shutin_drag_resyncs_stale_auto_trim():
     """F1 end to end: driving the real ui.DfitApp._attach_controllers Injection-step wiring
     (the duck-typed-stub convention, per test_overview_trim.py's ``_stub``) rather than calling
