@@ -106,7 +106,6 @@ def test_field_step_mapping_matches_spec():
         "Shmin tangent": "tangent",
         "tc tangent (min)": "tangent",
         "net (tangent)": "tangent",
-        "delta closure": "tangent",
         "Shmin variable": "tangent",
         "Shmin Liberty": "gfunction",
         "tc variable (min)": "tangent",

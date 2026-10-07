@@ -12,6 +12,11 @@ def test_extra_eff_isip_rows_removed():
     assert "eff ISIP (variable)" not in ui.FIELD_STEP
 
 
+def test_delta_closure_not_in_sidebar():
+    assert "delta closure" not in ui.PANEL_FIELDS
+    assert "delta closure" not in ui.FIELD_STEP
+
+
 def test_net_pressure_rows_kept():
     for row in ("net (compliance)", "net (tangent)", "net (variable)"):
         assert row in ui.PANEL_FIELDS

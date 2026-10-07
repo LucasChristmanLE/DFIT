@@ -280,7 +280,7 @@ def test_save_all_step_pngs_writes_summary(tmp_path):
 
 # ---- ui: sidebar ---------------------------------------------------------------------------------
 def test_gradient_rows_gone_from_sidebar():
-    assert len(ui.PANEL_FIELDS) == 20
+    assert len(ui.PANEL_FIELDS) == 19
     assert not any("grad" in f for f in ui.PANEL_FIELDS)
     assert set(ui.FIELD_STEP) == set(ui.PANEL_FIELDS)
 

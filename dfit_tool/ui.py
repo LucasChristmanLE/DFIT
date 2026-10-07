@@ -99,7 +99,7 @@ GUIDE_TABS = [("closure", guide_content.CLOSURE_GUIDE), ("postclosure", guide_co
 _GUIDE_ASSETS = pathlib.Path(__file__).parent / "assets" / "guide"
 _LOGO_PATH = pathlib.Path(__file__).parent / "assets" / "liberty_logo.png"
 
-# The 20 result-panel rows, in display order -- module level (not just a literal inside
+# The 19 result-panel rows, in display order -- module level (not just a literal inside
 # _build_body) so FIELD_STEP below and tests can both refer to the same list.
 PANEL_FIELDS = [
     "te (min)", "Vinj (bbl)", "qmax (bpm)", "apparent ISIP",
@@ -108,16 +108,16 @@ PANEL_FIELDS = [
     "Shmin tangent", "Shmin variable", "Shmin Liberty",
     "tc compliance (min)", "tc tangent (min)", "tc variable (min)",
     "net (compliance)", "net (tangent)", "net (variable)",
-    "delta closure", "pore pressure",
+    "pore pressure",
     "Shmin stiffness",
 ]
+
 
 # Which step "owns" each panel field -- _update_panel shows "-" for a field whose step is still
 # not_visited, even if compute_all already produced a value for it (e.g. a value carried over
 # from a loaded JSON pick file the user hasn't actually visited yet this session). The three
 # variable-method rows are guarded in compute_all on both the contact and closure picks, so they
-# stay None (and display "-") until the gfunction step has actually been visited -- same
-# precedent as "delta closure" owning only "tangent".
+# stay None (and display "-") until the gfunction step has actually been visited.
 FIELD_STEP = {
     "te (min)": "injection",
     "Vinj (bbl)": "injection",
@@ -134,7 +134,6 @@ FIELD_STEP = {
     "Shmin tangent": "tangent",
     "tc tangent (min)": "tangent",
     "net (tangent)": "tangent",
-    "delta closure": "tangent",
     "Shmin variable": "tangent",
     "Shmin Liberty": "gfunction",
     "tc variable (min)": "tangent",
@@ -2702,7 +2701,6 @@ class DfitApp:
             "net (compliance)": s(r.net_pressure_compliance),
             "net (tangent)": s(r.net_pressure_tangent),
             "net (variable)": s(r.net_pressure_variable),
-            "delta closure": s(r.delta_closure),
             "pore pressure": s(r.pore_pressure),
             "Shmin stiffness": s(r.shmin_stiffness),
         }
