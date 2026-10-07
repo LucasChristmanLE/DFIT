@@ -1386,11 +1386,20 @@ def test_finish_exports_with_unapplied_edits_and_fresh_overview_view(tmp_path, m
     assert captured["views"]["overview"] is None
 
 
-def test_finish_keeps_overview_view_when_config_unchanged(tmp_path, monkeypatch):
+def test_finish_resets_overview_and_injection_zoom_only(tmp_path, monkeypatch):
+    """Finish restores the Overview and Injection default zoom before writing the PNGs (even
+    with config unchanged); every other step exports at the analyst's final zoom."""
     stub, entry, data_dir, entry2 = _finish_stub(tmp_path, folder_mode=True, monkeypatch=monkeypatch)
     captured = _capture_png_views(monkeypatch)
-    stub._views = {"overview": ui.plots.ViewState(xlim=(0.0, 1.0), ylim=(0.0, 100.0))}
+    zoomed = ui.plots.ViewState(xlim=(0.0, 1.0), ylim=(0.0, 100.0))
+    stub._views = {"overview": zoomed, "injection": zoomed, "gfunction": zoomed,
+                   "porepressure": zoomed}
 
     stub._finish()
 
-    assert captured["views"]["overview"] == ((0.0, 1.0), (0.0, 100.0), None)
+    assert captured["views"]["overview"] is None
+    assert captured["views"]["injection"] is None
+    assert captured["views"]["gfunction"] == ((0.0, 1.0), (0.0, 100.0), None)
+    assert captured["views"]["porepressure"] == ((0.0, 1.0), (0.0, 100.0), None)
+    assert stub._views["overview"] is None and stub._views["injection"] is None
+    assert stub._views["gfunction"] is zoomed

@@ -704,28 +704,36 @@ def suggest_contact_ca_fallback_index(
     dPdG: np.ndarray,
     min_idx: int,
     d2: Optional[np.ndarray] = None,
-    hi: Optional[float] = None,
+    strict: bool = True,
 ) -> Optional[int]:
     """C-A fallback contact for a dP/dG that never rises ``CLEAR_RISE_FRAC`` above the min: the
     inflection (nearest local max of d(dP/dG)/dG) on the rising limb, i.e. between the sample
-    right of ``min_idx`` and the hump, further capped at G = ``hi`` when given. The hump here is
-    the first interior local max of dP/dG right of the min, not ``suggest_hump_index``: that
-    picks the largest G*dP/dG over the whole curve, which can be a tall early hump left of a late
-    min (AEF Fed 05-61-34-5649B). When the span holds no d(dP/dG)/dG local max (a sparse rising
-    limb), the hump itself is returned. None unless ``min_idx`` is a genuine interior local min
-    (``_is_interior_local_min``) with a hump right of it (and within ``hi``). There is no
-    minimum-rise floor: the analyst chose C-A, and the effective ISIP stays anchored at the min."""
+    right of the limb's low point and the hump. The hump here is the first interior local max of
+    dP/dG right of ``min_idx``, not ``suggest_hump_index``: that picks the largest G*dP/dG over
+    the whole curve, which can be a tall early hump left of a late min (AEF Fed 05-61-34-5649B).
+    The low point is the lowest finite sample in ``[min_idx, hump]``: ``min_idx`` itself for a
+    genuine local min or a pick on the rising limb, the true min for a pick on the decline. When
+    the span holds no d(dP/dG)/dG local max (a sparse rising limb), the hump itself is returned.
+    None without a hump right of ``min_idx``. With ``strict`` (the scenario-change seed), also
+    None unless ``min_idx`` is a genuine interior local min (``_is_interior_local_min``); the
+    manual paths (triangle drag, Shift+drag window) pass ``strict=False``, since a hand-placed
+    triangle rarely lands on the exact local-min sample. There is no minimum-rise floor: the
+    analyst chose C-A, and the effective ISIP stays anchored at the min."""
     G = np.asarray(G, dtype=float)
     y = np.asarray(dPdG, dtype=float)
-    if not _is_interior_local_min(y, min_idx):
+    if not 0 <= min_idx < len(y):
+        return None
+    if strict and not _is_interior_local_min(y, min_idx):
         return None
     hump = next((i for i in range(min_idx + 1, len(y) - 1)
                  if np.isfinite(y[i - 1:i + 2]).all() and y[i] > y[i - 1] and y[i] >= y[i + 1]),
                 None)
-    if hump is None or (hi is not None and G[hump] > hi):
+    if hump is None:
         return None
+    seg = y[min_idx:hump + 1]
+    low = min_idx + int(np.argmin(np.where(np.isfinite(seg), seg, np.inf)))
     idx = suggest_contact_inflection_index(
-        G, y, d2=d2, g_range=(float(G[min_idx + 1]), float(G[hump])), seed=float(G[min_idx]))
+        G, y, d2=d2, g_range=(float(G[low + 1]), float(G[hump])), seed=float(G[low]))
     return hump if idx is None else idx
 
 

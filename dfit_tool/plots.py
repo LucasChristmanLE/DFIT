@@ -1282,7 +1282,7 @@ def render_summary(fig: Figure, state: PickState, res: DerivedResults) -> None:
 
 def save_all_step_pngs(out_dir: str, td: TestData, state: PickState, res: DerivedResults,
                        views: dict[str, Optional[tuple]], dpi: int = 150) -> list[str]:
-    """Render every step's current view to a numbered PNG in ``out_dir``, in ``STEP_KEYS``
+    """Render every step's view (``views[key]``, default when None) to a numbered PNG in ``out_dir``, in ``STEP_KEYS``
     order, then the Expanded-results chart as ``<n+1>_summary.png`` (always written).
     Returns the written paths in that order. Steps the workflow leaves out
     (``skipped_steps``; PC-F/PC-X drop porepressure and stiffness) are omitted, but the numbering

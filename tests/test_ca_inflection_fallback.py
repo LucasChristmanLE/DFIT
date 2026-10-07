@@ -49,10 +49,14 @@ def test_fallback_none_when_min_not_interior():
     assert interpret.suggest_contact_ca_fallback_index(G, dPdG, 0) is None
 
 
-def test_fallback_hi_caps_search():
+def test_fallback_non_strict_accepts_off_min_pick():
     G, dPdG = _small_rise_curve()
-    min_idx = int(np.argmin(dPdG))
-    assert interpret.suggest_contact_ca_fallback_index(G, dPdG, min_idx, hi=6.0) is None
+    off = int(np.argmin(np.abs(G - 5.3)))
+    assert interpret.suggest_contact_ca_fallback_index(G, dPdG, off) is None
+    idx = interpret.suggest_contact_ca_fallback_index(G, dPdG, off, strict=False)
+    assert idx is not None and abs(G[idx] - 7.0) < 0.1
+    mG, my = _monotonic()
+    assert interpret.suggest_contact_ca_fallback_index(mG, my, 100, strict=False) is None
 
 
 # picks -------------------------------------------------------------------------------------
@@ -82,11 +86,46 @@ def test_window_ca_small_rise_sets_inflection_contact():
     assert abs(state.contact_G - 7.0) < 0.1
 
 
-def test_window_ca_inflection_search_capped_at_window_hi():
+def test_window_ca_inflection_found_past_window_hi():
+    # The window locates the min; the contact search runs right of it, like the +10% rule.
     G, dPdG = _small_rise_curve()
     state = PickState(closure_scenario="C-A clear", min_dpdg_G=1.0, contact_G=9.0)
     hint = picks.handle_min_dpdg_window(state, _res_with(G, dPdG), 4.0, 6.0)
-    assert hint == picks._CA_NO_RISE_HINT
+    assert hint == picks._CA_INFLECTION_HINT
+    assert abs(state.min_dpdg_G - 5.0) < 0.1
+    assert abs(state.contact_G - 7.0) < 0.1
+
+
+def test_window_ca_min_at_window_edge_still_falls_back():
+    # A window drawn on the rising limb: its min is the left edge, not an interior local min.
+    G, dPdG = _small_rise_curve()
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=1.0)
+    hint = picks.handle_min_dpdg_window(state, _res_with(G, dPdG), 5.5, 6.5)
+    assert hint == picks._CA_INFLECTION_HINT
+    assert abs(state.min_dpdg_G - 5.5) < 0.1
+    assert abs(state.contact_G - 7.0) < 0.1
+
+
+def test_drag_ca_off_min_sample_still_falls_back():
+    # A dragged triangle rarely lands on the exact local-min sample.
+    G, dPdG = _small_rise_curve()
+    res = _res_with(G, dPdG)
+    for g in (4.6, 5.3):
+        state = PickState(closure_scenario="C-A clear", min_dpdg_G=g)
+        hint = picks.re_derive_contact_from_min(state, res, manual=True)
+        assert hint == picks._CA_INFLECTION_HINT, g
+        assert state.min_dpdg_G == g
+        assert abs(state.contact_G - 7.0) < 0.1, g
+
+
+def test_manual_ca_monotonic_still_clears():
+    G, dPdG = _monotonic()
+    res = _res_with(G, dPdG)
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=5.0, contact_G=1.0)
+    assert picks.re_derive_contact_from_min(state, res, manual=True) == picks._CA_NO_RISE_HINT
+    assert state.contact_G is None
+    state = PickState(closure_scenario="C-A clear", min_dpdg_G=1.0, contact_G=1.0)
+    assert picks.handle_min_dpdg_window(state, res, 4.0, 6.0) == picks._CA_NO_RISE_HINT
     assert state.contact_G is None
 
 

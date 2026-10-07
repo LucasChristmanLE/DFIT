@@ -196,7 +196,9 @@ Preserve these when changing the code.
   (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
   `full_y2` on every non-gfunction step.
   Apply drops the stored Overview view so its default (which spans converted BHP) applies;
-  Next/Skip on Overview and Finish do the same when the synced config or pressure unit changed.
+  Next/Skip on Overview do the same when the synced config or pressure unit changed. Finish
+  always drops the Overview and Injection views before the PNG export; other steps export at the
+  analyst's zoom.
   Default y-limits round outward to tick values (`plots.nice_limits`, 1/2/2.5/5 x 10^k steps;
   `nice_log_limits` rounds the stiffness log axis to decades).
 - **Hit-test through own-axes pixel transforms, never `event.inaxes`** (a `twinx` owns `inaxes`
@@ -330,7 +332,9 @@ is drawn (and draggable) on the stiffness step only.
   C-B, all three paths (select, drag, Shift+drag) snap the triangle onto the inflection found.
   Under C-A, a min that never rises 10% but is a genuine interior local min puts `contact_G` at
   the dP/dG inflection right of it (`interpret.suggest_contact_ca_fallback_index`, no minimum-rise
-  floor); the effective ISIP stays anchored at the min. With no interior min or no inflection,
+  floor); the effective ISIP stays anchored at the min. The local-min test applies only to the
+  scenario seed; a dragged triangle or Shift+drag window (`strict=False`) falls back from wherever
+  it lands, and the window does not cap the contact search. With no interior min or no inflection,
   `contact_G` is cleared and no compliance Shmin is reported. `compute_all` derives
   `DerivedResults.contact_method` from `PickState.contact_rule` (`rise10`/`inflection`/None; logged as `contact_method`) and adds a warning on the fallback; `picks.gfunction_alert_text` drives the
   orange bold `ui.alert_lbl` above the hint on the gfunction step. Auto-C-A is unchanged.

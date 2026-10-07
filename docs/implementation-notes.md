@@ -615,8 +615,10 @@ JSON never raises. `step_status` (the breadcrumb history) rides along in the sam
 
 On the last step (`porepressure`) the stepbar's "Next >" button becomes a bolded "Finish"
 button (`ui.py:_advance`/`_update_stepbar`). One click (`ui.py:_finish`) saves picks and
-writes a PNG of all step plots, in their current zoom state, to a `<stem> DFIT plots/`
-subfolder next to the loaded data file. In single-file mode (`current_entry` is None) that is
+writes a PNG of all step plots to a `<stem> DFIT plots/` subfolder next to the loaded data
+file. Finish first resets the Overview and Injection stored views (`ui._views`) to None, so
+those two PNGs always show the whole record and the whole injection window. Every other step
+exports at the analyst's final zoom. In single-file mode (`current_entry` is None) that is
 byte-for-byte the original behavior: picks re-save to `<stem>_picks.json`, no log write. In
 folder mode, picks save through `store.save_picks_for` instead (no `<stem>_picks.json`
 duplicate), Finish also upserts and writes the current test's `dfit_log.csv` row
@@ -1535,8 +1537,14 @@ C-A inflection fallback. When dP/dG never rises 10% above the picked min but the
 interior local min (`interpret._is_interior_local_min`, the trio test `is_clear_closure` also
 uses), the contact goes to the dP/dG inflection on the rising limb right of the min
 (`interpret.suggest_contact_ca_fallback_index`: `suggest_contact_inflection_index` with
-`g_range=(G[min+1], hi)` and `seed=G[min]`; `hi` is the Shift+drag window's upper edge, else the
-last sample), and never past the hump: the first interior local max of dP/dG right of the min.
+`g_range=(G[low+1], G[hump])` and `seed=G[low]`), never past the hump: the first interior local
+max of dP/dG right of the min. `low` is the lowest finite sample in `[min, hump]`. The
+local-min requirement applies only to the scenario-change seed (`strict=True`). The triangle
+drag (`re_derive_contact_from_min(manual=True)`) and the Shift+drag window pass `strict=False`:
+a hand-placed triangle rarely lands on the exact local-min sample, and a window on the rising
+limb puts its min at the left edge. Both used to clear the contact even though the auto-seed
+fell back. The window path is also no longer capped at the window's upper edge; the window
+locates the min, and the contact search runs right of it the same as the +10% rule.
 Not `suggest_hump_index`: on AEF Fed 05-61-34-5649B its largest-G*dP/dG hump is an early one (resampled
 index 7), left of the min at G = 5.4, so the fallback found nothing. The search span is
 `G[min+1]..G[hump]`, and a sparse rising limb with no d(dP/dG)/dG local max there returns the hump

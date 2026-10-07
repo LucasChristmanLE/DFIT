@@ -1443,7 +1443,8 @@ def apply_closure_scenario(state: PickState, res: DerivedResults) -> Optional[st
     return re_derive_contact_from_min(state, res)
 
 
-def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optional[str]:
+def re_derive_contact_from_min(state: PickState, res: DerivedResults,
+                               manual: bool = False) -> Optional[str]:
     """Re-derive the contact pick from the current ``state.min_dpdg_G`` under the active closure
     scenario. Under C-A the min-dP/dG marker stays put; under C-B it snaps onto the inflection.
 
@@ -1460,8 +1461,10 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         dP/dG never rises 10% but the min is a genuine interior local min, the contact is the
         inflection on the rising limb right of it (``interpret.suggest_contact_ca_fallback_index``;
         Arkansas 1BH, a 1.9% rise) and ``_CA_INFLECTION_HINT`` is returned; the min stays put, so
-        the effective ISIP stays anchored there. With no such min or inflection, ``contact_G`` is
-        cleared: a leftover seed (the hump) would otherwise report a compliance Shmin the rule
+        the effective ISIP stays anchored there. ``manual=True`` (the triangle-drag commit) drops
+        the genuine-local-min requirement, so a drag one sample off the min, or onto either
+        limb, still falls back (``strict=False``). With no such min or inflection, ``contact_G``
+        is cleared: a leftover seed (the hump) would otherwise report a compliance Shmin the rule
         rejected.
       - C-B adequate: the interior inflection of d2P/dG2 nearest the dragged seed. Both the
         contact and the triangle move to it; on no inflection, the triangle stays and
@@ -1483,7 +1486,7 @@ def re_derive_contact_from_min(state: PickState, res: DerivedResults) -> Optiona
         idx = interpret.suggest_contact_clear_index(dg.dPdG, min_idx)
         if idx is None:
             idx = interpret.suggest_contact_ca_fallback_index(
-                dg.G, dg.dPdG, min_idx, d2=dg.d2PdG2)
+                dg.G, dg.dPdG, min_idx, d2=dg.d2PdG2, strict=not manual)
             if idx is None:
                 state.contact_G = None
                 state.contact_rule = ""
@@ -1529,9 +1532,11 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         (``interpret.min_index_in_window``) becomes the triangle; the +10%-rise contact rule
         (``interpret.suggest_contact_clear_index``) then runs from *that* index (unmasked, right
         of it), same as ``re_derive_contact_from_min``'s C-A branch -- just seeded from the
-        window-found min instead of a g_min-masked search. When it never rises 10% but the
-        window's min is a genuine interior local min, the contact is the inflection right of it,
-        searched no further than ``hi`` (``interpret.suggest_contact_ca_fallback_index``).
+        window-found min instead of a g_min-masked search. When it never rises 10%, the contact
+        is the inflection right of the window's min (``interpret.suggest_contact_ca_fallback_index``
+        with ``strict=False``): the window's min need not be an interior local min (a window on
+        the rising limb puts it at the left edge), and the search is not capped at ``hi``, the
+        same as the +10% rule. The window locates the min, not the contact.
       - C-B adequate: the dP/dG inflection within the window
         (``interpret.suggest_contact_inflection_index`` with ``g_range``) IS the contact -- both
         picks are set to it directly, with no further re-derive over the (possibly sub-1.0)
@@ -1560,7 +1565,7 @@ def handle_min_dpdg_window(state: PickState, res: DerivedResults, lo: float,
         contact_idx = interpret.suggest_contact_clear_index(dg.dPdG, idx)
         if contact_idx is None:
             contact_idx = interpret.suggest_contact_ca_fallback_index(
-                dg.G, dg.dPdG, idx, d2=dg.d2PdG2, hi=hi)
+                dg.G, dg.dPdG, idx, d2=dg.d2PdG2, strict=False)
             if contact_idx is None:
                 state.contact_G = None
                 state.contact_rule = ""

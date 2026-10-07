@@ -2398,7 +2398,7 @@ class DfitApp:
                     # _on_scenario (ui.py:438-464) -- refresh() resets hint_lbl to the step's
                     # default text, so a re-derive failure hint must be applied after it.
                     picks.commit_min_dpdg_point(self.state, x)
-                    hint = picks.re_derive_contact_from_min(self.state, res)
+                    hint = picks.re_derive_contact_from_min(self.state, res, manual=True)
                     self.refresh()
                     if hint:
                         self.hint_lbl.config(text=hint)
@@ -2719,7 +2719,7 @@ class DfitApp:
         skipped step still reports skipped overall.
 
         Single-file mode (current_entry is None): byte-for-byte today's behavior -- re-save the
-        picks JSON next to the data file and write a PNG per step (current zoom) into a sibling
+        picks JSON next to the data file and write a PNG per step (default zoom on Overview and Injection, current zoom elsewhere) into a sibling
         subfolder; no log, no advance. Folder mode: save picks via store.save_picks_for (the
         store path is the single ground truth in folder mode -- no <stem>_picks.json
         duplicate), same PNG export, the dfit_log.csv row write, then _advance_queue() to the
@@ -2740,10 +2740,11 @@ class DfitApp:
         self.state.explicit_status = None
         # Capture any unapplied entry-widget edits before refreshing, so self.res (feeding the
         # PNG export and, in folder mode, the log row below) reflects the synced state.
-        before_scale = self._overview_scale_key()
         self._sync_state_from_widgets()
-        if self._overview_scale_key() != before_scale:
-            self._views["overview"] = None  # same as Apply, so 1_overview.png spans the new trace
+        # Overview and Injection export at their default zoom (the whole record and the whole
+        # injection); every other step keeps the analyst's final zoom.
+        self._views["overview"] = None
+        self._views["injection"] = None
         self.refresh()  # ensure current-step view stored in _views and self.res fresh
         self.state.notes = self.txt_notes.get("1.0", "end").strip()
         entry = self.current_entry
