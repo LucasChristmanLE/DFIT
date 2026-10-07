@@ -560,3 +560,77 @@ def test_render_gfunction_returns_black_and_red_colors():
     defaults = plots.render_gfunction(ax, td, st, res)
     assert defaults.y_color == (C.PRESSURE if res.pressure_is_bhp else C.SURFACE_PRESSURE)
     assert defaults.y2_color == C.DERIVATIVE
+
+
+# --------------------------------------------------------------------------------------------------
+# typed bound commit (DfitApp._commit_bound): in range -> set_val, out of range -> store + refresh
+# --------------------------------------------------------------------------------------------------
+def _commit_stub():
+    stub = _make_app_stub()
+    stub.refreshes = 0
+
+    def _refresh():
+        stub.refreshes += 1
+    stub.refresh = _refresh
+    stub._commit_bound = types.MethodType(DfitApp._commit_bound, stub)
+    view = ViewState(xlim=(2.0, 8.0), ylim=(1.0, 9.0), y2lim=None)
+    stub._build_sliders(full_x=(0.0, 10.0), full_y=(0.0, 10.0), full_y2=None, view=view, twin=None)
+    return stub, view
+
+
+def test_commit_bound_in_range_sets_slider_without_refresh():
+    stub, view = _commit_stub()
+    s = stub._y_slider
+    assert stub._commit_bound(s, "hi", "6", False, lambda lo, hi: setattr(view, "ylim", (lo, hi)))
+    assert s.val == pytest.approx((1.0, 6.0))
+    assert view.ylim == pytest.approx((1.0, 6.0))
+    assert stub.ax.get_ylim() == pytest.approx((1.0, 6.0))
+    assert stub.refreshes == 0
+
+
+def test_commit_bound_out_of_range_stores_view_and_refreshes():
+    stub, view = _commit_stub()
+    store = lambda lo, hi: setattr(view, "ylim", (lo, hi))
+    assert stub._commit_bound(stub._y_slider, "hi", "25", False, store)
+    assert view.ylim == pytest.approx((1.0, 25.0))
+    assert stub.refreshes == 1
+
+
+def test_commit_bound_invalid_text_changes_nothing():
+    stub, view = _commit_stub()
+    store = lambda lo, hi: setattr(view, "ylim", (lo, hi))
+    assert not stub._commit_bound(stub._y_slider, "lo", "oops", False, store)
+    assert not stub._commit_bound(stub._y_slider, "lo", "9.5", False, store)  # lo >= hi
+    assert view.ylim == (1.0, 9.0) and stub.refreshes == 0
+
+
+def test_commit_bound_log_axis_converts_to_slider_space():
+    stub = _make_app_stub()
+    stub.refresh = lambda: None
+    stub._commit_bound = types.MethodType(DfitApp._commit_bound, stub)
+    stub.ax.set_yscale("log")
+    view = ViewState(xlim=(0.0, 1.0), ylim=(10.0, 1000.0), y2lim=None)
+    s = stub._make_range_slider(
+        rect=[0.9, 0.16, 0.02, 0.74], orientation="vertical", full_range=(1.0, 10000.0),
+        cur_range=(10.0, 1000.0), scale="log", apply=lambda lo, hi: stub.ax.set_ylim(lo, hi),
+        store=lambda lo, hi: setattr(view, "ylim", (lo, hi)))
+    assert stub._commit_bound(s, "lo", "100", True, lambda lo, hi: setattr(view, "ylim", (lo, hi)))
+    assert s.val == pytest.approx((2.0, 3.0))
+    assert view.ylim == pytest.approx((100.0, 1000.0))
+
+
+def test_attach_slider_cursors_joins_existing_hover_controller_or_adds_one():
+    from dfit_tool import picks
+    stub, _ = _commit_stub()
+    stub._attach_slider_cursors = types.MethodType(DfitApp._attach_slider_cursors, stub)
+    sentinel = types.SimpleNamespace(hover_kind=lambda e: None, active_kind=lambda: None)
+    hc = picks.HoverCursorController(stub.canvas, [sentinel])
+    stub._controllers = [hc]
+    stub._attach_slider_cursors()
+    assert hc.controllers == [stub._x_slider, stub._y_slider, sentinel]
+    assert stub._controllers == [hc]
+
+    stub._controllers = []
+    stub._attach_slider_cursors()
+    assert len(stub._controllers) == 1
+    assert stub._controllers[0].controllers == [stub._x_slider, stub._y_slider]

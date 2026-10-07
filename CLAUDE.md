@@ -191,7 +191,11 @@ Preserve these when changing the code.
   renderer's `ViewDefaults.ylim` is unioned into `full_y` (the slider's outer range), or
   `_make_range_slider`'s valinit clamping snaps the view off the default on first touch.
   Gfunction replaces `full_y` instead; its dP/dG slider range is the twin autoscale unioned with
-  the default, then clamped to `(0, DPDG_VIEW_MAX)`.
+  the default, then clamped to `(0, DPDG_VIEW_MAX)`. A stored view is then unioned into each
+  outer range (after that clamp), so a typed limit past the data stays inside its slider.
+  Clicking a slider's lo/hi value text opens a Tk Entry over it (`ui._open_bound_editor`;
+  `sliders.parse_typed_bound` validates); an in-range value goes through `set_val`, an
+  out-of-range one stores the view and calls `refresh()` (a Tk event, not a slider callback).
   Rate axes (overview, injection, isip) default to 0..3x the max rate plotted on that step
   (`plots.RATE_VIEW_FACTOR`, `_rate_y2lim`) so the rate trace rides low; the default is unioned into
   `full_y2` on every non-gfunction step.

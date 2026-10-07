@@ -465,6 +465,8 @@ def _refresh_stub(td, state, step):
     stub._measure_slider_text_col_px = types.MethodType(
         DfitApp._measure_slider_text_col_px, stub)
     stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
+    stub._close_bound_editor = types.MethodType(DfitApp._close_bound_editor, stub)
+    stub._attach_slider_cursors = lambda: None
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     return stub
 
@@ -685,3 +687,28 @@ def test_apply_step_view_applies_fresh_y3lim_to_d2_axis_and_never_treats_it_as_t
     sv = plots.apply_step_view("gfunction", ax, ViewDefaults(y3lim=(-5.0, 5.0)))
     assert sv.twin is None and sv.full_y2 is None
     assert d2.get_ylim() == (-5.0, 5.0)
+
+
+def test_apply_step_view_unions_stored_view_outside_autoscale_into_full_ranges():
+    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 2.0))
+    stored = ViewState(xlim=(-5.0, 20.0), ylim=(50.0, 300.0), y2lim=(0.0, 7.0))
+    sv = plots.apply_step_view("tangent", ax, ViewDefaults(), stored)
+    assert sv.full_x[0] == -5.0 and sv.full_x[1] == 20.0
+    assert sv.full_y[0] == 50.0 and sv.full_y[1] == 300.0
+    assert sv.full_y2[0] == 0.0 and sv.full_y2[1] == 7.0
+
+
+def test_apply_step_view_stored_view_inside_leaves_full_ranges_unchanged():
+    ax, twin = _two_axis_figure()
+    full_x, full_y, full_y2 = ax.get_xlim(), ax.get_ylim(), twin.get_ylim()
+    stored = ViewState(xlim=(3.0, 4.0), ylim=(1.0, 2.0), y2lim=(0.5, 1.0))
+    sv = plots.apply_step_view("tangent", ax, ViewDefaults(), stored)
+    assert (sv.full_x, sv.full_y, sv.full_y2) == (full_x, full_y, full_y2)
+
+
+def test_apply_step_view_gfunction_stored_y2_above_view_max_widens_full_y2():
+    ax, twin = _two_axis_figure(y=(100.0, 200.0), y2=(1.0, 5000.0))
+    stored = ViewState(xlim=(0.0, 10.0), ylim=(120.0, 180.0), y2lim=(0.0, 3000.0))
+    sv = plots.apply_step_view("gfunction", ax, ViewDefaults(ylim=(120.0, 180.0)), stored)
+    assert sv.full_y == (120.0, 180.0)
+    assert sv.full_y2 == (0.0, 3000.0)

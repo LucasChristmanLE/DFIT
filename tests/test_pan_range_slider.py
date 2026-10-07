@@ -187,3 +187,74 @@ def test_log_bounds_clamps_nonpositive_floor():
     lo, hi = to_log_bounds(-5.0, 0.0)
     assert lo == pytest.approx(-12.0)  # log10(1e-12)
     assert hi == pytest.approx(-12.0)
+
+
+# --------------------------------------------------------------------------------------------------
+# click a split value text to type a bound
+# --------------------------------------------------------------------------------------------------
+def _text_center(text):
+    bb = text.get_window_extent()
+    return (bb.x0 + bb.x1) / 2.0, (bb.y0 + bb.y1) / 2.0
+
+
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+@pytest.mark.parametrize("which", ["lo", "hi"])
+def test_press_on_value_text_calls_callback_and_moves_nothing(orientation, which):
+    canvas, slider = _narrow(orientation, valinit=(2.0, 8.0))
+    clicks = []
+    slider.on_text_click(clicks.append)
+    text = slider._lo_text if which == "lo" else slider._hi_text
+    x, y = _text_center(text)
+    slider._update(_event("button_press_event", canvas, x, y))
+    assert clicks == [which]
+    assert slider.val == pytest.approx((2.0, 8.0))
+    assert slider.drag_active is False and slider._pan_active is False
+
+
+def test_press_on_value_text_with_no_callback_keeps_stock_behavior():
+    canvas, slider = _narrow("vertical", valinit=(0.0, 10.0))
+    bb = slider.ax.bbox
+    # Same press as test_press_just_past_top_end_grabs_hi_thumb_at_valmax: still a thumb grab.
+    slider._update(_event("button_press_event", canvas, (bb.x0 + bb.x1) / 2.0, bb.y1 + 5.0))
+    assert slider.drag_active is True
+
+
+def test_press_on_track_does_not_call_text_callback():
+    canvas, slider = _built()
+    clicks = []
+    slider.on_text_click(clicks.append)
+    _press_move_release(slider, canvas, [5.0])
+    assert clicks == [] and slider._pan_active is True
+
+
+def test_hover_kind_reports_value_over_text_only():
+    canvas, slider = _narrow("horizontal", valinit=(2.0, 8.0))
+    x, y = _text_center(slider._hi_text)
+    assert slider.hover_kind(_event("motion_notify_event", canvas, x, y)) == "value"
+    px, py = _px_for_value(slider, 5.0)
+    assert slider.hover_kind(_event("motion_notify_event", canvas, px, py)) is None
+    assert slider.active_kind() is None
+
+
+@pytest.mark.parametrize("text, which, is_log, expected", [
+    ("5", "lo", False, (5.0, 8.0)),
+    (" 1,250 ", "hi", False, (2.0, 1250.0)),
+    ("-3", "lo", False, (-3.0, 8.0)),
+    ("1e1", "hi", False, (2.0, 10.0)),
+    ("abc", "lo", False, None),
+    ("", "lo", False, None),
+    ("inf", "hi", False, None),
+    ("nan", "lo", False, None),
+    ("8", "lo", False, None),       # lo == hi
+    ("1", "hi", False, None),       # hi < lo
+    ("0", "lo", True, None),        # log axis needs > 0
+    ("-1", "lo", True, None),
+    ("0.5", "lo", True, (0.5, 8.0)),
+])
+def test_parse_typed_bound(text, which, is_log, expected):
+    from dfit_tool.sliders import parse_typed_bound
+    got = parse_typed_bound(text, which, 2.0, 8.0, is_log)
+    if expected is None:
+        assert got is None
+    else:
+        assert got == pytest.approx(expected)

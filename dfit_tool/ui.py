@@ -20,6 +20,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 
+import matplotlib.colors as mcolors
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -263,6 +264,7 @@ class DfitApp:
         self._x_slider: Optional[sliders.PanRangeSlider] = None
         self._y_slider: Optional[sliders.PanRangeSlider] = None
         self._y2_slider: Optional[sliders.PanRangeSlider] = None
+        self._bound_editor: Optional[tk.Entry] = None  # typed lo/hi slider bound
         self._guide_win: Optional[tk.Toplevel] = None
         self._results_win: Optional[tk.Toplevel] = None  # Expanded results window
         self._guide_tab_index: dict[str, int] = {}
@@ -1740,6 +1742,7 @@ class DfitApp:
         if redirected:
             self.step = "overview"
 
+        self._close_bound_editor()  # fig.clf() destroys the slider it edits
         self.fig.clf()
         self.ax = self.fig.add_subplot(111)
         kwargs = {"full_record": self._injection_full} if self.step == "injection" else {}
@@ -1757,6 +1760,7 @@ class DfitApp:
         # let the sliders sit on top of the twin's tick labels once the figure got narrow.
         self._layout_sliders()
         self._attach_controllers()
+        self._attach_slider_cursors()
         self.canvas.draw_idle()
         self._update_stepbar()
         self._update_panel_visibility()
@@ -2015,12 +2019,104 @@ class DfitApp:
             self.canvas.draw_idle()
 
         slider.on_changed(_on_changed)
+        slider.on_text_click(lambda which: self._open_bound_editor(slider, which, is_log, store))
         return slider
+
+    def _commit_bound(self, slider, which, text, is_log, store) -> bool:
+        """Apply a typed ``which`` ("lo"/"hi") bound. In the slider's range it goes through
+        ``set_val`` (its ``on_changed`` applies, stores, and redraws); past it, the view is
+        stored and ``refresh()`` rebuilds the slider around it (``apply_step_view`` unions a
+        stored view into the outer range). A Tk event, not a slider callback, so refresh() is
+        safe here. Returns False, changing nothing, when ``sliders.parse_typed_bound`` rejects
+        the text."""
+        lo, hi = slider.val
+        if is_log:
+            lo, hi = sliders.from_log_bounds(lo, hi)
+        new = sliders.parse_typed_bound(text, which, lo, hi, is_log)
+        if new is None:
+            return False
+        s_lo, s_hi = sliders.to_log_bounds(*new) if is_log else new
+        if slider.valmin <= s_lo and s_hi <= slider.valmax:
+            slider.set_val((s_lo, s_hi))
+        else:
+            store(*new)
+            self.refresh()
+        return True
+
+    def _open_bound_editor(self, slider, which, is_log, store):
+        """A small Entry over the clicked lo/hi value text, prefilled and selected. Enter
+        commits (an invalid value beeps and stays open); Escape or clicking away cancels."""
+        self._close_bound_editor()
+        text = slider._lo_text if which == "lo" else slider._hi_text
+        bb = text.get_window_extent()
+        dpi_scale = self.fig.dpi / _LAYOUT_DPI_REF
+        fig_w, fig_h = self.fig.bbox.width, self.fig.bbox.height
+        w = max(bb.width + 12.0 * dpi_scale, 56.0 * dpi_scale)
+        h = bb.height + 8.0 * dpi_scale
+        ha = text.get_horizontalalignment()
+        x0 = {"left": bb.x0, "right": bb.x1 - w}.get(ha, (bb.x0 + bb.x1 - w) / 2.0)
+        x0 = min(max(x0, 0.0), max(fig_w - w, 0.0))
+        y0 = fig_h - (bb.y0 + bb.y1 + h) / 2.0  # Tk y runs top-down
+
+        font = tkfont.nametofont("TkDefaultFont").copy()
+        font.configure(size=8)
+        widget = self.canvas.get_tk_widget()
+        entry = tk.Entry(widget, font=font,
+                         fg=mcolors.to_hex(text.get_color()), relief="solid", bd=1,
+                         highlightthickness=0,
+                         justify={"left": "left", "right": "right"}.get(ha, "center"))
+        entry._font = font  # Tk keeps no strong ref
+        shown = text.get_text()
+        entry.insert(0, shown)
+        entry.select_range(0, "end")
+        entry.place(x=x0, y=y0, width=w, height=h)
+        entry.focus_set()
+        self._bound_editor = entry
+
+        def _commit(_e):
+            typed = entry.get()
+            # The prefill is the rounded display string; Enter on it untouched is a cancel,
+            # not a snap of the view to the rounded value.
+            if typed.strip() == shown or self._commit_bound(slider, which, typed, is_log, store):
+                self._close_bound_editor()
+            else:
+                entry.bell()
+                entry.select_range(0, "end")
+            return "break"
+
+        entry.bind("<Return>", _commit)
+        entry.bind("<KP_Enter>", _commit)
+        entry.bind("<Escape>", lambda _e: self._close_bound_editor())
+        # Bound after idle so a focus shuffle from the opening click can't close it at once.
+        # Scheduled on the canvas widget: destroying the entry would orphan its own callback.
+        widget.after_idle(lambda: self._bound_editor is entry and entry.bind(
+            "<FocusOut>", lambda _e: self._close_bound_editor()))
+
+    def _close_bound_editor(self):
+        """Destroy the open lo/hi bound Entry, if any. Idempotent."""
+        entry = getattr(self, "_bound_editor", None)
+        self._bound_editor = None
+        if entry is not None:
+            entry.destroy()
+
+    def _attach_slider_cursors(self):
+        """Hand cursor over a slider's lo/hi value text. The sliders join every step
+        HoverCursorController (first in its list) so a single owner sets the cursor; a step with
+        none gets a slider-only one."""
+        present = [s for s in (self._x_slider, self._y_slider, self._y2_slider) if s is not None]
+        if not present:
+            return
+        hovers = [c for c in self._controllers if isinstance(c, picks.HoverCursorController)]
+        for hc in hovers:
+            hc.controllers[:0] = present
+        if not hovers:
+            self._controllers.append(picks.HoverCursorController(self.canvas, present))
 
     def _on_canvas_resize(self, event):
         """Canvas resize_event hook (connected once in __init__): re-run the pixel-based slider
         layout so the sliders track the twin axis's tick labels as the window is resized, then
         redraw. Never calls refresh() (see the connection comment in __init__)."""
+        self._close_bound_editor()  # its placement would be stale
         self._layout_sliders()
         self.canvas.draw_idle()
 

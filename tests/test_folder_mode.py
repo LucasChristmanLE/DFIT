@@ -1265,6 +1265,8 @@ def _skip_test_real_refresh_stub(tmp_path):
     stub._measure_slider_text_col_px = types.MethodType(
         DfitApp._measure_slider_text_col_px, stub)
     stub._reconcile_pp_axis = types.MethodType(DfitApp._reconcile_pp_axis, stub)
+    stub._close_bound_editor = types.MethodType(DfitApp._close_bound_editor, stub)
+    stub._attach_slider_cursors = lambda: None
     stub.refresh = types.MethodType(DfitApp.refresh, stub)
     stub._refresh_calls = []
     stub._refresh_queue_row = lambda e: stub._refresh_calls.append(e)

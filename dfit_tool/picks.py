@@ -40,6 +40,7 @@ _HOVER_CURSORS = {
     "end": Cursors.HAND,                   # rotate about the anchor
     "line": Cursors.RESIZE_HORIZONTAL,     # drag a vertical injection-start/shut-in line
     "point": Cursors.HAND,                 # drag a contact/closure marker
+    "value": Cursors.HAND,                 # click a slider's lo/hi value text to type it
 }
 
 

@@ -1075,8 +1075,10 @@ def apply_step_view(step_key: str, ax, defaults: ViewDefaults,
     clamps full_y2 to 0..``DPDG_VIEW_MAX`` after the union.
 
     The view is ``stored`` unchanged when given (pan/zoom survives a recompute), else each axis's
-    default, falling back to its outer range. The d2P/dG2 axis gets ``defaults.y3lim`` fresh
-    every call and is never part of the stored view (decision D3)."""
+    default, falling back to its outer range. A stored view is also unioned into the outer ranges
+    (after the gfunction replace/clamp), so a limit typed past the data stays inside its slider.
+    The d2P/dG2 axis gets ``defaults.y3lim`` fresh every call and is never part of the stored
+    view (decision D3)."""
     def union(a, b):
         return (min(a[0], b[0]), max(a[1], b[1]))
 
@@ -1096,6 +1098,13 @@ def apply_step_view(step_key: str, ax, defaults: ViewDefaults,
         if gfunction:
             full_y2 = (max(full_y2[0], 0.0), min(full_y2[1], DPDG_VIEW_MAX))
 
+    if stored is not None:
+        # A stored view (e.g. a typed limit past the data) widens its slider's outer range, so the
+        # slider never clamps a view the analyst chose.
+        full_x = union(full_x, stored.xlim)
+        full_y = union(full_y, stored.ylim)
+        if full_y2 is not None and stored.y2lim is not None:
+            full_y2 = union(full_y2, stored.y2lim)
     view = stored if stored is not None else ViewState(
         xlim=defaults.xlim if defaults.xlim is not None else full_x,
         ylim=defaults.ylim if defaults.ylim is not None else full_y,

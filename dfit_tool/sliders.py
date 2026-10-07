@@ -21,6 +21,9 @@ slider). Both texts sit a fixed point offset (not an Axes-fraction one) off the 
 gap from the track -- and from a thumb handle sitting right at that edge -- doesn't shrink as
 the track's own pixel size changes.
 
+A press on either split text calls the ``on_text_click`` callback (ui.py opens a typed-limit
+editor there) instead of grabbing a thumb; ``parse_typed_bound`` validates what is typed.
+
 ``right_margin_layout``/``bottom_margin_layout`` are the pure pixel-math half of the plot/slider
 layout: given the figure size and how far a twin axis's tick labels (right) or the x-axis's own
 tick labels/xlabel (bottom) overhang the main Axes' edge (measured by ``ui.DfitApp._layout_sliders``
@@ -73,6 +76,21 @@ def to_log_bounds(lo: float, hi: float, floor: float = _LOG_FLOOR) -> tuple[floa
 def from_log_bounds(log_lo: float, log_hi: float) -> tuple[float, float]:
     """Inverse of ``to_log_bounds``: log10-space slider values back to linear axis limits."""
     return 10.0 ** log_lo, 10.0 ** log_hi
+
+
+def parse_typed_bound(text: str, which: str, cur_lo: float, cur_hi: float,
+                      is_log: bool = False) -> tuple[float, float] | None:
+    """New linear ``(lo, hi)`` after typing ``text`` into the ``which`` ("lo"/"hi") bound, or
+    None when it doesn't parse, isn't finite, isn't > 0 on a log axis, or leaves lo >= hi.
+    Thousands commas and surrounding whitespace are ignored."""
+    try:
+        v = float(text.strip().replace(",", ""))
+    except ValueError:
+        return None
+    if not math.isfinite(v) or (is_log and v <= 0.0):
+        return None
+    lo, hi = (v, cur_hi) if which == "lo" else (cur_lo, v)
+    return (lo, hi) if lo < hi else None
 
 
 def right_margin_layout(fig_w_px: float, n_vertical: int, axis_overhang_px: float,
@@ -152,11 +170,16 @@ class PanRangeSlider(RangeSlider):
     #: grabs it (see ``_outside_thumb_hit``).
     HANDLE_GRAB_PX = 10.0
 
+    #: a press within this many nominal (100 dpi) pixels of a split value text's extent counts
+    #: as a click on that text (see ``text_hit``).
+    TEXT_HIT_PAD_PX = 3.0
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._pan_active = False
         self._pan_ref_val = None
         self._pan_ref_pos = None
+        self._text_click_cb = None
         # Split hi/lo value text -- see module docstring. ``set_val`` (which stock
         # ``RangeSlider.__init__`` already called once, above, before either attribute existed
         # at all -- see ``_sync_split_text``'s ``getattr`` guard) has nothing to land on until
@@ -202,6 +225,34 @@ class PanRangeSlider(RangeSlider):
     def set_val(self, val):
         super().set_val(val)
         self._sync_split_text()
+
+    # -- typed bounds ---------------------------------------------------------------------------
+    def on_text_click(self, func):
+        """Call ``func(which)`` ("lo"/"hi") when a press lands on that bound's split value text.
+        The press then does nothing else (no thumb grab, no pan). ui.py opens its editor here."""
+        self._text_click_cb = func
+
+    def text_hit(self, event):
+        """"lo"/"hi" if the event's pixel position is on (or within ``TEXT_HIT_PAD_PX`` of) that
+        split value text, else None."""
+        if event.x is None or event.y is None:
+            return None
+        pad = self.TEXT_HIT_PAD_PX * self.ax.figure.dpi / 100.0
+        for which, text in (("lo", self._lo_text), ("hi", self._hi_text)):
+            if not text.get_visible() or not text.get_text():
+                continue
+            bb = text.get_window_extent()
+            if bb.x0 - pad <= event.x <= bb.x1 + pad and bb.y0 - pad <= event.y <= bb.y1 + pad:
+                return which
+        return None
+
+    def hover_kind(self, event):
+        """``picks.HoverCursorController`` probe: "value" over a split value text."""
+        return "value" if self.text_hit(event) is not None else None
+
+    def active_kind(self):
+        """``picks.HoverCursorController`` probe: a slider drag never holds a cursor."""
+        return None
 
     # -- geometry -------------------------------------------------------------------------------
     def _press_pos(self, event):
@@ -270,6 +321,13 @@ class PanRangeSlider(RangeSlider):
         (SliderBase connects all three event names to this one method)."""
         if self.ignore(event) or event.button != 1:
             return
+
+        if (event.name == "button_press_event" and self._text_click_cb is not None
+                and not self._pan_active and not self.drag_active):
+            which = self.text_hit(event)
+            if which is not None:
+                self._text_click_cb(which)
+                return
 
         if (event.name == "button_press_event" and not self._pan_active
                 and self.ax.contains(event)[0] and self._in_pan_zone(event)):

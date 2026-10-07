@@ -679,6 +679,14 @@ Preserve these when changing the code.
   `fig.dpi / 100` (Windows display scaling raises TkAgg's dpi) — it re-runs via `set_position`/`subplots_adjust` (never
   `refresh()`) on every canvas resize and once after `_build_sliders` on each refresh, and
   each vertical slider is colored to match its line via `ViewDefaults.y_color`/`y2_color`.
+  Typed limits: a press on a split value text (`PanRangeSlider.text_hit`, checked before the
+  outside-thumb grab so a text near a thumb still opens the editor) calls the
+  `on_text_click` callback instead of moving anything. `ui._open_bound_editor` places a Tk
+  Entry over the text (Enter commits, Escape/focus-out cancels, invalid input beeps and stays
+  open); `refresh()` and resize close it. The sliders join the step's
+  `HoverCursorController` for a hand cursor over the text. A value past the slider's range is
+  stored and refreshed, and `apply_step_view` unions a stored view into the outer ranges so
+  the rebuilt slider covers it (this also stops a drifted stored view from being clamped).
 - **Diagnostic derivatives are reported positive-up for a declining pressure** (negated),
   matching how G-function and log-log plots are conventionally drawn.
 
