@@ -726,9 +726,25 @@ Per-test deliverables:
   anchors at an interior local max of dP/dG (G >= `g_min=1.0`, relative prominence >=
   `CLOSURE_TANGENT_MIN_PROMINENCE`) with the largest G·dP/dG, rejecting both the early
   water-hammer spike (masked below `g_min`) and a small noise-driven local max further out on
-  the curve (low prominence). Falls back to a through-origin least-squares fit over the first
-  third of the `G >= g_min` samples when no candidate survives (unmasked when that segment has
-  fewer than 2 finite, positive-`G` samples). Closure = the last sample within tolerance
+  the curve (low prominence). With no surviving candidate (dP/dG monotone over G >= 1),
+  `interpret._longest_contact_tangent` seeds instead: over 400 log-spaced slopes, the
+  through-origin line that stays within tolerance of G·dP/dG for the most consecutive samples
+  past `leading_spike_end`; among runs >= 0.8x the longest (`CLOSURE_TANGENT_RUN_FRAC`), the one
+  ending latest wins, and closure is its last sample. This mirrors how the analyst works: on
+  saved picks the line sits ~2% above the curve at closure (slope / (G·dP/dG / G) = 1.00-1.09).
+  It replaced a through-origin LS fit over the first third of the `G >= g_min` samples, which on
+  log-spaced data sits in the steep post-water-hammer decline: Alamosa 432BH (`5-4-3 2BH
+  DFIT..DBS`) seeded G = 2.85 (31 min) vs the analyst's 15.95 (538 min); the new rule gives 15.04
+  (483 min, one resampled sample earlier). On the 18 fallback tests among 43 saved corpus
+  picks: within 25% of the analyst on 14 (was 3), mean |log error| 0.15 (was 0.93); the 0.8
+  tie-break beat the plain longest run (13/18, 0.27), which tends to sit early. Misses: Como
+  13C-14HZ (3.4 vs 6.2), Berry IC 11-159HC (5.8 vs 8.8), Front Range Farms 15N (21 vs 36),
+  Echeverria D (2.1 vs 2.7). Applying it to the hump branch too was measured and declined
+  (fixes Allred 06/07, Arkansas 3DH, Baseline 229HN, Brant 199HC early; breaks Arkansas 3CH,
+  Baseline 229HNX, Cinnamon). The LS fit remains the last resort when there is no positive
+  dP/dG or the longest run is < 3 samples (`CLOSURE_TANGENT_MIN_RUN_POINTS`; unmasked when that
+  segment has fewer than 2 finite, positive-`G` samples). Hump-branch
+  closure = the last sample within tolerance
   of the line before the first departure, walking forward from the tangent point -- a later
   re-crossing (e.g. a rising tail) is never picked up. Tolerance is visual
   (`interpret.tangent_visual_gap`): the perpendicular distance to the line in the tangent step's

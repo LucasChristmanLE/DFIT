@@ -50,6 +50,10 @@ CLOSURE_TANGENT_MIN_PROMINENCE = 0.08  # suggest_closure_tangent: a candidate hu
                                        # of its two flanking bases to be eligible as the tangent
                                        # anchor -- rejects a small noise-driven local max past the
                                        # real hump, which would otherwise win on G*dP/dG alone.
+CLOSURE_TANGENT_SLOPE_STEPS = 400  # no-hump tangent seed: log-spaced candidate slopes tried
+CLOSURE_TANGENT_RUN_FRAC = 0.8  # no-hump seed: a run this fraction of the longest that ends
+                                # later wins (the longest alone tends to sit early)
+CLOSURE_TANGENT_MIN_RUN_POINTS = 3  # no-hump seed: a shorter longest run -> first-third LS fit
 INJECTION_MIN_RUN_FRAC = 0.10  # suggest_injection_window: a rate-on run smaller than this
                                # fraction of the largest run's size is dropped as a pulse/blip.
 INJECTION_MAX_PLAUSIBLE_BPM = 150.0  # suggest_injection_window: a run whose median rate exceeds
@@ -853,6 +857,43 @@ def _prominent_hump_index(
     return int(survivors_arr[np.argmax(G[survivors_arr] * y[survivors_arr])])
 
 
+def _longest_contact_tangent(
+    G: np.ndarray, y: np.ndarray, dPdG: np.ndarray, tol: float, g_min: float,
+) -> Optional[tuple[float, int]]:
+    """No-hump tangent seed: ``(slope, closure index)`` of the through-origin line that stays
+    within ``tol`` (``tangent_visual_gap``) of G*dP/dG for the most consecutive samples, the way
+    an analyst rotates the line until it lies along the curve and closes where the curve leaves.
+
+    Samples: finite, ``G >= g_min``, at or past ``leading_spike_end`` (the water-hammer decay).
+    A non-finite sample is left out, so it is skipped rather than ending a run. Candidate slopes
+    are ``CLOSURE_TANGENT_SLOPE_STEPS`` log-spaced values over the positive dP/dG of those
+    samples. Among runs at least ``CLOSURE_TANGENT_RUN_FRAC`` x the longest (in samples), the one
+    ending latest wins (tie: the longer run, then the smaller slope); closure is its last sample.
+    None when no positive dP/dG exists or the longest run is shorter than
+    ``CLOSURE_TANGENT_MIN_RUN_POINTS`` (a short or strongly curved record)."""
+    valid = np.isfinite(G) & np.isfinite(y) & (G >= g_min)
+    valid[:leading_spike_end(G, dPdG, g_min=g_min)] = False
+    vi = np.flatnonzero(valid)
+    if vi.size < CLOSURE_TANGENT_MIN_RUN_POINTS:
+        return None
+    dv = dPdG[vi]
+    dv = dv[np.isfinite(dv) & (dv > 0)]
+    if dv.size == 0:
+        return None
+    runs = []  # (length, end index, slope)
+    for s in np.geomspace(dv.min(), dv.max(), CLOSURE_TANGENT_SLOPE_STEPS):
+        inn = tangent_visual_gap(G, y, float(s), g_min=g_min)[vi] <= tol
+        edges = np.diff(np.r_[0, inn.astype(np.int8), 0])
+        for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1):
+            runs.append((int(b - a + 1), int(vi[b]), float(s)))
+    longest = max((r[0] for r in runs), default=0)
+    if longest < CLOSURE_TANGENT_MIN_RUN_POINTS:
+        return None
+    _, end, slope = max((r for r in runs if r[0] >= CLOSURE_TANGENT_RUN_FRAC * longest),
+                        key=lambda r: (r[1], r[0]))
+    return slope, end
+
+
 def suggest_closure_tangent(
     G: np.ndarray, GdPdG: np.ndarray, tol: float = CLOSURE_TANGENT_VISUAL_TOL, g_min: float = 1.0
 ) -> tuple[float, int]:
@@ -872,14 +913,16 @@ def suggest_closure_tangent(
     past the real hump, which the raw ``G * dPdG`` ranking alone would prefer). Slope is ``dPdG``
     at that index.
 
-    Falls back to the through-origin least-squares fit over the first third of the ``G >= g_min``
-    samples when no candidate survives (e.g. a classic monotonic dP/dG decline with no hump at
-    all). Falls back further to the unmasked first-third-of-all-samples segment when that masked
-    segment has fewer than 2 finite, positive-``G`` samples (e.g. a very short record, or one
-    entirely below ``g_min``).
+    When no candidate survives (e.g. a monotonic dP/dG decline with no hump at all), the line
+    and closure come from ``_longest_contact_tangent``: the through-origin line that follows
+    G*dP/dG for the most consecutive samples past the water-hammer decay, closing where that run
+    ends (it prefers a later run, so it does not use the walk below). Only when that returns
+    None does it fall back to the through-origin least-squares fit over the first third of the ``G >= g_min`` samples, and further to the
+    unmasked first-third-of-all-samples segment when that masked segment has fewer than 2
+    finite, positive-``G`` samples (e.g. a very short record, or one entirely below ``g_min``).
 
-    Closure: walking forward from the tangent index (fallback: from the last index of the fit
-    segment), returns the last index with ``line > 0`` and ``tangent_visual_gap <= tol``
+    Closure on the hump and LS paths: walking forward from the tangent index (LS: from the last
+    index of the fit segment), returns the last index with ``line > 0`` and ``tangent_visual_gap <= tol``
     before the first departure -- a non-finite sample is skipped rather than counted as a
     departure, but does not extend the in-tolerance run either. This is deliberately the *first*
     contiguous in-tolerance run: a later re-crossing of the line (e.g. a rising tail) is never
@@ -902,6 +945,8 @@ def suggest_closure_tangent(
     if tangent_idx is not None:
         slope = float(dPdG[tangent_idx])
         walk_start = tangent_idx
+    elif (contact := _longest_contact_tangent(G, y, dPdG, tol, g_min)) is not None:
+        return contact
     else:
         mask_gmin = np.isfinite(G) & (G >= g_min)
         idxs = np.where(mask_gmin)[0]

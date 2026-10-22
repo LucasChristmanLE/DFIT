@@ -7,7 +7,8 @@
 - ``suggest_closure_tangent``: anchors the through-origin tangent at the dP/dG hump (a local
   extremum of GdPdG/G, filtered to candidates with at least ``CLOSURE_TANGENT_MIN_PROMINENCE``
   relative prominence) when one exists at G >= g_min, instead of fitting the early,
-  spike-dominated samples directly.
+  spike-dominated samples directly. With no hump, it takes the through-origin line that
+  follows G*dP/dG for the most consecutive samples (``_longest_contact_tangent``).
 """
 
 from __future__ import annotations
@@ -332,7 +333,7 @@ def test_suggest_closure_tangent_realistic_spike_shape_closure_at_or_above_g1():
 def test_suggest_closure_tangent_fallback_matches_known_line_when_no_hump():
     """A classic monotonic decline with no local max of dP/dG at G >= 1 (dP/dG is flat, i.e. a
     perfect through-origin line, then bends DOWN -- never up, so no interior local max is ever
-    formed): the fallback through-origin LS should recover the known slope, and closure = last
+    formed): the no-hump longest-run line should recover the known slope, and closure = last
     in-tolerance sample, right around the bend."""
     n = 300
     G = np.linspace(0.01, 30.0, n)
@@ -351,9 +352,9 @@ def test_suggest_closure_tangent_fallback_matches_known_line_when_no_hump():
 def test_suggest_closure_tangent_late_recrossing_does_not_extend_closure():
     """A curve that departs the tangent line (dP/dG dips), then rises back toward the tangent
     value late in the record (a "re-crossing" on the G*dP/dG scale): the closure must stay on
-    the first contiguous in-tolerance run, not the later re-crossing. dP/dG only ever decreases
-    or increases monotonically within each segment and never turns over before the array ends,
-    so no interior local max is ever formed and the fallback fit is exercised throughout."""
+    the long early run. dP/dG never turns over before the array ends, so no interior local max
+    forms and the no-hump longest-run path is used; the re-crossing loses because its run is
+    far shorter than CLOSURE_TANGENT_RUN_FRAC x the early one."""
     n = 300
     G = np.linspace(0.01, 40.0, n)
     slope_true = 20.0
@@ -429,24 +430,37 @@ def test_suggest_closure_tangent_nan_inside_walk_is_skipped_not_extended():
 
 
 def test_suggest_closure_tangent_fallback_walk_start_out_of_tolerance_returns_start():
-    """When the fallback fit segment's own last sample (the walk's start index) is itself
-    outside tolerance of the fitted line -- and nothing later ever comes back into tolerance --
-    the function returns that start index anyway. It must not be silently credited as "in
-    tolerance" internally; it is returned only because there is nothing better to report."""
-    # G/dPdG chosen so g_min=1.0 masks nothing (G starts at 1.0); with m=10 samples at G>=1,
-    # the fit segment is exactly G=[2,3] (indices 1,2 of this array) and the walk starts at
-    # G=3. dP/dG increases monotonically throughout (5,10,50,60,...,120) so no interior local
-    # max ever forms and the fallback fit is used. The through-origin LS over G=[2,3] pulls the
-    # line to slope (2*20+3*150)/(2**2+3**2) = 37.69..., which G=3's own y=150 departs from by
-    # far more than the tolerance -- immediately, at the walk's very first checked sample.
+    """A short, strongly curved record with no hump: no through-origin line stays in tolerance
+    for CLOSURE_TANGENT_MIN_RUN_POINTS samples, so the longest-run seed declines and the
+    first-third LS fit runs. When that fit's own last sample (the walk's start index) is itself
+    outside tolerance -- and nothing later comes back -- the start index is returned anyway. It
+    is not credited as "in tolerance"; it is returned because there is nothing better."""
+    # G starts at 1.0, so g_min=1.0 masks nothing; with m=10 samples at G>=1 the fit segment is
+    # exactly G=[2,3] and the walk starts at G=3. dP/dG increases monotonically (5,10,50,...,120)
+    # so no interior local max forms. The LS slope over G=[2,3] is (2*20+3*150)/(2**2+3**2),
+    # which G=3's own y=150 departs from by far more than the tolerance.
     G = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=float)
     dPdG = np.array([5, 10, 50, 60, 70, 80, 90, 100, 110, 120], dtype=float)
     GdPdG = G * dPdG
 
+    tol = interpret.CLOSURE_TANGENT_VISUAL_TOL
+    assert interpret._longest_contact_tangent(G, GdPdG, dPdG, tol, 1.0) is None
     slope, idx = interpret.suggest_closure_tangent(G, GdPdG)
     expected_slope = (2 * 20.0 + 3 * 150.0) / (2.0 ** 2 + 3.0 ** 2)
     assert slope == pytest.approx(expected_slope)
     assert G[idx] == 3.0  # the walk's own start index, returned as the fallback
+
+
+def test_suggest_closure_tangent_no_positive_dpdg_falls_back_to_ls_fit():
+    """Rising pressure throughout (dP/dG <= 0 at every G >= 1, plenty of samples): the longest-run
+    seed has no positive slope to try, so the first-third LS fit still supplies the result."""
+    G = np.linspace(1.0, 20.0, 30)
+    GdPdG = -5.0 * G
+    tol = interpret.CLOSURE_TANGENT_VISUAL_TOL
+    assert interpret._longest_contact_tangent(G, GdPdG, GdPdG / G, tol, 1.0) is None
+    slope, idx = interpret.suggest_closure_tangent(G, GdPdG)
+    assert slope == pytest.approx(-5.0)
+    assert 0 <= idx < len(G)
 
 
 def test_suggest_closure_tangent_noisy_late_tail_stays_near_the_real_hump():
@@ -486,6 +500,86 @@ def test_suggest_closure_tangent_noisy_late_tail_stays_near_the_real_hump():
             closure_Gs.append(G[idx])
         frac_past_50 = float(np.mean(np.array(closure_Gs) > 50.0))
         assert frac_past_50 <= 0.05, f"sig={sig}: {frac_past_50:.3f} of seeds landed past G=50"
+
+
+# Alamosa 432BH "5-4-3 2BH DFIT..DBS": dP/dG declines monotonically over G >= 1 (no hump), and
+# G*dP/dG dips to ~338 at G ~6 and rises along the analyst's line to a roll-over at G ~19. The
+# analyst's closure is G = 15.95 (538 min, slope 32.3); the first-third LS fit put it at G = 2.85.
+_ALAMOSA_G = np.array([
+    0.0000, 0.0072, 0.0143, 0.0177, 0.0245, 0.0279, 0.0346, 0.0445, 0.0478, 0.0510, 0.0574,
+    0.0606, 0.0670, 0.0795, 0.0857, 0.0888, 0.0949, 0.1071, 0.1131, 0.1191, 0.1279, 0.1397,
+    0.1484, 0.1599, 0.1713, 0.1797, 0.1937, 0.2048, 0.2185, 0.2293, 0.2454, 0.2587, 0.2770,
+    0.2900, 0.3105, 0.3282, 0.3433, 0.3631, 0.3826, 0.4020, 0.4211, 0.4376, 0.4587, 0.4794,
+    0.5000, 0.5226, 0.5448, 0.5669, 0.5908, 0.6166, 0.6421, 0.6693, 0.6962, 0.7268, 0.7570,
+    0.7868, 0.8181, 0.8509, 0.8832, 0.9170, 0.9522, 0.9886, 1.0264, 1.0653, 1.1054, 1.1482,
+    1.1938, 1.2419, 1.2924, 1.3453, 1.4003, 1.4588, 1.5208, 1.5860, 1.6556, 1.7307, 1.8111,
+    1.8976, 1.9925, 2.0976, 2.2121, 2.3399, 2.4856, 2.6517, 2.8465, 3.0775, 3.3436, 3.6429,
+    3.9703, 4.3299, 4.7245, 5.1570, 5.6352, 6.1621, 6.7338, 7.3418, 7.9877, 8.6726, 9.3780,
+    10.1130, 10.8829, 11.6573, 12.4630, 13.2913, 14.1472, 15.0355, 15.9549, 16.9121, 17.9166,
+    18.9788, 20.1027, 21.2975, 22.5716, 23.9401, 25.4128, 27.0315, 28.8192, 30.7297, 32.8276,
+    35.1426, 37.7363, 40.7340, 43.9475, 47.6385, 51.8753, 56.7355, 62.0920, 68.4160, 75.9404,
+    84.3651, 94.5940,
+])
+_ALAMOSA_GDPDG = np.array([
+    0.00, 36.77, 319.82, 406.58, 564.06, 615.51, 151.89, 406.66, 651.88, 684.29, 731.34,
+    712.41, 336.18, 474.17, 754.24, 795.84, 524.16, 635.95, 791.01, 644.97, 467.00, 613.49,
+    613.92, 492.05, 620.64, 626.66, 612.58, 604.14, 604.68, 609.22, 592.05, 616.57, 704.85,
+    740.04, 582.03, 681.95, 688.97, 621.07, 642.41, 677.63, 742.09, 750.36, 706.89, 711.03,
+    720.06, 738.21, 758.81, 766.61, 763.51, 755.19, 770.55, 786.24, 761.67, 752.11, 773.86,
+    779.27, 789.53, 807.53, 813.37, 814.43, 816.14, 816.63, 816.50, 814.75, 814.85, 807.29,
+    791.94, 777.01, 764.32, 755.38, 747.39, 737.27, 724.75, 710.82, 693.85, 675.18, 655.67,
+    631.63, 604.77, 579.37, 552.34, 519.95, 484.19, 447.13, 408.04, 376.14, 357.51, 350.36,
+    348.62, 346.39, 344.64, 341.93, 338.30, 337.78, 343.22, 352.09, 360.92, 374.55, 391.07,
+    403.76, 422.88, 443.04, 457.84, 473.85, 487.06, 499.39, 510.66, 517.98, 521.01, 521.75,
+    521.23, 518.72, 513.84, 506.96, 495.44, 478.47, 468.61, 462.02, 448.54, 432.36, 409.22,
+    394.45, 385.59, 364.00, 345.39, 334.78, 323.37, 300.92, 287.52, 276.50, 277.45,
+])
+
+
+def test_suggest_closure_tangent_no_hump_follows_rising_limb_alamosa():
+    G, GdPdG = _ALAMOSA_G, _ALAMOSA_GDPDG
+    assert len(G) == len(GdPdG) == 131
+    slope, idx = interpret.suggest_closure_tangent(G, GdPdG)
+    assert 13.0 <= G[idx] <= 17.0
+    assert slope == pytest.approx(32.3, rel=0.2)
+    gap = interpret.tangent_visual_gap(G, GdPdG, slope)
+    assert gap[idx] <= interpret.CLOSURE_TANGENT_VISUAL_TOL
+
+
+def test_suggest_closure_tangent_no_hump_skips_the_early_decay():
+    """Water-hammer decay down to the through-origin line, the line itself (dP/dG = 20) out to
+    G = 30, then a roll-over. Log spacing packs the decay into the first third of the G >= 1
+    samples, which is where the old LS fit looked. Closure belongs at the roll-over."""
+    G = np.geomspace(0.01, 60.0, 160)
+    GdPdG = np.empty_like(G)
+    early = G < 1.0
+    GdPdG[early] = 800.0
+    decay = (G >= 1.0) & (G < 5.0)
+    GdPdG[decay] = 800.0 * (100.0 / 800.0) ** ((G[decay] - 1.0) / 4.0)
+    line = (G >= 5.0) & (G <= 30.0)
+    GdPdG[line] = 20.0 * G[line]
+    roll = G > 30.0
+    GdPdG[roll] = 600.0 - 10.0 * (G[roll] - 30.0)
+    slope, idx = interpret.suggest_closure_tangent(G, GdPdG)
+    assert slope == pytest.approx(20.0, rel=0.05)
+    assert 27.0 <= G[idx] <= 33.0
+
+
+@pytest.mark.parametrize("n_late, picks_late", [(17, True), (10, False)])
+def test_suggest_closure_tangent_no_hump_prefers_a_later_near_longest_run(n_late, picks_late):
+    """Two through-origin segments with no hump: slope 40 over G 2-10 (20 samples), a short
+    transition, then slope 20 to the end. A later run at >= CLOSURE_TANGENT_RUN_FRAC (0.8) of the
+    longest wins (17/20); a much shorter one (10/20) does not."""
+    G_a = np.linspace(2.0, 10.0, 20)
+    G_t = np.array([12.0, 14.0, 16.0])
+    G_b = np.linspace(20.0, 40.0, n_late)
+    G = np.r_[G_a, G_t, G_b]
+    GdPdG = np.r_[40.0 * G_a, 400.0 + 0.0 * G_t, 20.0 * G_b]
+    _, idx = interpret.suggest_closure_tangent(G, GdPdG)
+    if picks_late:
+        assert G[idx] >= 38.0
+    else:
+        assert G[idx] <= 12.0
 
 
 # --------------------------------------------------------------------------------------------------
