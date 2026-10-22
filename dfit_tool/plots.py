@@ -25,7 +25,7 @@ from matplotlib.ticker import MaxNLocator
 
 from . import colors as C
 from . import interpret, summary
-from .model import (STEP_KEYS, DerivedResults, PickState, closure_uninterpretable,
+from .model import (STEP_KEYS, STIFFNESS_MEASURED_NOTE, DerivedResults, PickState,
                     loglog_window_suppressed, pp_from_peak, skipped_steps)
 from .io_load import TestData
 
@@ -855,14 +855,14 @@ def _porepressure_view(state: PickState, dg, res: DerivedResults, press_color) -
 def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) -> ViewDefaults:
     """Step 8: relative system stiffness (semilog-y) vs effective pressure (URTeC-2019-123
     A.8/A.9) -- the upturn where the fracture walls come into contact gives a fourth,
-    comparison-only Shmin estimate. Needs the min-dP/dG pick and a pore-pressure estimate (the
-    h-function's Pres term); skipped end to end under PC-F/PC-X (model.skipped_steps), which
-    never yields one. state.stiffness_no_upturn records the negative finding "no slope change
-    apparent" -- the curve still draws, but no pick vline/marker and a title saying so."""
+    comparison-only Shmin estimate. Needs a pore-pressure estimate (the h-function's Pres
+    term); skipped end to end under PC-F/PC-X (model.skipped_steps), which never yields one.
+    With no effective-ISIP line the x axis is measured BHP (res.stiffness_uses_measured).
+    state.stiffness_no_upturn records the negative finding "no slope change apparent" -- the
+    curve still draws, but no pick vline/marker and a title saying so."""
     ax.clear()
     if res.stiffness_S is None:
-        ax.set_title("Stiffness -- Requires the min-dP/dG Pick and a Pore-Pressure Estimate",
-                     fontsize=10)
+        ax.set_title("Stiffness -- Requires a Pore-Pressure Estimate", fontsize=10)
         return ViewDefaults()
     p_eff, S = res.stiffness_p_eff[1:], res.stiffness_S
     finite_pos = np.isfinite(S) & (S > 0)
@@ -872,9 +872,7 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         # UserWarning ("Data has no positive values..."). Guard branch instead, same style as
         # the missing-arrays branch above.
         title = "Stiffness -- No Positive Relative-Stiffness Samples to Plot"
-        if closure_uninterpretable(state):
-            title += " -- G-Function Uninterpretable (Shmin Not Reported)"
-        elif state.stiffness_no_upturn:
+        if state.stiffness_no_upturn:
             # The recorded finding still belongs in the title even though there is nothing to
             # plot -- otherwise this branch silently drops it and looks like a data problem
             # rather than the analyst's own "no slope change apparent" call.
@@ -883,16 +881,16 @@ def render_stiffness(ax, td: TestData, state: PickState, res: DerivedResults) ->
         return ViewDefaults()
     ax.plot(p_eff, S, color=C.PRESSURE, lw=1.0, marker=".", ms=3)
     ax.set_yscale("log")
-    ax.set_xlabel("Effective Pressure (psi)")
+    ax.set_xlabel("BHP (psi)" if res.stiffness_uses_measured else "Effective Pressure (psi)")
     ax.set_ylabel("Relative Stiffness")
     ax.grid(True, which="both", alpha=0.3)
+    if res.stiffness_uses_measured:
+        # In axes coordinates, so it never touches autoscale; carried into the PNG export.
+        ax.text(0.01, 0.99, STIFFNESS_MEASURED_NOTE, transform=ax.transAxes, ha="left", va="top",
+                fontsize=9, fontweight="bold", color=C.PLOT_CAUTION,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=2))
 
-    if closure_uninterpretable(state):
-        # C-X: the min-dP/dG anchor of this curve can't be trusted, so shmin_stiffness is None
-        # (model.compute_all). Same no-vline/no-marker treatment as stiffness_no_upturn.
-        ax.set_title("Relative Stiffness -- G-Function Uninterpretable (Shmin Not Reported)",
-                     fontsize=10)
-    elif state.stiffness_no_upturn:
+    if state.stiffness_no_upturn:
         # Explicit negative finding, same precedent as closure scenario C-C's "no contact ->
         # no Shmin": the curve is still evidence (kept on the plot and in PNG exports), but
         # there is no upturn to mark, so no vline/marker -- and shmin_stiffness is None

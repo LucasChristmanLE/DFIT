@@ -24,7 +24,8 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import SpanSelector
 
 from . import colors as C, interpret, io_load
-from .model import NO_CONTACT_SCENARIOS, DerivedResults, PickState, TangentPick, pp_from_peak
+from .model import (NO_CONTACT_SCENARIOS, STIFFNESS_MEASURED_NOTE, DerivedResults, PickState,
+                    TangentPick, pp_from_peak)
 from .io_load import TestData
 
 
@@ -1610,6 +1611,16 @@ def gfunction_alert_text(state: PickState, res: DerivedResults, step: str) -> st
     return ""
 
 
+def stiffness_alert_text(res: DerivedResults, step: str) -> str:
+    """Stiffness-step notice for ui.py's orange bold ``alert_lbl``: non-empty only when the curve
+    is measured BHP throughout (``res.stiffness_uses_measured``), where the early minimum can be
+    near-wellbore dissipation rather than contact."""
+    if step == "stiffness" and res.stiffness_S is not None and res.stiffness_uses_measured:
+        return (f"{STIFFNESS_MEASURED_NOTE}. An early minimum may be near-wellbore "
+                "dissipation, not contact.")
+    return ""
+
+
 def gfunction_hint_text(scenario: str, contact_method: Optional[str] = None) -> str:
     """Scenario-aware hint-label text for the G-function step. ``contact_method``
     (``DerivedResults.contact_method``) switches the C-A text when the contact is the
@@ -1624,8 +1635,8 @@ def gfunction_hint_text(scenario: str, contact_method: Optional[str] = None) -> 
         return ("The triangle is the inflection seed; drag it to re-find the nearest inflection."
                 + _MIN_DPDG_WINDOW_HINT)
     if scenario.startswith("C-X"):
-        return ("G-function marked uninterpretable: no compliance, Liberty, variable, or "
-                "stiffness Shmin is reported.")
+        return ("G-function marked uninterpretable: no compliance, Liberty, or variable "
+                "Shmin is reported.")
     if scenario.startswith(NO_CONTACT_SCENARIOS):
         return "No contact pick applies for this closure scenario."
     return _GFUNCTION_HINT_DEFAULT
@@ -2004,8 +2015,8 @@ def seed_pp(state: PickState, res: DerivedResults) -> None:
 def seed_stiffness(state: PickState, res: DerivedResults) -> None:
     """Relative-stiffness upturn pick, from interpret.suggest_stiffness_upturn_index -- same
     park-and-refine pattern as every other step. No-op when the stiffness arrays aren't
-    computed (res.stiffness_S is None: no min-dP/dG pick yet, no pore-pressure estimate, PC-F,
-    or too few resampled points -- see model.compute_all's stiffness block), or when the
+    computed (res.stiffness_S is None: no pore-pressure estimate, PC-F, or too few resampled
+    points -- see model.compute_all's stiffness block), or when the
     analyst has already recorded "no slope change apparent" -- a reloaded save with that flag
     must not get a line parked on first visit."""
     if state.stiffness_pick_P is not None:

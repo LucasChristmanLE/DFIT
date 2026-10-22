@@ -25,8 +25,13 @@ from .io_load import ChannelConfig, TestData
 
 # Closure scenarios with no contact pick, so no compliance Shmin/effective ISIP, no Liberty, no
 # variable. C-X ("uninterpretable") is the analyst's explicit "this G-function can't be read" --
-# it additionally blanks Shmin(stiffness), whose curve is anchored on the min-dP/dG pick.
+# it additionally blanks the min-dP/dG time/pressure and drops that pick from the stale check.
+# Shmin(stiffness) is still reported under all three: with no effective-ISIP line its curve
+# uses measured BHP.
 NO_CONTACT_SCENARIOS = ("C-C", "C-D", "C-X")
+
+# Shown on the stiffness plot and in its alert when DerivedResults.stiffness_uses_measured.
+STIFFNESS_MEASURED_NOTE = "Measured BHP (no effective-ISIP line): lower confidence"
 
 
 def closure_uninterpretable(state: "PickState") -> bool:
@@ -146,6 +151,9 @@ class PickState:
     # "rise10", "inflection", or "" (cleared, a manual drag leaves it, or an old save).
     contact_rule: str = ""
     show_d2pdg2: bool = False  # overlay d2P/dG2 on the G-function step (helps spot the C-B inflection)
+    # Analyst flag: the compliance interpretation is low confidence. Informational only (logged as
+    # compliance_low_confidence); changes no computed value. Old saves take the default via _decode.
+    compliance_low_confidence: bool = False
 
     # --- step 6: tangent-method closure (G*dP/dG through-origin departure) ---
     closure_G: Optional[float] = None
@@ -155,6 +163,9 @@ class PickState:
     # effective ISIP, and the variable method, which needs closure_G) in compute_all; the pick is
     # left in state so unchecking restores it. Old saves take the default via _decode. ---
     tangent_uninterpretable: bool = False
+    # Analyst flag: the tangent interpretation is low confidence. Informational only (logged as
+    # tangent_low_confidence); changes no computed value.
+    tangent_low_confidence: bool = False
 
     # --- step 7-8: log-log window + postclosure + pore pressure ---
     # (t_lo, t_hi) shut-in seconds. The one late-time window: the log-log slope and the
@@ -165,6 +176,9 @@ class PickState:
     # True while postclosure_scenario is PC-A set by picks.auto_assign_postclosure (a near -1/2
     # window slope) rather than by the analyst; a manual scenario change clears it.
     postclosure_auto: bool = False
+    # Analyst flag: the log-log / postclosure interpretation is low confidence. Informational only
+    # (logged as loglog_low_confidence); changes no computed value.
+    loglog_low_confidence: bool = False
     pp_axis: str = "tm12"  # "tm12" (t^-1/2) or "tm1" (t^-1)
     # PC-E only: shut-in seconds of the postclosure t*dP/dt peak that the -1/2 extrapolation
     # starts from (pp_from_peak). Old saves take the default via _decode's known-field filter.
@@ -623,9 +637,13 @@ class DerivedResults:
     # shorter than both (aligned with stiffness_p_eff[1:]/stiffness_G[1:]) -- see the stiffness
     # block in compute_all. All three equal the full resampled grid (res.resampled.p/
     # res.diagnostics.G) unless STIFFNESS_MAX_POINTS capped it, in which case they are an evenly
-    # spaced (plus index 0/i_min/last) subset of it, and res.warnings carries a "decimated to
-    # limit memory" line. Not serialized (DerivedResults never is).
+    # spaced (plus index 0/anchor/last) subset of it, and res.notes carries a "Stiffness plot
+    # uses N of M" line. Not serialized (DerivedResults never is).
     stiffness_p_eff: Optional[np.ndarray] = field(default=None, repr=False)
+    # True when stiffness_p_eff is measured BHP throughout because there is no effective-ISIP line
+    # (no compliance anchor: C-C/C-D/C-X, a failed contact rule, or no picks yet). Logged as
+    # stiffness_pressure_basis.
+    stiffness_uses_measured: bool = False
     stiffness_G: Optional[np.ndarray] = field(default=None, repr=False)
     # Shut-in seconds of each stiffness_p_eff sample (hover readout only; not logged).
     stiffness_dt: Optional[np.ndarray] = field(default=None, repr=False)
@@ -1205,7 +1223,7 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     if res.diagnostics is not None and len(res.diagnostics.G):
         edge = res.diagnostics.G[-1]
         # Picks suppressed by an uninterpretable finding report nothing, so they can't be stale:
-        # C-X blanks everything the min-dP/dG pick feeds (Liberty, stiffness), and
+        # C-X blanks everything the min-dP/dG pick feeds (Liberty), and
         # tangent_uninterpretable blanks everything closure_G feeds.
         min_g = None if closure_uninterpretable(state) else state.min_dpdg_G
         closure_g = None if state.tangent_uninterpretable else state.closure_G
@@ -1215,12 +1233,11 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         # edge -- compare against the trimmed record's lowest kept pressure instead. rs.p is no
         # longer monotonic (a sustained rise is kept too, same as a decline), so its lowest kept
         # value isn't necessarily rs.p[-1] any more -- np.nanmin finds it regardless of where it
-        # sits. p_eff's tail equals rs.p past the min-dP/dG pick, so a pick below that low end no
-        # longer sits on the curve.
+        # sits. p_eff's tail equals rs.p past the anchor (all of it with no anchor), so a pick
+        # below that low end no longer sits on the curve.
         # A suppressed pick (stiffness_no_upturn) reports no value at all, so it can't be
         # reported stale -- there's nothing downstream for a clamp to silently corrupt.
         if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
-                and not closure_uninterpretable(state)
                 and res.resampled is not None
                 and len(res.resampled.p)
                 and state.stiffness_pick_P < np.nanmin(res.resampled.p)):
@@ -1253,8 +1270,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
 
     # Effective ISIP: tangent to P-vs-G at compliance_isip_anchor_G (min dP/dG under C-A, else the
     # contact), extrapolated to G=0. Derived here (not a stored pick) -- the anchor is the
-    # diagnostics sample nearest that G, the slope a local fit (half=4) around it. Under C-A this
-    # is the same line as the stiffness block's p_eff.
+    # diagnostics sample nearest that G, the slope a local fit (half=4) around it. This is the
+    # same line as the stiffness block's p_eff.
     anchor_G = compliance_isip_anchor_G(state)
     if anchor_G is not None and res.diagnostics is not None and res.resampled is not None:
         dg = res.diagnostics
@@ -1406,32 +1423,40 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
     # Relative stiffness (URTeC-2019-123 A.8/A.9): a fourth, comparison-only Shmin estimate at
     # the upturn where the h-function-derived relative stiffness S rises off its minimum --
     # i.e. where the fracture walls come into contact. p_eff (effective pressure, paper 3.1.1)
-    # is the actual resampled pressure at/after the min-dP/dG pick, and the P-vs-G tangent
-    # extrapolation from that pick before it (the same line as eff_isip_line_compliance under
-    # C-A, see compliance_isip_anchor_G). Gated on the pore-pressure estimate (the
-    # h-function's Pres term) existing -- which transitively covers PC-F, see
-    # skipped_steps -- and on >= 4 resampled points, the minimum this O(n^2) construction
-    # needs to be meaningful. shmin_stiffness is set INSIDE this gate: a stale pick whose
-    # arrays are no longer computable must report nothing.
-    if (state.min_dpdg_G is not None and res.pore_pressure is not None and res.te_s
+    # is the actual resampled pressure at/after the compliance anchor (compliance_isip_anchor_G:
+    # the min-dP/dG pick under C-A, the contact otherwise), and eff_isip_line_compliance before
+    # it -- the same line as the compliance effective ISIP. With no anchor (C-C/C-D/C-X, a failed
+    # contact rule) there is no effective-ISIP line, so p_eff is measured BHP throughout: the
+    # plot needs only pressure and a pore-pressure estimate (URTeC §3.1.2, A.9), and anchoring on
+    # a min-dP/dG pick that fell back to the end of the record puts every sample on a line
+    # (Cottonwood Creek 4DH). Gated on the pore-pressure estimate (the h-function's Pres term)
+    # existing -- which transitively covers PC-F, see skipped_steps -- and on >= 4 resampled
+    # points, the minimum this O(n^2) construction needs to be meaningful. shmin_stiffness is
+    # set INSIDE this gate: a stale pick whose arrays are no longer computable must report nothing.
+    if (res.pore_pressure is not None and res.te_s
             and res.resampled is not None and res.diagnostics is not None
             and len(res.resampled.p) >= 4):
         dg = res.diagnostics
         rs = res.resampled
-        i_min = int(np.nanargmin(np.abs(dg.G - state.min_dpdg_G)))
-        anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, rs.p, i_min, half=4)
-        line = anchor_y + slope * (dg.G - anchor_x)
-        idx = np.arange(len(rs.p))
-        p_eff = np.where(idx < i_min, line, rs.p)
+        line_pick = res.eff_isip_line_compliance
+        if line_pick is not None:
+            i_anchor = int(np.nanargmin(np.abs(dg.G - compliance_isip_anchor_G(state))))
+            line = line_pick.anchor_y + line_pick.slope * (dg.G - line_pick.anchor_x)
+            p_eff = np.where(np.arange(len(rs.p)) < i_anchor, line, rs.p)
+        else:
+            i_anchor = 0
+            p_eff = np.asarray(rs.p, dtype=float).copy()
+            res.stiffness_uses_measured = True
+            res.notes.append("Stiffness uses measured BHP: no effective-ISIP line")
         n = len(p_eff)
         if n > STIFFNESS_MAX_POINTS:
             # Decimate to an even subset before the O(n^2) h-function construction -- bidirectional
             # resampling can leave far more points than this plot can afford. np.unique both sorts
-            # and dedupes, so the always-included 0/i_min/last indices collapsing onto an evenly
+            # and dedupes, so the always-included 0/anchor/last indices collapsing onto an evenly
             # spaced one (or each other, on a tiny n) costs nothing extra; the result is <=
             # STIFFNESS_MAX_POINTS + 2 (the 3 extras, minus whatever the linspace already covered).
             even = np.linspace(0, n - 1, STIFFNESS_MAX_POINTS).round().astype(int)
-            sel = np.unique(np.concatenate([even, [0, i_min, n - 1]]))
+            sel = np.unique(np.concatenate([even, [0, i_anchor, n - 1]]))
             res.notes.append(f"Stiffness plot uses {len(sel)} of {n} resampled points")
         else:
             sel = np.arange(n)
@@ -1442,10 +1467,9 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
         res.stiffness_S = interpret.relative_stiffness(res.stiffness_p_eff, h)
         # stiffness_no_upturn is an explicit negative finding ("no slope change apparent") --
         # it blanks only the reported value; the pick itself is left in state so unchecking
-        # restores it rather than losing it. C-X (G-function uninterpretable) blanks it the same
-        # way: the curve is anchored on the min-dP/dG pick, which C-X says can't be trusted.
-        if (state.stiffness_pick_P is not None and not state.stiffness_no_upturn
-                and not closure_uninterpretable(state)):
+        # restores it rather than losing it. C-X does not blank it: §3.1.2's case for this plot
+        # is exactly the test whose dP/dG can't be read.
+        if state.stiffness_pick_P is not None and not state.stiffness_no_upturn:
             res.shmin_stiffness = interpret.shmin_compliance(state.stiffness_pick_P)
 
     _resolve_gradients(state, res)

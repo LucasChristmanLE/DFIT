@@ -76,6 +76,10 @@ FROZEN = [
     'flow_regime_time_min',
     'falloff_duration_days',
     'density_fallback',
+    'compliance_low_confidence',
+    'tangent_low_confidence',
+    'loglog_low_confidence',
+    'stiffness_pressure_basis',
 ]
 
 

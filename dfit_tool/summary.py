@@ -125,7 +125,10 @@ def _closure(state: PickState, res: DerivedResults) -> Section:
           res.net_pressure_variable),
         r("Liberty", "gfunction", res.liberty_anchor_G, res.liberty_anchor_time_s,
           res.liberty_anchor_pressure, res.shmin_liberty, res.shmin_liberty_gradient),
-        r("stiffness", "stiffness", None, None,
+        # Asterisk when the curve is measured BHP (lower confidence), gated like the value.
+        r("stiffness*" if (res.stiffness_uses_measured and res.shmin_stiffness is not None
+                           and visited(state, "stiffness")) else "stiffness",
+          "stiffness", None, None,
           state.stiffness_pick_P if res.shmin_stiffness is not None else None,
           res.shmin_stiffness, res.shmin_stiffness_gradient),
     ]

@@ -102,6 +102,15 @@ LOG_COLUMNS = [
     # True when fluid_density is the 8.33 ppg fallback (PickState.density_fallback), not a
     # measured value -- tail-appended per the append-only convention.
     "density_fallback",
+    # Analyst "Low confidence" flags on the G-function and Tangent steps (informational) --
+    # tail-appended per the append-only convention.
+    "compliance_low_confidence",
+    "tangent_low_confidence",
+    "loglog_low_confidence",
+    # Pressure the stiffness curve is built on: "effective" (the effective-ISIP line before the
+    # compliance anchor) or "measured" (BHP throughout, no anchor); blank with no curve --
+    # tail-appended per the append-only convention.
+    "stiffness_pressure_basis",
 ]
 
 _CLOSURE_QUALITY_BY_PREFIX = {
@@ -635,4 +644,10 @@ def build_log_row(entry: TestEntry, active_path: str, root: str, state: PickStat
         "falloff_duration_days": (res.falloff_duration_s / 86400.0
                                   if res.falloff_duration_s is not None else None),
         "density_fallback": state.density_fallback,
+        "compliance_low_confidence": state.compliance_low_confidence,
+        "tangent_low_confidence": state.tangent_low_confidence,
+        "loglog_low_confidence": state.loglog_low_confidence,
+        "stiffness_pressure_basis": ("" if res.stiffness_S is None
+                                     else "measured" if res.stiffness_uses_measured
+                                     else "effective"),
     }

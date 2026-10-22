@@ -25,7 +25,13 @@ porepressure → stiffness.
 - Injection: zoomed injection window with draggable start/shut-in lines and a te/Vinj/qmax title.
 - Stiffness: semilog-y relative stiffness vs effective pressure (URTeC-2019-123 A.8/A.9). Needs
   the pore-pressure estimate, so it comes last. Porepressure and stiffness are both skipped end
-  to end under PC-F.
+  to end under PC-F. `p_eff` is the compliance effective-ISIP line (`eff_isip_line_compliance`)
+  before `compliance_isip_anchor_G` and measured BHP after it; with no anchor (C-C/C-D/C-X, a
+  failed contact rule) it is measured BHP throughout (`res.stiffness_uses_measured`, a note, x
+  label "BHP (psi)", logged as `stiffness_pressure_basis`), per URTeC §3.1.2. That basis is
+  lower confidence: `model.STIFFNESS_MEASURED_NOTE` is drawn on the plot (and PNG), shown in
+  the orange `alert_lbl` (`picks.stiffness_alert_text`), and the panel/Expanded results stiffness
+  label gets a trailing `*`.
 
 ## Commands
 
@@ -163,6 +169,9 @@ non-data `.xlsx` files; it never raises.
 - `dfit_log.csv`: `build_log_row` maps `PickState`/`DerivedResults` to `store.LOG_COLUMNS`
   (computes nothing itself); `upsert_log_row` replaces or appends by `test_id`. **`LOG_COLUMNS`
   is append-only**: new columns go at the end.
+- Low confidence: "Low confidence" checkboxes on the gfunction (`PickState.compliance_low_confidence`),
+  tangent (`tangent_low_confidence`), and log-log/porepressure (`loglog_low_confidence`) steps. Informational only: they change no computed value
+  and are logged as `compliance_low_confidence` / `tangent_low_confidence` / `loglog_low_confidence`.
 - Density fallback: the "Fallback (8.33)" checkbox next to the density entry sets
   `density_ppg = model.FALLBACK_DENSITY_PPG` and `PickState.density_fallback`, locks the entry,
   and restores the prior entry text on uncheck. Logged as `density_fallback`.
@@ -257,12 +266,12 @@ Per-test deliverables (all computed in `compute_all`):
 | Value | Construction |
 |---|---|
 | Apparent ISIP | default `bhp_all[shutin_idx]`, blank with a warning when that sample is NaN or dropout-masked; with `state.isip_use_tangent` ("Use tangent line", for tests with water hammer), the early BHP-decline tangent extrapolated to shut-in (manual pick on isip step). The tangent is seeded and kept in state either way. `_decode` migrates the old inverse flag `isip_at_shutin` (a save with a tangent keeps it unless it chose shut-in). Method logged as `apparent_isip_method` (`tangent`/`shutin`) |
-| Effective ISIP | P-vs-G straight line extrapolated to G = 0. Compliance anchor (`model.compliance_isip_anchor_G`): the min-dP/dG pick under C-A (URTeC §3.1.1; same line as the stiffness `p_eff`), else the contact (C-B inflection, or blank scenario where the triangle is hidden); none without `contact_G` |
+| Effective ISIP | P-vs-G straight line extrapolated to G = 0. Compliance anchor (`model.compliance_isip_anchor_G`): the min-dP/dG pick under C-A (URTeC §3.1.1), else the contact (C-B inflection, or blank scenario where the triangle is hidden); none without `contact_G`. Same line as the stiffness `p_eff` |
 | Shmin compliance | contact pressure − 75 psi (`interpret.COMPLIANCE_OFFSET_PSI`) |
 | Shmin tangent | BHP at the G·dP/dG through-origin departure (closure) point: last sample within 0.010 plot heights of the line, measured perpendicular in the default view (`interpret.tangent_visual_gap`, `CLOSURE_TANGENT_VISUAL_TOL`; y scale `tangent_view_y_top`, shared with `render_tangent`). Rotating the line moves the closure pick to the last sample (G >= 1) within that tolerance of the rotated line (`interpret.closure_departure_index`); the marker stays draggable and never moves the line. Blank, with the tangent effective ISIP, when "Tangent closure uninterpretable" (`state.tangent_uninterpretable`) is checked |
 | Shmin variable | BHP at the G-time midpoint of contact and closure picks. Blank when either is unavailable (C-C/C-D/C-X, or the tangent checkbox) |
 | Shmin Liberty | BHP at the anchor pick − 200 psi (`LIBERTY_OFFSET_PSI`); anchor is the min-dP/dG pick for C-A/blank, the contact pick for C-B; requires `contact_G` set; blank for C-C/C-D/C-X. Comparison only. |
-| Shmin stiffness | stiffness-step pick − 75 psi. Comparison only. Blank when "No slope change apparent" (`state.stiffness_no_upturn`) is checked or under C-X |
+| Shmin stiffness | stiffness-step pick − 75 psi. Comparison only. Reported under every closure scenario, C-X included. Blank when "No slope change apparent" (`state.stiffness_no_upturn`) is checked |
 | Shmin rapid | C-D only: apparent ISIP − 175 psi (`RAPID_CLOSURE_OFFSET_PSI`) |
 | Net pressure | shared reference ISIP − that method's Shmin (compliance, tangent, variable) |
 | NWB complexity | apparent ISIP − shared reference ISIP; negative reported as-is |
@@ -351,7 +360,7 @@ Closure scenarios (`picks.apply_closure_scenario`):
 | C-B adequate | monotonic with inflection | contact at the inflection, − 75 psi |
 | C-C no-contact | monotonic, no inflection | none (no Shmin) |
 | C-D rapid | monotonic, concave-up | apparent ISIP − 175 psi (`shmin_rapid`) |
-| C-X uninterpretable | can't be read (bad data) | none; also blanks Shmin stiffness |
+| C-X uninterpretable | can't be read (bad data) | none; also blanks the min-dP/dG time/pressure |
 
 Auto C-A: `picks.seed_gfunction` sets "C-A clear" (and runs `apply_closure_scenario`) only when
 it seeds a fresh min-dP/dG pick, the scenario is blank, and `interpret.is_clear_closure` holds:

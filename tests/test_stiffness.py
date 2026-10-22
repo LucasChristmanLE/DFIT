@@ -211,6 +211,131 @@ def test_stiffness_S_is_one_shorter_than_p_eff_and_aligned_with_p_eff_1():
     assert len(res.stiffness_S) == len(res.stiffness_p_eff) - 1
 
 
+def test_ca_p_eff_basis_is_effective():
+    td, st, res = _state_with_pore_pressure()
+    assert res.stiffness_uses_measured is False
+    assert not any("Stiffness uses measured BHP" in n for n in res.notes)
+
+
+def test_cb_p_eff_line_is_anchored_on_the_contact_not_the_min_pick():
+    """Under C-B the effective-ISIP line starts at the inflection (the contact pick,
+    model.compliance_isip_anchor_G), so p_eff is that same line, not one through min_dpdg_G."""
+    td, st, res = _state_with_pore_pressure("C-B adequate")
+    dg = res.diagnostics
+    i_c = int(np.nanargmin(np.abs(dg.G - st.contact_G)))
+    i_min = int(np.nanargmin(np.abs(dg.G - st.min_dpdg_G)))
+    assert i_min < i_c  # the fixture places them apart
+    anchor_x, anchor_y, slope = interpret.tangent_from_index(dg.G, res.resampled.p, i_c, half=4)
+    expected_line = anchor_y + slope * (dg.G - anchor_x)
+
+    p_eff = res.stiffness_p_eff
+    np.testing.assert_allclose(p_eff[:i_c], expected_line[:i_c])
+    np.testing.assert_allclose(p_eff[i_c:], res.resampled.p[i_c:])
+    assert res.stiffness_uses_measured is False
+
+
+@pytest.mark.parametrize("scenario", ["C-C no-contact", "C-D rapid", "C-X uninterpretable"])
+def test_no_contact_scenarios_use_measured_bhp_and_report_the_pick(scenario):
+    """No effective-ISIP line (C-C/C-D/C-X): p_eff is measured BHP throughout (URTeC-2019-123
+    §3.1.2: the plot needs only pressure and a pore-pressure estimate), even with the min-dP/dG
+    pick parked at the last sample, and a pick still reports Shmin(stiffness)."""
+    td, st, res = _state_with_pore_pressure()
+    st.closure_scenario = scenario
+    picks.apply_closure_scenario(st, res)
+    assert st.contact_G is None
+    st.min_dpdg_G = float(res.diagnostics.G[-1])
+    res = compute_all(st, td)
+
+    assert res.stiffness_uses_measured is True
+    np.testing.assert_array_equal(res.stiffness_p_eff, res.resampled.p)
+    assert any("Stiffness uses measured BHP" in n for n in res.notes)
+
+    st.stiffness_pick_P = float(res.stiffness_p_eff[len(res.stiffness_p_eff) // 2])
+    res = compute_all(st, td)
+    assert res.shmin_stiffness == pytest.approx(st.stiffness_pick_P - 75.0)
+
+
+def _measured_basis():
+    td, st, res = _state_with_pore_pressure()
+    st.closure_scenario = "C-C no-contact"
+    picks.apply_closure_scenario(st, res)
+    res = compute_all(st, td)
+    assert res.stiffness_uses_measured is True
+    return td, st, res
+
+
+def test_stiffness_alert_text_only_on_measured_basis_on_the_stiffness_step():
+    td, st, res = _measured_basis()
+    text = picks.stiffness_alert_text(res, "stiffness")
+    assert "Measured BHP" in text and "lower confidence" in text
+    assert picks.stiffness_alert_text(res, "loglog") == ""
+
+    td, st, res = _state_with_pore_pressure()
+    assert picks.stiffness_alert_text(res, "stiffness") == ""
+    assert picks.stiffness_alert_text(model.DerivedResults(), "stiffness") == ""
+
+
+def test_render_stiffness_notes_the_measured_basis_on_the_plot():
+    td, st, res = _measured_basis()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_stiffness(ax, td, st, res)
+    assert any("lower confidence" in t.get_text() for t in ax.texts)
+
+    td, st, res = _state_with_pore_pressure()
+    plots.render_stiffness(ax, td, st, res)
+    assert not any("lower confidence" in t.get_text() for t in ax.texts)
+
+
+def test_panel_marks_shmin_stiffness_on_the_measured_basis():
+    from tests.test_panel_fields import _panel_stub
+    visited = {"stiffness": "done"}
+    res = model.DerivedResults(shmin_stiffness=5200.0, stiffness_uses_measured=True)
+    stub = _panel_stub(res, PickState(step_status=visited))
+    stub._update_panel()
+    assert stub.name_lbls["Shmin stiffness"].text == "Shmin stiffness*"
+    assert stub.value_lbls["Shmin stiffness"].text == "5200"
+
+    res = model.DerivedResults(shmin_stiffness=5200.0, stiffness_uses_measured=False)
+    stub = _panel_stub(res, PickState(step_status=visited))
+    stub._update_panel()
+    assert stub.name_lbls["Shmin stiffness"].text == "Shmin stiffness"
+
+    # never an asterisk next to "-": no value, or the step not visited
+    for res, status in ((model.DerivedResults(stiffness_uses_measured=True), visited),
+                        (model.DerivedResults(shmin_stiffness=5200.0,
+                                              stiffness_uses_measured=True), {})):
+        stub = _panel_stub(res, PickState(step_status=status))
+        stub._update_panel()
+        assert stub.value_lbls["Shmin stiffness"].text == "-"
+        assert stub.name_lbls["Shmin stiffness"].text == "Shmin stiffness"
+
+
+def test_expanded_results_marks_the_stiffness_row_on_the_measured_basis():
+    from dfit_tool import summary
+    td, st, res = _measured_basis()
+    st.stiffness_pick_P = float(res.stiffness_p_eff[len(res.stiffness_p_eff) // 2])
+    st.step_status = {k: "done" for k in store.STEP_KEYS}
+    res = compute_all(st, td)
+    closure = next(s for s in summary.summary_sections(st, res) if s.title == "Closure comparison")
+    labels = [r[0] for r in closure.rows]
+    assert "stiffness*" in labels and "stiffness" not in labels
+
+
+def test_render_stiffness_x_label_follows_the_pressure_basis():
+    td, st, res = _state_with_pore_pressure()
+    fig = Figure()
+    ax = fig.add_subplot(111)
+    plots.render_stiffness(ax, td, st, res)
+    assert ax.get_xlabel() == "Effective Pressure (psi)"
+
+    st.closure_scenario = "C-C no-contact"
+    picks.apply_closure_scenario(st, res)
+    res = compute_all(st, td)
+    plots.render_stiffness(ax, td, st, res)
+    assert ax.get_xlabel() == "BHP (psi)"
+
+
 # --------------------------------------------------------------------------------------------------
 # model.compute_all: STIFFNESS_MAX_POINTS cap -- bidirectional (keeps-rises-too) resampling can
 # leave far more resampled points than the O(n^2) h_function construction can afford; above the
@@ -248,6 +373,22 @@ def test_stiffness_cap_decimates_arrays_and_warns(monkeypatch):
     assert any(expected in w for w in res.notes)
 
 
+def test_stiffness_cap_keeps_the_cb_contact_and_works_on_measured_bhp(monkeypatch):
+    monkeypatch.setattr(model, "STIFFNESS_MAX_POINTS", 10)
+    td, st, res = _state_with_pore_pressure("C-B adequate")
+    dg = res.diagnostics
+    i_c = int(np.nanargmin(np.abs(dg.G - st.contact_G)))
+    assert dg.G[i_c] in res.stiffness_G
+
+    st.closure_scenario = "C-C no-contact"
+    picks.apply_closure_scenario(st, res)
+    res = compute_all(st, td)
+    assert res.stiffness_uses_measured is True
+    assert len(res.stiffness_p_eff) <= 12
+    i_sel = np.searchsorted(dg.G, res.stiffness_G)
+    np.testing.assert_array_equal(res.stiffness_p_eff, res.resampled.p[i_sel])
+
+
 def test_stiffness_uncapped_case_unchanged():
     """Below the (default 2000) cap, nothing changes: no warning, and stiffness_G is exactly
     the full diagnostics G-time grid (the fixture's 36-point default resampled grid is nowhere
@@ -274,7 +415,7 @@ def test_seed_stiffness_pick_lands_in_capped_arrays(monkeypatch):
 # --------------------------------------------------------------------------------------------------
 # model.compute_all gates: every prerequisite must be present, and >= 4 resampled points.
 # --------------------------------------------------------------------------------------------------
-def test_stiffness_arrays_none_without_min_dpdg_pick():
+def test_stiffness_arrays_from_measured_bhp_without_min_dpdg_pick():
     td = make_testdata()
     st = injection_state(td)
     picks.seed_injection(st, td)
@@ -291,9 +432,10 @@ def test_stiffness_arrays_none_without_min_dpdg_pick():
 
     assert st.min_dpdg_G is None
     assert res.pore_pressure is not None  # sanity: everything else is ready
-    assert res.stiffness_p_eff is None
-    assert res.stiffness_S is None
-    assert res.shmin_stiffness is None
+    assert res.stiffness_uses_measured is True
+    np.testing.assert_array_equal(res.stiffness_p_eff, res.resampled.p)
+    assert res.stiffness_S is not None
+    assert res.shmin_stiffness is None  # no pick yet
 
 
 def test_stiffness_arrays_none_without_pore_pressure():
@@ -677,7 +819,29 @@ def test_status_for_all_eight_steps_done_is_done():
 def test_log_columns_has_shmin_stiffness_appended_at_the_tail():
     # "stiffness_no_upturn", "tail_guard_override", and "tangent_uninterpretable" were appended
     # after these two later still, so this checks the -5:-3 slice rather than the very tail.
-    assert store.LOG_COLUMNS[-16:-14] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+    assert store.LOG_COLUMNS[-20:-18] == ["Shmin_stiffness", "Shmin_stiffness_gradient"]
+
+
+def test_log_row_records_the_stiffness_pressure_basis(tmp_path):
+    assert store.LOG_COLUMNS[-1] == "stiffness_pressure_basis"
+    td, st, res = _state_with_pore_pressure()
+    entry = store.TestEntry(test_id="well1", folder=str(tmp_path))
+    active_path = str(tmp_path / "well1.csv")
+
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row["stiffness_pressure_basis"] == "effective"
+
+    st.closure_scenario = "C-C no-contact"
+    picks.apply_closure_scenario(st, res)
+    res = compute_all(st, td)
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row["stiffness_pressure_basis"] == "measured"
+
+    st.postclosure_scenario = "PC-F no peak"
+    res = compute_all(st, td)
+    assert res.stiffness_S is None
+    row = store.build_log_row(entry, active_path, str(tmp_path), st, td, res)
+    assert row["stiffness_pressure_basis"] == ""
 
 
 def test_build_log_row_round_trips_shmin_stiffness_and_gradient(tmp_path):
@@ -857,7 +1021,7 @@ def test_missing_key_decodes_to_false(tmp_path):
 def test_log_row_has_stiffness_no_upturn_column_at_the_tail(tmp_path):
     # "tail_guard_override" and "tangent_uninterpretable" were appended after this one -- see
     # tests/test_tail_trim.py's test_log_columns_tail_is_tail_guard_override.
-    assert store.LOG_COLUMNS[-14] == "stiffness_no_upturn"
+    assert store.LOG_COLUMNS[-18] == "stiffness_no_upturn"
 
     td, st, res = _state_with_pore_pressure()
     st.stiffness_no_upturn = True
@@ -1026,6 +1190,9 @@ def _panel_visibility_stub(stiffness_no_upturn=False):
     stub.sep_after_results = object()
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
+    stub.var_compliance_low_conf = _Var()
+    stub.var_tangent_low_conf = _Var()
+    stub.var_loglog_low_conf = _Var()
     stub.var_isip_use_tangent = _Var()
     stub.state = PickState(stiffness_no_upturn=stiffness_no_upturn)
     stub._update_ppaxis_enabled = lambda: None

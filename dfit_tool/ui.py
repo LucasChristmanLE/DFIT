@@ -28,7 +28,7 @@ from . import APP_NAME
 from . import (colors as C, guide_content, interpret, io_load, picks, plots, sliders, store,
                summary)
 from .model import (FALLBACK_DENSITY_PPG, NO_CONTACT_SCENARIOS, STEPS, PickState, TangentPick, blocking_issues,
-                    closure_uninterpretable, compute_all,
+                    compute_all,
                     infer_step_status, last_step, loglog_window_suppressed, next_step,
                     pp_from_peak, prev_step, resolve_step, skipped_steps, step_gate_error)
 from .plots import D2_AXIS_GID, ViewDefaults, ViewState
@@ -566,6 +566,10 @@ class DfitApp:
         self.var_showd2 = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.frm_cscen, text="show d²P/dG²", variable=self.var_showd2,
                         command=self._on_showd2).pack(anchor="w", pady=(4, 0))
+        self.var_compliance_low_conf = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_cscen, text="Low confidence",
+                        variable=self.var_compliance_low_conf,
+                        command=self._on_compliance_low_conf).pack(anchor="w")
         ttk.Button(self.frm_cscen, text="Interpretation guide...",
                    command=lambda: self._open_guide("closure")).pack(anchor="w", pady=(6, 0))
 
@@ -588,6 +592,11 @@ class DfitApp:
             rb.pack(side="left", padx=(0, 12))
             self.rb_ppaxis.append(rb)
 
+        self.var_loglog_low_conf = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_pcscen, text="Low confidence",
+                        variable=self.var_loglog_low_conf,
+                        command=self._on_loglog_low_conf).pack(anchor="w", pady=(6, 0))
+
         ttk.Button(self.frm_pcscen, text="Interpretation guide...",
                    command=lambda: self._open_guide("postclosure")).pack(anchor="w", pady=(6, 0))
 
@@ -606,6 +615,10 @@ class DfitApp:
         ttk.Checkbutton(self.frm_tangent, text="Tangent closure uninterpretable",
                         variable=self.var_tangent_uninterpretable,
                         command=self._on_tangent_uninterpretable).pack(anchor="w")
+        self.var_tangent_low_conf = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.frm_tangent, text="Low confidence",
+                        variable=self.var_tangent_low_conf,
+                        command=self._on_tangent_low_conf).pack(anchor="w")
 
         # ISIP step's "use tangent line" option (water hammer; default is the shut-in pressure)
         # -- same pattern, shown only on "isip".
@@ -742,6 +755,9 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
+        self.var_compliance_low_conf.set(False)
+        self.var_tangent_low_conf.set(False)
+        self.var_loglog_low_conf.set(False)
         self.var_isip_use_tangent.set(False)
         self.txt_notes.delete("1.0", "end")
         # Density/TVD are per-well; clear the stale previous well's values before (maybe)
@@ -1040,6 +1056,9 @@ class DfitApp:
         self.var_showd2.set(False)
         self.var_stiffness_no_upturn.set(False)
         self.var_tangent_uninterpretable.set(False)
+        self.var_compliance_low_conf.set(False)
+        self.var_tangent_low_conf.set(False)
+        self.var_loglog_low_conf.set(False)
         self.var_isip_use_tangent.set(False)
         self._views = {k: None for k, _ in STEPS}
         self._injection_full = False
@@ -1365,6 +1384,18 @@ class DfitApp:
         if not self.state.tangent_uninterpretable and self.state.closure_G is None:
             picks.seed_tangent(self.state, self.res)
         self.refresh()
+
+    def _on_compliance_low_conf(self):
+        """Informational flag only: nothing recomputes, so no refresh."""
+        self.state.compliance_low_confidence = bool(self.var_compliance_low_conf.get())
+
+    def _on_loglog_low_conf(self):
+        """Informational flag only: nothing recomputes, so no refresh."""
+        self.state.loglog_low_confidence = bool(self.var_loglog_low_conf.get())
+
+    def _on_tangent_low_conf(self):
+        """Informational flag only: nothing recomputes, so no refresh."""
+        self.state.tangent_low_confidence = bool(self.var_tangent_low_conf.get())
 
     def _on_isip_use_tangent(self):
         """Toggle taking the apparent ISIP from the tangent instead of the shut-in sample. The
@@ -1774,10 +1805,11 @@ class DfitApp:
                                  or f"{self.res.blockers[0]}; fix it before continuing.")
 
     def _update_alert(self):
-        """Show or hide the orange alert label from ``picks.gfunction_alert_text``. Packed
-        ``after`` hint_lbl (the first bottom-packed widget, so later means higher), directly
-        above the hint however often it is re-packed."""
-        text = picks.gfunction_alert_text(self.state, self.res, self.step)
+        """Show or hide the orange alert label from ``picks.gfunction_alert_text`` /
+        ``picks.stiffness_alert_text``. Packed ``after`` hint_lbl (the first bottom-packed
+        widget, so later means higher), directly above the hint however often it is re-packed."""
+        text = (picks.gfunction_alert_text(self.state, self.res, self.step)
+                or picks.stiffness_alert_text(self.res, self.step))
         self.alert_lbl.config(text=text)
         if text:
             self.alert_lbl.pack(side="bottom", anchor="w", pady=(6, 0), after=self.hint_lbl)
@@ -1837,14 +1869,17 @@ class DfitApp:
             self.frm_issues.pack_forget()
             self.frm_results.pack(fill="x", before=self.sep_after_results)
         if self.step == "gfunction":
+            self.var_compliance_low_conf.set(self.state.compliance_low_confidence)
             self.frm_cscen.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "isip":
             self.var_isip_use_tangent.set(self.state.isip_use_tangent)
             self.frm_isip.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step == "tangent":
             self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
+            self.var_tangent_low_conf.set(self.state.tangent_low_confidence)
             self.frm_tangent.pack(side="bottom", fill="x", after=self.frm_notes)
         if self.step in ("loglog", "porepressure"):
+            self.var_loglog_low_conf.set(self.state.loglog_low_confidence)
             self.frm_pcscen.pack(side="bottom", fill="x", after=self.frm_notes)
             # refresh() already reconciled pp_axis with the scenario before recomputing; here
             # just lock/unlock the radios to match.
@@ -2636,11 +2671,7 @@ class DfitApp:
             self.hint_lbl.config(text="Drag to select the late-time window; choose the axis.")
         elif step == "stiffness":
             res = self.res
-            if closure_uninterpretable(self.state):
-                self.hint_lbl.config(
-                    text="G-function marked uninterpretable (C-X) -- no stiffness Shmin is "
-                         "reported.")
-            elif self.state.stiffness_no_upturn:
+            if self.state.stiffness_no_upturn:
                 # No line to drag -- the option is an explicit "there is no upturn to pick".
                 self.hint_lbl.config(
                     text="No slope change apparent -- uncheck to restore the pick line.")
@@ -2665,8 +2696,7 @@ class DfitApp:
                          "contact).")
             else:
                 self.hint_lbl.config(
-                    text="Stiffness plot unavailable until the min-dP/dG pick and a "
-                         "pore-pressure estimate exist.")
+                    text="Stiffness plot unavailable until a pore-pressure estimate exists.")
 
     def _update_panel(self):
         r = self.res
@@ -2718,6 +2748,11 @@ class DfitApp:
                            and r.net_pressure_isip_source == "tangent")
         self.name_lbls["NWB complexity"].config(
             text="NWB complexity*" if (use_tangent_ref and gf_visited) else "NWB complexity")
+        # Stiffness built on measured BHP (no effective-ISIP line) is lower confidence.
+        measured_stiffness = (r.shmin_stiffness is not None and r.stiffness_uses_measured
+                              and summary.visited(self.state, "stiffness"))
+        self.name_lbls["Shmin stiffness"].config(
+            text="Shmin stiffness*" if measured_stiffness else "Shmin stiffness")
         self._issue_sections = issue_sections(r)
         self._warnings_expanded = False
         self._warn_lbl_hidden = False
@@ -2911,6 +2946,9 @@ class DfitApp:
         self.var_showd2.set(self.state.show_d2pdg2)
         self.var_stiffness_no_upturn.set(self.state.stiffness_no_upturn)
         self.var_tangent_uninterpretable.set(self.state.tangent_uninterpretable)
+        self.var_compliance_low_conf.set(self.state.compliance_low_confidence)
+        self.var_tangent_low_conf.set(self.state.tangent_low_confidence)
+        self.var_loglog_low_conf.set(self.state.loglog_low_confidence)
         self.var_isip_use_tangent.set(self.state.isip_use_tangent)
         self.txt_notes.delete("1.0", "end")
         self.txt_notes.insert("1.0", self.state.notes)

@@ -558,6 +558,9 @@ def _apply_stub():
     stub.var_showd2 = _Var()
     stub.var_stiffness_no_upturn = _Var()
     stub.var_tangent_uninterpretable = _Var()
+    stub.var_compliance_low_conf = _Var()
+    stub.var_tangent_low_conf = _Var()
+    stub.var_loglog_low_conf = _Var()
     stub.var_isip_use_tangent = _Var()
     stub.var_density_fallback = _Var()
     stub._set_density_fallback_widgets = lambda on: None
@@ -842,6 +845,9 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     stub.var_showd2 = _Var(True)
     stub.var_stiffness_no_upturn = _Var(True)
     stub.var_tangent_uninterpretable = _Var(True)
+    stub.var_compliance_low_conf = _Var(True)
+    stub.var_tangent_low_conf = _Var(True)
+    stub.var_loglog_low_conf = _Var(True)
     stub.var_isip_use_tangent = _Var(True)
     stub._views = {"gfunction": "stale"}
     stub._goto_calls = []
@@ -860,6 +866,9 @@ def test_on_unit_change_accept_resets_picks_and_navigates(monkeypatch):
     assert stub.var_showd2.value is False
     assert stub.var_stiffness_no_upturn.value is False
     assert stub.var_tangent_uninterpretable.value is False
+    assert stub.var_compliance_low_conf.value is False
+    assert stub.var_tangent_low_conf.value is False
+    assert stub.var_loglog_low_conf.value is False
     assert stub._views == {k: None for k, _ in STEPS}
     assert stub._goto_calls == ["overview"]
 

@@ -33,6 +33,7 @@ PICK = LBRT_BLACK                   # contact/closure markers and lines
 GUIDE = MID_GREY                    # through-origin line
 PORE_PRESSURE = PP_BLUE
 STIFFNESS_PICK = LBRT_RED
+PLOT_CAUTION = "#b35c00"            # amber in-plot caution text (same hue as UI_WARNING)
 EXCLUDED = MID_GREY                 # trimmed / guard-excluded samples, drawn at EXCLUDED_ALPHA
 EXCLUDED_ALPHA = 0.35
 GUARD_EXCLUDED_ALPHA = 0.2          # the raw tail past the guard boundary, fainter still

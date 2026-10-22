@@ -1,8 +1,8 @@
 """Explicit "uninterpretable" negative findings on the G-function and tangent steps.
 
 - Closure scenario C-X ("uninterpretable"): no contact pick, so no compliance Shmin/effective
-  ISIP, no Liberty, no variable -- same as C-C -- and additionally no Shmin(stiffness), whose
-  curve is anchored on the min-dP/dG pick.
+  ISIP, no Liberty, no variable -- same as C-C. Shmin(stiffness) is still reported: with no
+  effective-ISIP line its curve is built from measured BHP (URTeC-2019-123 §3.1.2).
 - PickState.tangent_uninterpretable: blanks the tangent Shmin, tangent effective ISIP, and the
   variable method (which needs closure_G). The pick stays in state, so unsetting restores it.
 """
@@ -40,7 +40,7 @@ def test_baseline_has_every_value_c_x_blanks():
     assert res.shmin_tangent is not None
 
 
-def test_c_x_blanks_compliance_liberty_variable_and_stiffness_keeps_tangent():
+def test_c_x_blanks_compliance_liberty_variable_keeps_tangent_and_stiffness():
     td, st, res = _with_stiffness_pick()
     st.closure_scenario = "C-X uninterpretable"
     assert picks.apply_closure_scenario(st, res) is None
@@ -54,9 +54,9 @@ def test_c_x_blanks_compliance_liberty_variable_and_stiffness_keeps_tangent():
     assert res2.shmin_liberty is None
     assert res2.shmin_variable is None
     assert res2.shmin_rapid is None
-    assert res2.shmin_stiffness is None
-    # the stiffness curve is still evidence on the plot
-    assert res2.stiffness_S is not None
+    # stiffness stands, on a measured-BHP curve
+    assert res2.stiffness_uses_measured is True
+    assert res2.shmin_stiffness == st.stiffness_pick_P - 75.0
     # tangent values stand and become the shared reference
     assert res2.shmin_tangent == res.shmin_tangent
     assert res2.effective_isip_tangent == res.effective_isip_tangent
@@ -92,7 +92,7 @@ def test_c_x_passes_the_gfunction_gate():
     assert model.step_gate_error(st, "gfunction") is None
 
 
-def test_render_stiffness_under_c_x_draws_no_pick_and_titles_the_finding():
+def test_render_stiffness_under_c_x_draws_the_pick():
     td, st, res = _with_stiffness_pick()
     st.closure_scenario = "C-X uninterpretable"
     picks.apply_closure_scenario(st, res)
@@ -102,9 +102,8 @@ def test_render_stiffness_under_c_x_draws_no_pick_and_titles_the_finding():
 
     plots.render_stiffness(ax, td, st, res)
 
-    assert not any(l.get_gid() == "stiffness_pick" for l in ax.get_lines())
-    assert "uninterpretable" in ax.get_title().lower()
-    assert len(ax.get_lines()) == 1
+    assert any(l.get_gid() == "stiffness_pick" for l in ax.get_lines())
+    assert "Shmin(stiffness)" in ax.get_title()
 
 
 def test_render_gfunction_under_c_x_draws_no_contact_or_triangle():
@@ -207,11 +206,15 @@ def test_suppressed_picks_beyond_the_trim_do_not_warn_stale():
         msgs = [w for w in res.warnings if "beyond the tail trim" in w]
         return {n for n in ("closure", "min dP/dG", "stiffness") for w in msgs if n in w}
 
-    assert stale_names(compute_all(st, td)) == set()
+    suppressed = stale_names(compute_all(st, td))
+    # C-X still reports Shmin(stiffness), so its pick is checked for staleness like any other.
+    assert suppressed <= {"stiffness"}
 
     st.tangent_uninterpretable = False
     st.closure_scenario = "C-A clear"
-    assert {"closure", "min dP/dG"} <= stale_names(compute_all(st, td))
+    reported = stale_names(compute_all(st, td))
+    assert {"closure", "min dP/dG"} <= reported
+    assert ("stiffness" in suppressed) == ("stiffness" in reported)
 
 
 def test_infer_step_status_marks_tangent_done_on_flag_alone():
@@ -267,7 +270,7 @@ def test_update_panel_visibility_resyncs_tangent_var_on_tangent_entry():
 # dfit_log.csv
 # --------------------------------------------------------------------------------------------------
 def test_log_row_records_both_findings(tmp_path):
-    assert store.LOG_COLUMNS[-12] == "tangent_uninterpretable"
+    assert store.LOG_COLUMNS[-16] == "tangent_uninterpretable"
 
     td, st, res = _with_stiffness_pick()
     st.closure_scenario = "C-X uninterpretable"
@@ -284,5 +287,6 @@ def test_log_row_records_both_findings(tmp_path):
     assert row["Shmin_compliance"] is None
     assert row["Shmin_tangent"] is None
     assert row["tangent_Gc"] is None
-    assert row["Shmin_stiffness"] is None
+    assert row["Shmin_stiffness"] == st.stiffness_pick_P - 75.0
+    assert row["stiffness_pressure_basis"] == "measured"
     assert st.closure_G is not None  # still in state, only the log blanks it

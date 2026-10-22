@@ -774,9 +774,26 @@ Per-test deliverables:
   ISIP, or complexity. `h_function` is O(n²) in the point count, so above `model.
   STIFFNESS_MAX_POINTS` (2000) — reachable now that resampling keeps rises too, which can leave
   a noisy gauge's post-shut-in record at 10k-40k resampled points — the block decimates to an
-  evenly spaced subset (plus the first/last sample and the min-dP/dG pick's own sample, so those
-  three are never lost to rounding) before building `p_eff`/`h`/`S`, and appends a "decimated to
-  limit memory" warning; `DerivedResults.stiffness_G` carries the matching G-time subset.
+  evenly spaced subset (plus the first/last sample and the anchor's own sample, so those
+  three are never lost to rounding) before building `p_eff`/`h`/`S`, and appends a "Stiffness
+  plot uses N of M resampled points" note; `DerivedResults.stiffness_G` carries the matching
+  G-time subset.
+- **Stiffness `p_eff` anchor** (2026-10-07). `p_eff` was anchored on `state.min_dpdg_G` under
+  every scenario. Under C-C the min-dP/dG seed falls back to the end of the record, so on
+  Cottonwood Creek 4DH (min_dpdg_G = 133.0, the last of 143 resampled points) 142 points sat on
+  a line through the last 5 samples (slope -1.44 psi/G, G=0 intercept 4135 psi): the plot
+  spanned 3949-4135 psi against a 4940 psi tangent closure and a 9391 psi apparent ISIP, and
+  could not show an upturn. Now `p_eff` is the compliance effective-ISIP line
+  (`res.eff_isip_line_compliance`, anchored at `compliance_isip_anchor_G`) before the anchor,
+  so it is the same line as the reported effective ISIP under C-B too. With no anchor it is
+  measured BHP throughout (`res.stiffness_uses_measured`, a note, x label "BHP (psi)", log column
+  `stiffness_pressure_basis`). Basis: URTeC-2019-123 §3.1.2 says the plot finds contact when
+  deviation from Carter leakoff masks it in dP/dG and "can be constructed solely from the
+  pressure data and an estimate of pore pressure"; A.9 defines S on pressure, with `p_eff` as a
+  near-wellbore correction; ResFrac C-D assumes no tortuosity. Shmin stiffness is now reported
+  under C-X as well (analyst decision). After the change Cottonwood Creek 4DH spans 3949-9391
+  psi with an S minimum near 5300 psi. Under measured BHP the high-pressure end reflects
+  near-wellbore dissipation (S <= 0 or erratic above ~6150 psi there), not rock stiffness.
 - **"No slope change apparent"** (`state.stiffness_no_upturn`, a side-panel checkbox visible
   only on the stiffness step) is the explicit negative finding: some tests show no abrupt
   slope change on the relative-stiffness plot, and this records that as a legitimate outcome
@@ -810,11 +827,12 @@ Per-test deliverables:
 - **Uninterpretable G-function / tangent** follow the same negative-finding pattern.
   - Closure scenario **C-X uninterpretable** (`model.NO_CONTACT_SCENARIOS` with C-C/C-D;
     `model.closure_uninterpretable`): `picks.apply_closure_scenario` clears `contact_G`, so
-    compliance Shmin/effective ISIP, Liberty, and variable blank exactly as under C-C. It also
-    blanks `shmin_stiffness`, because the stiffness curve is anchored on the min-dP/dG pick; the
-    stiffness arrays still compute and the curve still renders, titled "G-function
-    uninterpretable (Shmin not reported)", with no pick line or drag controller. The
-    min-dP/dG pick and stiffness pick stay in state. `closure_quality` logs `"uninterpretable"`.
+    compliance Shmin/effective ISIP, Liberty, and variable blank exactly as under C-C. Beyond
+    C-C it blanks `min_dpdg_time_s`/`min_dpdg_pressure` and drops the min-dP/dG pick from the
+    stale check. Since 2026-10-07 it no longer blanks `shmin_stiffness`: with no effective-ISIP
+    line the stiffness curve is measured BHP, drawn and draggable like any other scenario (see
+    "Stiffness `p_eff` anchor"). The min-dP/dG pick stays in state. `closure_quality` logs
+    `"uninterpretable"`.
   - **`state.tangent_uninterpretable`** (checkbox on the tangent step): `compute_all` gates the
     tangent closure, tangent effective ISIP, and variable blocks on it (`tangent_ok`). The
     `closure_G`/`closure_slope` picks stay in state; unchecking restores them, or seeds them via

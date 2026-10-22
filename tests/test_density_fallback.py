@@ -59,7 +59,7 @@ def test_log_row_fallback_false_by_default(tmp_path):
 
 
 def test_log_column_appended_at_tail():
-    assert store.LOG_COLUMNS[-1] == "density_fallback"
+    assert store.LOG_COLUMNS[-5] == "density_fallback"
 
 
 def test_picks_json_round_trip(tmp_path):
