@@ -1166,7 +1166,8 @@ def compute_all(state: PickState, td: TestData) -> DerivedResults:
                     f"Tail trimmed at {cutoff/3600:.2f} hr ({n_excluded} samples excluded)")
         res.resampled = rs
         if len(rs.p) >= 3:
-            res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha)
+            res.diagnostics = resample.diagnostics(rs, res.te_s, state.alpha,
+                                                   p_ref=res.apparent_isip)
             if len(rs.p) < 20:
                 res.warnings.append(f"Only {len(rs.p)} resampled points; consider a smaller step")
         elif state.tail_trim_dt is not None:

@@ -853,15 +853,20 @@ class Diagnostics:
     # log-log falloff diagnostics vs actual shut-in time:
     t: np.ndarray         # shut-in elapsed time (> 0 only)
     p: np.ndarray         # BHP aligned with t (psi)
-    dp: np.ndarray        # pressure drop since first resampled point, positive-up
+    dp: np.ndarray        # pressure drop from p_ref (apparent ISIP), else from the first t > 0 point
     tdpdt: np.ndarray     # t * dP/dt (log-log derivative), positive-up
 
 
-def diagnostics(rs: Resampled, te: float, alpha: float = 1.0) -> Diagnostics:
+def diagnostics(rs: Resampled, te: float, alpha: float = 1.0,
+                p_ref: float | None = None) -> Diagnostics:
     """Compute G-function and log-log diagnostic curves from a resampled falloff.
 
     All derivatives use ``np.gradient`` against the actual abscissa (G or t), so they are correct on
     the non-uniform pressure-increment spacing.
+
+    ``dp`` is ``p_ref - p`` (compute_all passes the apparent ISIP). A missing or non-finite
+    ``p_ref`` falls back to the first t > 0 sample, which a water-hammer trough can sit below
+    the settled falloff, leaving dp negative (and off the log axis) for hours.
     """
     dt = rs.dt
     p = rs.p
@@ -876,7 +881,10 @@ def diagnostics(rs: Resampled, te: float, alpha: float = 1.0) -> Diagnostics:
     pos = dt > 0
     t = dt[pos]
     p_pos = p[pos]
-    dp = p_pos[0] - p_pos if len(p_pos) else p_pos
+    if p_ref is not None and np.isfinite(p_ref):
+        dp = p_ref - p_pos
+    else:
+        dp = p_pos[0] - p_pos if len(p_pos) else p_pos
     tdpdt = -t * np.gradient(p_pos, t) if len(p_pos) > 1 else np.zeros_like(t)
 
     return Diagnostics(G=G, dPdG=dPdG, GdPdG=GdPdG, d2PdG2=d2PdG2, t=t, p=p_pos, dp=dp, tdpdt=tdpdt)

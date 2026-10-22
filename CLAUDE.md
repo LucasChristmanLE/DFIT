@@ -408,6 +408,10 @@ on the Pore pressure step (`picks.handle_pp_span`) sets `loglog_window`; a drag 
 last sample also stores `inf`, so it never reads as stale after a trim. `seed_pp` only seeds the
 log-log window if it is missing. Old saves' `pp_window` is dropped on load.
 
+Log-log dp is `apparent ISIP − P` (`resample.diagnostics(p_ref=...)`), so it follows the
+tangent ISIP when "Use tangent line" is set; with no apparent ISIP it falls back to the first
+t > 0 sample. It is display-only: no reported value reads `dg.dp`.
+
 Time to flow regime (`DerivedResults.flow_regime_time_s`): the first diagnostics sample inside
 `loglog_window`, or the snapped PC-E peak (`res.pce_peak_t`); None under PC-F/PC-X (table shows
 `n/a`). Shown in the Expanded results Postclosure table; logged as `flow_regime_time_min`.
